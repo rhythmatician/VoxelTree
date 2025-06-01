@@ -83,8 +83,7 @@ class TestWorldGenBootstrap:
         # Create mock region directory with .mca files
         region_dir = self.test_temp_dir / "region"
         region_dir.mkdir(parents=True)
-        
-        # Create valid-looking .mca files
+          # Create valid-looking .mca files
         (region_dir / "r.0.0.mca").write_bytes(b"fake_mca_header" + b"\x00" * 1000)
         (region_dir / "r.1.0.mca").write_bytes(b"fake_mca_header" + b"\x00" * 1000)
         
@@ -100,7 +99,7 @@ class TestWorldGenBootstrap:
         """Test that validation detects corrupted .mca files."""
         region_dir = self.test_temp_dir / "region"
         region_dir.mkdir(parents=True)
-          # Create corrupted .mca file (too small)
+        # Create corrupted .mca file (too small)
         (region_dir / "r.0.0.mca").write_bytes(b"bad")
         
         validation_result = self.bootstrap.validate_mca_output(region_dir)
