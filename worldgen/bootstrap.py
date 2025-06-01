@@ -15,7 +15,7 @@ import logging
 import subprocess
 import time
 from pathlib import Path
-from typing import Dict, Tuple, Union
+from typing import Any, Dict, Tuple, Union
 
 # Set up logging for worldgen operations
 logger = logging.getLogger(__name__)
@@ -193,7 +193,7 @@ class WorldGenBootstrap:
         logger.info("Reducing batch size for retry after heap exhaustion")
         pass
 
-    def validate_mca_output(self, region_dir: Path) -> Dict:
+    def validate_mca_output(self, region_dir: Path) -> Dict[str, Any]:
         """
         Verify .mca files contain expected chunks and aren't corrupted.
 
@@ -201,9 +201,8 @@ class WorldGenBootstrap:
             region_dir: Directory containing .mca files
 
         Returns:
-            Dictionary with validation results
-        """
-        result = {"files_found": 0, "total_size_mb": 0.0, "corrupted_files": []}
+            Dictionary with validation results        """
+        result: Dict[str, Any] = {"files_found": 0, "total_size_mb": 0.0, "corrupted_files": []}
 
         if not region_dir.exists():
             return result

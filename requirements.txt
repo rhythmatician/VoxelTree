@@ -34,3 +34,5 @@ opensimplex          # Optional: smoother noise
 
 # === Optional: Additional Tools ===
 pre-commit            # For pre-commit hooks
+types-PyYAML          # type stubs for yaml
+types-psutil          # type stubs for psutil
