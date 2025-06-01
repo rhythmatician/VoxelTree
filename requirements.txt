@@ -19,6 +19,7 @@ plotly                # Optional: interactive voxel previews
 # === Testing ===
 pytest
 pytest-cov
+psutil                # Memory usage monitoring
 
 # === Linting / Formatting / Type Checking (for CI) ===
 black

@@ -49,9 +49,13 @@ class TestChunkExtractor:
                 }
             }
         }
-        
-        # Create mock config file
+          # Create mock config file
         self.test_config_path = self.test_temp_dir / "test_config.yaml"
+        
+        # Write test config to file
+        import yaml
+        with open(self.test_config_path, 'w') as f:
+            yaml.safe_dump(self.test_config, f)
         
         # Initialize extractor (will fail until implemented)
         self.extractor = ChunkExtractor(config_path=self.test_config_path)
@@ -163,10 +167,9 @@ class TestChunkExtractor:
             "block_types": np.random.randint(0, 10, size=(16, 16, 384), dtype=np.uint8),
             "air_mask": np.random.choice([True, False], size=(16, 16, 384)),
             "biomes": np.random.randint(0, 50, size=(16, 16), dtype=np.uint8),
-            "heightmap": np.random.randint(0, 320, size=(16, 16), dtype=np.uint16),
-            "chunk_x": np.int32(5),
+            "heightmap": np.random.randint(0, 320, size=(16, 16), dtype=np.uint16),            "chunk_x": np.int32(5),
             "chunk_z": np.int32(10),
-            "region_file": np.string_("r.0.0.mca")
+            "region_file": "r.0.0.mca"  # Use regular string instead of np.string_
         }
         
         # Should save and load .npz correctly
@@ -278,10 +281,9 @@ class TestChunkExtractor:
             "heightmap": np.random.randint(0, 320, size=(16, 16), dtype=np.uint16),
             "chunk_x": np.int32(0),
             "chunk_z": np.int32(0),
-            "region_file": np.string_("r.0.0.mca")
+            "region_file": "r.0.0.mca"  # Use regular string
         }
-        
-        # Create valid file
+          # Create valid file
         valid_path = self.extractor.output_dir / "chunk_0_0.npz"
         np.savez_compressed(valid_path, **valid_data)
         
