@@ -7,4 +7,4 @@ them into compressed numpy arrays suitable for machine learning training.
 
 from .chunk_extractor import ChunkExtractor
 
-__all__ = ['ChunkExtractor']
+__all__ = ["ChunkExtractor"]
