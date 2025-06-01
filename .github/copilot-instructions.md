@@ -99,10 +99,125 @@ Target mask: (e.g. 16×16×16)
 
 Target types: (same shape)
 
-🌍 World Generation Assumptions
-Seed: "VoxelTree" → numeric 1903448982
+## 🌍 Phase 0B: World Generation Bootstrap
 
-Training region: [0,2048] × [0,2048] chunks (≈500GB full, we subsample)
+### 🎯 Tactical Briefing
+
+Phase 0B establishes the foundation for generating Minecraft .mca files using a headless Java-based world generator. This phase must create a reliable, repeatable pipeline for terrain data extraction.
+
+### 🛠️ Implementation Strategy
+
+#### Java Tool Selection
+- **Primary**: Use `minecraft-dev-tools` or similar headless worldgen jar
+- **Fallback**: Custom Fabric mod with minimal dependencies 
+- **Alternative**: Cuberite C++ server with custom plugins
+- **Last Resort**: Parse existing world saves with `anvil-parser`
+
+#### Required Infrastructure
+```python
+# Essential components to implement:
+class WorldGenBootstrap:
+    def __init__(self, seed: str = "VoxelTree", java_heap: str = "4G"):
+        self.seed = self._hash_seed(seed)  # "VoxelTree" → 1903448982
+        self.java_heap = java_heap
+        self.temp_world_dir = Path("temp_worlds")
+        
+    def generate_region_batch(self, x_range: tuple, z_range: tuple) -> Path:
+        """Generate .mca files for specified chunk ranges"""
+        
+    def cleanup_temp_worlds(self, keep_latest: int = 2):
+        """Remove old temporary world folders"""
+```
+
+#### File Management Protocol
+- **Temp worlds**: `temp_worlds/world_{timestamp}/region/`
+- **Target chunks**: Generate only needed regions (e.g., r.0.0.mca, r.1.0.mca)
+- **Auto-cleanup**: Remove temp worlds after successful .npz extraction
+- **Disk limit**: Never exceed 5GB of temp .mca files at once
+
+#### Java Process Management
+```python
+# Required subprocess patterns:
+def run_worldgen_java(jar_path: Path, world_dir: Path, 
+                     x_min: int, x_max: int, z_min: int, z_max: int) -> bool:
+    """
+    Execute: java -Xmx4G -jar worldgen.jar --seed 1903448982 
+             --output ./temp_worlds/world_001 --region-x 0,4 --region-z 0,4
+    """
+    
+def validate_mca_output(region_dir: Path) -> dict:
+    """Verify .mca files contain expected chunks and aren't corrupted"""
+```
+
+#### Error Recovery Patterns
+- **Java heap exhaustion**: Reduce batch size and retry
+- **Corrupted .mca**: Regenerate specific region files
+- **Missing chunks**: Validate chunk coordinates in .mca files
+- **Disk space**: Emergency cleanup of temp directories
+
+### 🧪 TDD Test Requirements
+
+#### RED Phase Tests
+```python
+def test_worldgen_bootstrap_init():
+    """Test bootstrap initialization with seed hashing"""
+    
+def test_generate_single_region():
+    """Test generation of one .mca file with known chunks"""
+    
+def test_mca_file_validation():
+    """Test parsing and validation of generated .mca files"""
+    
+def test_cleanup_temp_worlds():
+    """Test automatic cleanup respects disk limits"""
+```
+
+#### GREEN Phase Implementation
+- Implement minimal `WorldGenBootstrap` class
+- Add basic Java subprocess execution
+- Create .mca file existence validation
+- Implement emergency disk cleanup
+
+#### REFACTOR Phase Documentation
+- Document Java tool selection rationale
+- Add performance benchmarks for different batch sizes
+- Create troubleshooting guide for common Java/worldgen errors
+- Update config.yaml with worldgen parameters
+
+### 🔧 Configuration Requirements
+
+```yaml
+# config.yaml additions:
+worldgen:
+  seed: "VoxelTree"  # Converts to 1903448982
+  java_heap: "4G"
+  batch_size: 16     # Chunks per .mca generation batch
+  max_temp_disk_gb: 5
+  chunk_region_bounds:
+    x_min: 0
+    x_max: 128        # 2048 chunks = 128 regions
+    z_min: 0  
+    z_max: 128
+  java_tools:
+    primary: "tools/minecraft-worldgen.jar"
+    fallback: "tools/fabric-worldgen-mod.jar"
+```
+
+### 🚨 Critical Success Criteria
+
+1. **Repeatability**: Same seed always produces identical .mca files
+2. **Efficiency**: Generate 100+ chunks in <5 minutes on typical hardware
+3. **Reliability**: Handle Java crashes and corrupted outputs gracefully
+4. **Resource limits**: Never exceed 5GB temp disk usage
+5. **Testability**: All worldgen operations must be unit-testable
+
+### 🌍 World Generation Context
+
+- **Seed**: "VoxelTree" → numeric 1903448982
+- **Training region**: [0,2048] × [0,2048] chunks (≈500GB full, we subsample)
+- **Output format**: Standard Minecraft .mca region files
+- **Biome support**: Must preserve all biome data for conditioning
+- **Height range**: Full 384-block height (Y=-64 to Y=320)
 
 All terrain generation must be headless and repeatable
 
