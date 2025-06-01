@@ -255,3 +255,169 @@ Improve variable/function naming
 When in doubt, follow the TDD flow, use batch generators, and prefer clarity over cleverness.
 
 VoxelTree builds terrain. Copilot, you build the brain.
+
+---
+
+## 🌍 Phase 0C: MCA to NPZ Extraction Pipeline
+
+#### 🎯 Tactical Briefing
+
+Phase 0C implements the core data extraction functionality to parse Minecraft .mca region files and convert them into compressed .npz training data. This phase creates the bridge between raw Minecraft world data and ML-ready tensors.
+
+#### 🛠️ Implementation Strategy
+
+##### Anvil Parser Integration
+- **Primary**: Use `anvil-parser` library for robust .mca reading
+- **Fallback**: Custom NBT parser with zlib decompression
+- **Data format**: Extract blocks, biomes, heightmaps per 16×16×384 chunk
+- **Validation**: Verify chunk coordinates and detect corruption
+
+##### Required Infrastructure
+```python
+# Essential components to implement:
+class ChunkExtractor:
+    def __init__(self, config_path: Path = Path("config.yaml")):
+        self.config = load_config(config_path)
+        self.output_dir = Path(self.config["extraction"]["output_dir"])
+        
+    def extract_chunk_data(self, region_file: Path, chunk_x: int, chunk_z: int) -> dict:
+        """Extract single chunk data from .mca file"""
+        
+    def extract_region_batch(self, region_file: Path) -> List[Path]:
+        """Extract all chunks from region file to .npz files"""
+        
+    def process_block_data(self, chunk_data) -> tuple:
+        """Convert NBT block data to numpy arrays (types, air_mask)"""
+        
+    def extract_biome_data(self, chunk_data) -> np.ndarray:
+        """Extract biome IDs for chunk"""
+        
+    def compute_heightmap(self, block_types: np.ndarray) -> np.ndarray:
+        """Compute surface heightmap from block data"""
+```
+
+##### NPZ Output Format
+```python
+# Each chunk_{x}_{z}.npz contains:
+{
+    "block_types": np.uint8,    # shape=(16, 16, 384), block type IDs
+    "air_mask": np.bool_,       # shape=(16, 16, 384), True for air blocks
+    "biomes": np.uint8,         # shape=(16, 16), biome IDs per column
+    "heightmap": np.uint16,     # shape=(16, 16), surface height per column
+    "chunk_x": np.int32,        # chunk X coordinate
+    "chunk_z": np.int32,        # chunk Z coordinate
+    "region_file": np.string_   # source .mca filename for debugging
+}
+```
+
+##### Memory Management Protocol
+- **Streaming**: Process one region file at a time
+- **Batch limits**: Max 64 chunks in memory before writing to disk
+- **Cleanup**: Delete temp .mca files after successful .npz extraction
+- **Disk quotas**: Monitor .npz output size, delete oldest when >10GB
+
+##### Multiprocessing Strategy
+```python
+# Required parallel processing patterns:
+def extract_regions_parallel(region_files: List[Path], num_workers: int = 4) -> None:
+    """
+    Use multiprocessing.Pool to extract multiple regions simultaneously
+    Each worker processes one .mca file independently
+    """
+    
+def validate_extraction_results(output_dir: Path) -> dict:
+    """Verify .npz files contain expected data and aren't corrupted"""
+```
+
+#### 🧪 TDD Test Requirements
+
+##### RED Phase Tests
+```python
+def test_chunk_extractor_init():
+    """Test ChunkExtractor initialization and config loading"""
+    
+def test_extract_single_chunk():
+    """Test extraction of one chunk from .mca file"""
+    
+def test_block_data_processing():
+    """Test conversion of NBT block data to numpy arrays"""
+    
+def test_biome_extraction():
+    """Test biome ID extraction and validation"""
+    
+def test_heightmap_computation():
+    """Test surface heightmap calculation from blocks"""
+    
+def test_npz_output_format():
+    """Test .npz file structure and compression"""
+    
+def test_region_batch_extraction():
+    """Test extraction of all chunks from one region"""
+    
+def test_parallel_region_processing():
+    """Test multiprocessing extraction of multiple regions"""
+    
+def test_memory_management():
+    """Test streaming processing without excessive memory usage"""
+    
+def test_extraction_validation():
+    """Test detection of corrupted or incomplete extractions"""
+```
+
+##### GREEN Phase Implementation
+- Implement minimal `ChunkExtractor` class
+- Add basic .mca file reading with anvil-parser
+- Create block data → numpy conversion
+- Implement .npz output with compression
+- Add simple multiprocessing for regions
+
+##### REFACTOR Phase Documentation
+- Document anvil-parser integration details
+- Add performance benchmarks for extraction speed
+- Create troubleshooting guide for common .mca parsing errors
+- Update config.yaml with extraction parameters
+
+#### 🔧 Configuration Requirements
+
+```yaml
+# config.yaml additions:
+extraction:
+  output_dir: "data/chunks"
+  temp_dir: "temp_extraction"
+  max_disk_usage_gb: 10
+  batch_size: 64              # chunks per batch before disk write
+  num_workers: 4              # multiprocessing workers
+  compression_level: 6        # npz compression (1-9)
+  validation:
+    verify_checksums: true
+    detect_corruption: true
+  block_mapping:
+    air_blocks: [0]           # block IDs considered "air"
+    solid_blocks: [1, 2, 3]   # common solid block IDs
+  heightmap:
+    surface_blocks: [2, 3, 4] # blocks that count as "surface"
+    min_height: -64           # world bottom (Y coordinate)
+    max_height: 320           # world top (Y coordinate)
+```
+
+#### 🚨 Critical Success Criteria
+
+1. **Format compliance**: All .npz files match exact schema
+2. **Data integrity**: No corruption during extraction process
+3. **Performance**: Extract 1000+ chunks in <2 minutes on typical hardware
+4. **Memory efficiency**: Never exceed 2GB RAM during extraction
+5. **Parallel scalability**: Linear speedup with multiple workers
+6. **Error recovery**: Handle corrupted .mca files gracefully
+
+#### 🌍 Extraction Context
+
+- **Input**: .mca region files from Phase 0B worldgen
+- **Output**: Compressed .npz chunk files in data/chunks/
+- **Chunk range**: Full 16×16×384 blocks per chunk
+- **Coordinate system**: Minecraft world coordinates (chunk_x, chunk_z)
+- **Block mapping**: Convert Minecraft block IDs to training-friendly format
+- **Biome support**: Preserve biome data for conditional generation
+
+All extraction must be deterministic and reproducible for same input .mca files.
+
+---

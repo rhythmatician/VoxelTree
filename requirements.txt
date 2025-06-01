@@ -9,6 +9,7 @@ PyYAML
 scipy                 # For interpolation, pooling
 h5py                  # Optional: for storing large datasets
 joblib                # Parallel chunk loading
+anvil-parser          # Minecraft .mca file parsing
 
 # === Visualization ===
 matplotlib
