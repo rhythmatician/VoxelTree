@@ -11,7 +11,7 @@ from pathlib import Path
 import tempfile
 import shutil
 
-from src.seed_inputs.generator import SeedInputGenerator
+from scripts.seed_inputs.generator import SeedInputGenerator
 
 
 class TestSeedInputGeneratorBounds:

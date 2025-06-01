@@ -12,8 +12,8 @@ from pathlib import Path
 import numpy as np
 from unittest.mock import Mock, patch
 
-from src.worldgen.config import load_config
-from src.extraction.chunk_extractor import ChunkExtractor
+from scripts.worldgen.config import load_config
+from scripts.extraction.chunk_extractor import ChunkExtractor
 
 
 class TestChunkExtractor:

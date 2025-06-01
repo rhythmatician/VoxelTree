@@ -36,7 +36,7 @@ jobs:
         run: flake8 .
 
       - name: Type check with mypy
-        run: mypy --explicit-package-bases src tests
+        run: mypy --explicit-package-bases scripts tests
 
       - name: Run unit tests
         run: pytest --tb=short --disable-warnings
@@ -44,4 +44,4 @@ jobs:
       - name: Check code coverage
         run: |
           pip install pytest-cov
-          pytest --cov=src --cov-report=term-missing
+          pytest --cov=scripts --cov-report=term-missing

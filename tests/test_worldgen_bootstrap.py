@@ -11,7 +11,7 @@ import shutil
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
-from src.worldgen.bootstrap import WorldGenBootstrap
+from scripts.worldgen.bootstrap import WorldGenBootstrap
 
 
 class TestWorldGenBootstrap:
@@ -164,7 +164,7 @@ class TestWorldGenConfiguration:
     def test_config_loading_from_yaml(self):
         """Test that worldgen configuration loads correctly from config.yaml."""
         # Test that config loads successfully now that we have a config.yaml file
-        from src.worldgen.config import load_worldgen_config
+        from scripts.worldgen.config import load_worldgen_config
 
         config = load_worldgen_config()
 
