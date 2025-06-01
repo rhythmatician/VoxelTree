@@ -25,7 +25,7 @@ Each feature must follow this commit cycle:
 
 1. `RED:` Failing test added
 2. `GREEN:` Code added to pass test
-3. `REFACTOR:` Code/doc/insight improvements
+3. `REFACTOR:` Code/doc/insight improvements or optimizations
 
 All three commits must be part of a single feature branch, then squashed or merged to `main` when complete.
 

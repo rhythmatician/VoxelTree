@@ -4,11 +4,13 @@ torch>=2.0
 torchvision
 tqdm
 PyYAML
+types-PyYAML  # type stubs for yaml
 
 # === Dataset / IO ===
 scipy                 # For interpolation, pooling
 h5py                  # Optional: for storing large datasets
 joblib                # Parallel chunk loading
+anvil-parser          # Minecraft .mca file parsing
 
 # === Visualization ===
 matplotlib
@@ -18,6 +20,8 @@ plotly                # Optional: interactive voxel previews
 # === Testing ===
 pytest
 pytest-cov
+psutil                # Memory usage monitoring
+types-psutil   # type stubs for psutil
 
 # === Linting / Formatting / Type Checking (for CI) ===
 black
@@ -27,3 +31,8 @@ mypy
 # === Optional: Seed-based Input Generator ===
 noise                 # Perlin/Simplex for river/biome simulation (Python)
 opensimplex          # Optional: smoother noise
+
+# === Optional: Additional Tools ===
+pre-commit            # For pre-commit hooks
+types-PyYAML          # type stubs for yaml
+types-psutil          # type stubs for psutil
