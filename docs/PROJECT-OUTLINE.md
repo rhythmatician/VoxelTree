@@ -14,8 +14,8 @@
 | TDD Cycle | Goal                         | Description                          |
 |-----------|------------------------------|--------------------------------------|
 | [X] 0.1       | Repo scaffold                | Set up `train/`, `scripts/`, `tests/`, `docs/` |
-| [ ] 0.2       | CI with Pytest               | GitHub Actions or pre-commit hooks   |
-| [ ] 0.3       | config.yaml loader           | Validate all config options centrally|
+| [X] 0.2       | CI with Pytest               | GitHub Actions or pre-commit hooks   |
+| [X] 0.3       | config.yaml loader           | Validate all config options centrally|
 
 ---
 
@@ -23,11 +23,11 @@
 
 | TDD Cycle | Goal                         | RED Test Focus                                  |
 |-----------|------------------------------|--------------------------------------------------|
-| [ ] 1.1       | Load `.mca` file             | Fails if region is missing or unreadable         |
-| [ ] 1.2       | Extract subchunks            | Fails if 16³ slices are incorrect or misaligned  |
-| [ ] 1.3       | Downsample to 8³ parent      | Fails if pooling is inaccurate or shape mismatch |
-| [ ] 1.4       | Save input-output `.npz`     | Fails if file format or keys are malformed       |
-| [ ] 1.5       | Multiprocess batch extract   | Fails if total sample count is off               |
+| [X] 1.1       | Load `.mca` file             | Fails if region is missing or unreadable         |
+| [X] 1.2       | Extract subchunks            | Fails if 16³ slices are incorrect or misaligned  |
+| [X] 1.3       | Downsample to 8³ parent      | Fails if pooling is inaccurate or shape mismatch |
+| [X] 1.4       | Save input-output `.npz`     | Fails if file format or keys are malformed       |
+| [X] 1.5       | Multiprocess batch extract   | Fails if total sample count is off               |
 
 ---
 
@@ -37,11 +37,11 @@
 
 | TDD Cycle | Goal                           | RED Test Focus                                      |
 |-----------|--------------------------------|-----------------------------------------------------|
-| [ ] 1B.1      | Biome noise generator          | Fails if known `(x, z)` returns wrong biome         |
-| [ ] 1B.2      | Heightmap sampler              | Fails if height doesn’t match reference             |
-| [ ] 1B.3      | River noise patch              | Fails if expected signal is missing                 |
-| [ ] 1B.4      | Patch assembler (x, z window)  | Fails if array shapes or padding are invalid        |
-| [ ] 1B.5      | Save `.npz` seed-only input    | Fails if file missing expected keys                 |
+| [X] 1B.1      | Biome noise generator          | Fails if known `(x, z)` returns wrong biome         |
+| [X] 1B.2      | Heightmap sampler              | Fails if height doesn’t match reference             |
+| [X] 1B.3      | River noise patch              | Fails if expected signal is missing                 |
+| [X] 1B.4      | Patch assembler (x, z window)  | Fails if array shapes or padding are invalid        |
+| [X] 1B.5      | Save `.npz` seed-only input    | Fails if file missing expected keys                 |
 
 ---
 
