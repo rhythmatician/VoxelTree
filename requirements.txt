@@ -29,3 +29,6 @@ mypy
 # === Optional: Seed-based Input Generator ===
 noise                 # Perlin/Simplex for river/biome simulation (Python)
 opensimplex          # Optional: smoother noise
+
+# === Optional: Additional Tools ===
+pre-commit            # For pre-commit hooks
