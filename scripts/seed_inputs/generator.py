@@ -43,7 +43,7 @@ class SeedInputGenerator:
         self.river_noise = opensimplex.OpenSimplex(seed=self.seed + 2)
 
         logger.info(
-            f"SeedInputGenerator initialized with seed={self.seed}, biome_source={self.biome_source}"
+            f"SeedInputGenerator initialized with seed={self.seed}, biome_source={self.biome_source}"  # noqa: E501
         )
 
     def _load_config(self):

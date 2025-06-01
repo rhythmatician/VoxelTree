@@ -85,7 +85,7 @@ class PatchPairer:
         expected_shape = (16, 16, 384)
         if chunk_data["block_types"].shape != expected_shape:
             raise ValueError(
-                f"Invalid block_types shape: {chunk_data['block_types'].shape}, expected {expected_shape}"
+                f"Invalid block_types shape: {chunk_data['block_types'].shape}, expected {expected_shape}"  # noqa: E501
             )
 
         # Slice chunk into subchunks and create pairs

@@ -82,7 +82,7 @@ class TestPatchGeneration:
                 assert patch["heightmap"].shape == (
                     size,
                     size,
-                ), f"Heightmap shape mismatch: expected ({size}, {size}), got {patch['heightmap'].shape}"
+                ), f"Heightmap shape mismatch: expected ({size}, {size}), got {patch['heightmap'].shape}"  # noqa: E501
                 assert patch["river"].shape == (
                     size,
                     size,
