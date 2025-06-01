@@ -6,11 +6,12 @@ all linked training examples (from Phase 2.2) have correct format and are
 not malformed before being fed to the dataset loader.
 """
 
-import pytest
-import numpy as np
-from pathlib import Path
-import tempfile
 import shutil
+import tempfile
+from pathlib import Path
+
+import numpy as np
+import pytest
 
 # Import the classes we'll be testing (this doesn't exist yet - will fail)
 from scripts.pairing.patch_validator import PatchValidator

@@ -8,13 +8,12 @@ region files and converting them into compressed numpy arrays.
 import logging
 import multiprocessing
 from pathlib import Path
-from typing import Dict, Any, List, Tuple, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
-import numpy as np
 import anvil  # type: ignore
+import numpy as np
 
 from scripts.worldgen.config import load_config
-
 
 logger = logging.getLogger(__name__)
 

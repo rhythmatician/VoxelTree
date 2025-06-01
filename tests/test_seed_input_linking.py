@@ -5,14 +5,16 @@ RED phase tests for linking LOD pairs with seed-derived conditioning variables
 (biomes, heightmaps, river noise) to create complete training examples.
 """
 
-import pytest
-import numpy as np
-from pathlib import Path
-import tempfile
 import shutil
+import tempfile
+from pathlib import Path
+
+import numpy as np
+import pytest
 
 # Import the classes we'll be testing (these will be extended)
-from scripts.pairing.seed_input_linker import SeedInputLinker  # This doesn't exist yet
+from scripts.pairing.seed_input_linker import \
+    SeedInputLinker  # This doesn't exist yet
 
 
 class TestSeedInputLinker:

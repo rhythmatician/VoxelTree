@@ -6,14 +6,15 @@ This module tests the ChunkExtractor class that converts Minecraft region files
 into compressed numpy training data.
 """
 
-import tempfile
 import shutil
+import tempfile
 from pathlib import Path
-import numpy as np
 from unittest.mock import Mock, patch
 
-from scripts.worldgen.config import load_config
+import numpy as np
+
 from scripts.extraction.chunk_extractor import ChunkExtractor
+from scripts.worldgen.config import load_config
 
 
 class TestChunkExtractor:

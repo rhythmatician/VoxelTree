@@ -6,10 +6,11 @@ Validates training example format and detects malformed data.
 """
 
 import logging
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
 import numpy as np
 import yaml
-from pathlib import Path
-from typing import Dict, List, Any, Optional
 
 logger = logging.getLogger(__name__)
 

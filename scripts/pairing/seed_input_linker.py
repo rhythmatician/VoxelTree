@@ -6,11 +6,12 @@ to create complete training examples ready for machine learning.
 """
 
 import logging
+from multiprocessing import cpu_count
+from pathlib import Path
+from typing import Any, Dict, Optional
+
 import numpy as np
 import yaml
-from pathlib import Path
-from typing import Dict, Any, Optional
-from multiprocessing import cpu_count
 
 logger = logging.getLogger(__name__)
 

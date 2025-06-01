@@ -5,10 +5,11 @@ This test suite follows TDD methodology for Phase 1B - Seed-Based Input Generati
 These tests are designed to FAIL initially and guide implementation development.
 """
 
-import pytest
-import numpy as np
-from pathlib import Path
 import tempfile
+from pathlib import Path
+
+import numpy as np
+import pytest
 
 from scripts.seed_inputs.generator import SeedInputGenerator
 

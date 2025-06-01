@@ -6,11 +6,12 @@ Assembles parent-child LOD pairs from extracted chunk data.
 """
 
 import logging
+from multiprocessing import cpu_count
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
 import numpy as np
 import yaml
-from pathlib import Path
-from typing import Dict, List, Any, Optional
-from multiprocessing import cpu_count
 
 logger = logging.getLogger(__name__)
 
