@@ -208,7 +208,7 @@ class WorldGenBootstrap:
             region_dir: Directory containing .mca files
 
         Returns:
-            Dictionary with validation results        """
+            Dictionary with validation results"""
         result: Dict[str, Any] = {
             "files_found": 0,
             "total_size_mb": 0.0,
