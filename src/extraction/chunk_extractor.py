@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Dict, Any, List, Tuple, Optional
 
 import numpy as np
-import anvil
+import anvil  # type: ignore
 
 from worldgen.config import load_config
 

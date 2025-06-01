@@ -4,6 +4,7 @@ torch>=2.0
 torchvision
 tqdm
 PyYAML
+types-PyYAML  # type stubs for yaml
 
 # === Dataset / IO ===
 scipy                 # For interpolation, pooling
@@ -20,6 +21,7 @@ plotly                # Optional: interactive voxel previews
 pytest
 pytest-cov
 psutil                # Memory usage monitoring
+types-psutil   # type stubs for psutil
 
 # === Linting / Formatting / Type Checking (for CI) ===
 black
