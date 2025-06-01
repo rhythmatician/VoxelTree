@@ -47,9 +47,9 @@ class TestChunkExtractor:
                     "min_height": -64,
                     "max_height": 320
                 }
-            }
-        }
-          # Create mock config file
+            }        }
+        
+        # Create mock config file
         self.test_config_path = self.test_temp_dir / "test_config.yaml"
         
         # Write test config to file
@@ -135,10 +135,9 @@ class TestChunkExtractor:
         # Should have correct shape and type
         assert biomes.shape == (16, 16)
         assert biomes.dtype == np.uint8
-        
-        # Should be valid biome IDs (0-255 range)
-        assert np.all(biomes >= 0)
-        assert np.all(biomes <= 255)
+          # Should be valid biome IDs (0-255 range)
+        assert (biomes >= 0).all()
+        assert (biomes <= 255).all()
     
     def test_heightmap_computation(self):
         """Test surface heightmap calculation from blocks."""
@@ -165,9 +164,9 @@ class TestChunkExtractor:
         # Create test chunk data
         test_data = {
             "block_types": np.random.randint(0, 10, size=(16, 16, 384), dtype=np.uint8),
-            "air_mask": np.random.choice([True, False], size=(16, 16, 384)),
-            "biomes": np.random.randint(0, 50, size=(16, 16), dtype=np.uint8),
-            "heightmap": np.random.randint(0, 320, size=(16, 16), dtype=np.uint16),            "chunk_x": np.int32(5),
+            "air_mask": np.random.choice([True, False], size=(16, 16, 384)),            "biomes": np.random.randint(0, 50, size=(16, 16), dtype=np.uint8),
+            "heightmap": np.random.randint(0, 320, size=(16, 16), dtype=np.uint16),
+            "chunk_x": np.int32(5),
             "chunk_z": np.int32(10),
             "region_file": "r.0.0.mca"  # Use regular string instead of np.string_
         }
@@ -280,10 +279,10 @@ class TestChunkExtractor:
             "biomes": np.random.randint(0, 50, size=(16, 16), dtype=np.uint8),
             "heightmap": np.random.randint(0, 320, size=(16, 16), dtype=np.uint16),
             "chunk_x": np.int32(0),
-            "chunk_z": np.int32(0),
-            "region_file": "r.0.0.mca"  # Use regular string
+            "chunk_z": np.int32(0),            "region_file": "r.0.0.mca"  # Use regular string
         }
-          # Create valid file
+        
+        # Create valid file
         valid_path = self.extractor.output_dir / "chunk_0_0.npz"
         np.savez_compressed(valid_path, **valid_data)
         

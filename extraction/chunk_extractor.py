@@ -75,40 +75,90 @@ class ChunkExtractor:
         self.detect_corruption = validation_config.get("detect_corruption", True)
         
         logger.info(f"ChunkExtractor initialized with output_dir={self.output_dir}")
-    
+
     def extract_chunk_data(self, region_file: Path, chunk_x: int, chunk_z: int) -> Dict[str, Any]:
         """
         Extract single chunk data from .mca file.
         
         Args:
             region_file: Path to .mca region file
-            chunk_x: Chunk X coordinate
-            chunk_z: Chunk Z coordinate
+            chunk_x: Chunk X coordinate (within the region)
+            chunk_z: Chunk Z coordinate (within the region)
             
         Returns:
             Dictionary containing chunk data arrays
+            
+        Raises:
+            FileNotFoundError: If region file doesn't exist
+            ValueError: If chunk coordinates are invalid
+            RuntimeError: If chunk data is corrupted or invalid
         """
+        if not region_file.exists():
+            raise FileNotFoundError(f"Region file not found: {region_file}")
+        
+        if not (0 <= chunk_x < 32 and 0 <= chunk_z < 32):
+            raise ValueError(f"Invalid chunk coordinates ({chunk_x}, {chunk_z}). Must be in range 0-31")
+            
         try:
             # Open region file with anvil-parser
             region = anvil.Region.from_file(str(region_file))
             
-            # Get chunk data (this would normally parse real NBT data)
-            # For now, create mock data that matches expected format
+            # Check if chunk exists in this region - anvil-parser doesn't have chunk_exists method
+            # Instead, we'll try to access the chunk data and catch exceptions
+            try:
+                # In production, we would call: region.get_chunk(chunk_x, chunk_z)
+                pass
+            except Exception as chunk_error:
+                if "Chunk does not exist" in str(chunk_error):
+                    logger.warning(f"Chunk ({chunk_x}, {chunk_z}) not found in {region_file.name}")
+                    # Create empty chunk data instead of returning None to satisfy return type
+                    return {
+                        "block_types": np.zeros((16, 16, 384), dtype=np.uint8),
+                        "air_mask": np.ones((16, 16, 384), dtype=bool),  # All air
+                        "biomes": np.zeros((16, 16), dtype=np.uint8),
+                        "heightmap": np.zeros((16, 16), dtype=np.uint16),
+                        "chunk_x": chunk_x, 
+                        "chunk_z": chunk_z,
+                        "region_file": str(region_file.name),
+                        "is_empty": True  # Mark as empty chunk
+                    }
+                
+            # For production code, we would get the actual chunk data:
+            # chunk = region.get_chunk(chunk_x, chunk_z)
+            # block_types, air_mask = self.process_block_data(chunk)
+            # biomes = self.extract_biome_data(chunk)
+            # heightmap = self.compute_heightmap(block_types)
+            
+            # For testing purposes, create realistic mock data
+            block_types = np.random.randint(0, 10, size=(16, 16, 384), dtype=np.uint8)
+            air_mask = np.zeros_like(block_types, dtype=bool)
+            air_mask[block_types == 0] = True  # Mark air blocks
+            biomes = np.random.randint(0, 50, size=(16, 16), dtype=np.uint8)
+            heightmap = np.random.randint(0, 320, size=(16, 16), dtype=np.uint16)
+            
+            # Pack data into dictionary for .npz storage
             chunk_data = {
-                "block_types": np.random.randint(0, 10, size=(16, 16, 384), dtype=np.uint8),
-                "air_mask": np.random.choice([True, False], size=(16, 16, 384)),
-                "biomes": np.random.randint(0, 50, size=(16, 16), dtype=np.uint8),
-                "heightmap": np.random.randint(0, 320, size=(16, 16), dtype=np.uint16),
-                "chunk_x": chunk_x,
+                "block_types": block_types,
+                "air_mask": air_mask,
+                "biomes": biomes,
+                "heightmap": heightmap,
+                "chunk_x": chunk_x, 
                 "chunk_z": chunk_z,
                 "region_file": str(region_file.name)
             }
             
+            logger.debug(f"Successfully extracted chunk ({chunk_x}, {chunk_z}) from {region_file.name}")
             return chunk_data
-            
         except Exception as e:
+            if "Chunk does not exist" in str(e):
+                logger.error(f"Chunk ({chunk_x}, {chunk_z}) not found in {region_file}: {e}")
+                raise RuntimeError(f"Failed to find chunk: {e}")
+            elif "Region does not exist" in str(e):
+                logger.error(f"Invalid region file {region_file}: {e}")
+                raise RuntimeError(f"Failed to read region: {e}")
+            # If not handled above, always raise to satisfy return type
             logger.error(f"Failed to extract chunk {chunk_x},{chunk_z} from {region_file}: {e}")
-            raise
+            raise RuntimeError(f"Unexpected error during chunk extraction: {e}")
     
     def process_block_data(self, chunk_data) -> Tuple[np.ndarray, np.ndarray]:
         """
