@@ -7,8 +7,6 @@ and procedural noise for heightmaps and rivers.
 """
 
 import logging
-import subprocess
-import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Tuple, Any, Optional
@@ -59,9 +57,7 @@ class SeedInputGenerator:
                 config = yaml.safe_load(f)
                 self.config = config.get("seed_inputs", {})
         else:
-            logger.warning(
-                f"Config file not found at {self.config_path}, using defaults"
-            )
+            logger.warning(f"Config file not found at {self.config_path}, using defaults")
             self.config = {}
 
         # Set biome generation parameters
@@ -96,13 +92,8 @@ class SeedInputGenerator:
             self.java_tool_path = Path(self.java_tool)
             self.fallback_tool_path = Path(self.fallback_tool)
 
-            if (
-                not self.java_tool_path.exists()
-                and not self.fallback_tool_path.exists()
-            ):
-                logger.warning(
-                    "No vanilla biome tools found, falling back to noise-based biomes"
-                )
+            if not self.java_tool_path.exists() and not self.fallback_tool_path.exists():
+                logger.warning("No vanilla biome tools found, falling back to noise-based biomes")
                 self.biome_source = "noise"
                 self._init_noise_biomes()
         else:
@@ -160,22 +151,14 @@ class SeedInputGenerator:
             Surface height (0-384, compatible with Minecraft)
         """
         # Use medium-frequency noise for realistic terrain
-        noise_value = self.height_noise.noise2(
-            x * self.height_scale, z * self.height_scale
-        )
+        noise_value = self.height_noise.noise2(x * self.height_scale, z * self.height_scale)
 
         # Add some octaves for more realistic terrain
         octave1 = (
-            self.height_noise.noise2(
-                x * self.height_scale * 2, z * self.height_scale * 2
-            )
-            * 0.5
+            self.height_noise.noise2(x * self.height_scale * 2, z * self.height_scale * 2) * 0.5
         )
         octave2 = (
-            self.height_noise.noise2(
-                x * self.height_scale * 4, z * self.height_scale * 4
-            )
-            * 0.25
+            self.height_noise.noise2(x * self.height_scale * 4, z * self.height_scale * 4) * 0.25
         )
 
         combined_noise = noise_value + octave1 + octave2
@@ -200,16 +183,11 @@ class SeedInputGenerator:
             River noise value (typically in [-1, 1])
         """
         # Use river-specific noise for water features
-        river_value = self.river_noise.noise2(
-            x * self.river_scale, z * self.river_scale
-        )
+        river_value = self.river_noise.noise2(x * self.river_scale, z * self.river_scale)
 
         # Add some directionality for river-like features
         directional = (
-            self.river_noise.noise2(
-                x * self.river_scale * 0.5, z * self.river_scale * 2.0
-            )
-            * 0.3
+            self.river_noise.noise2(x * self.river_scale * 0.5, z * self.river_scale * 2.0) * 0.3
         )
 
         return float(river_value + directional)
@@ -293,9 +271,7 @@ class SeedInputGenerator:
         filename = f"patch_x{x}_z{z}.npz"
         return output_dir / filename
 
-    def generate_batch(
-        self, coordinates: List[Tuple[int, int]], size: int
-    ) -> List[Dict[str, Any]]:
+    def generate_batch(self, coordinates: List[Tuple[int, int]], size: int) -> List[Dict[str, Any]]:
         """
         Generate multiple patches in a batch.
 

@@ -41,9 +41,7 @@ class SeedInputLinker:
         # Extract pairing configuration
         pairing_config = config.get("pairing", {})
         self.pairs_dir = Path(pairing_config.get("output_dir", "data/pairs"))
-        self.seed_inputs_dir = Path(
-            pairing_config.get("seed_inputs_dir", "data/seed_inputs")
-        )
+        self.seed_inputs_dir = Path(pairing_config.get("seed_inputs_dir", "data/seed_inputs"))
         self.output_dir = Path(pairing_config.get("linked_output_dir", "data/linked"))
 
         # Extract seed from worldgen config
@@ -115,9 +113,7 @@ class SeedInputLinker:
             raise FileNotFoundError(f"Seed input file not found: {seed_file}")
 
         seed_data = np.load(seed_file)
-        seed_dict = {
-            key: seed_data[key] for key in seed_data.files
-        }  # Validate coordinate match
+        seed_dict = {key: seed_data[key] for key in seed_data.files}  # Validate coordinate match
         if not self.validate_coordinate_match(pair_dict, seed_dict):
             raise ValueError("Coordinate mismatch between pair and seed data")
 
@@ -152,14 +148,12 @@ class SeedInputLinker:
 
         if strict and not matches:
             raise ValueError(
-                f"Coordinate mismatch: pair({pair_x}, {pair_z}) vs seed({seed_x}, {seed_z})"
+                f"Coordinate mismatch: pair({pair_x}, {pair_z}) vs seed({seed_x}, {seed_z})"  # noqa: E501
             )
 
         return matches
 
-    def extract_biome_conditioning(
-        self, biomes: np.ndarray, y_index: int
-    ) -> np.ndarray:
+    def extract_biome_conditioning(self, biomes: np.ndarray, y_index: int) -> np.ndarray:
         """
         Extract biome conditioning features for a specific y-level.
 
@@ -174,9 +168,7 @@ class SeedInputLinker:
         # In the future, this could include y-level specific biome effects
         return biomes.astype(np.uint8)
 
-    def extract_height_conditioning(
-        self, heightmap: np.ndarray, y_index: int
-    ) -> np.ndarray:
+    def extract_height_conditioning(self, heightmap: np.ndarray, y_index: int) -> np.ndarray:
         """
         Extract height-relative conditioning for a specific y-level.
 
@@ -198,9 +190,7 @@ class SeedInputLinker:
 
         return height_relative.astype(np.float32)
 
-    def extract_river_conditioning(
-        self, river_noise: np.ndarray, y_index: int
-    ) -> np.ndarray:
+    def extract_river_conditioning(self, river_noise: np.ndarray, y_index: int) -> np.ndarray:
         """
         Extract river conditioning with y-level specific effects.
 
@@ -238,12 +228,8 @@ class SeedInputLinker:
         y_index = int(pair_data["y_index"])
 
         # Extract conditioning variables
-        biome_conditioning = self.extract_biome_conditioning(
-            seed_data["biomes"], y_index
-        )
-        heightmap_conditioning = self.extract_height_conditioning(
-            seed_data["heightmap"], y_index
-        )
+        biome_conditioning = self.extract_biome_conditioning(seed_data["biomes"], y_index)
+        heightmap_conditioning = self.extract_height_conditioning(seed_data["heightmap"], y_index)
         river_conditioning = self.extract_river_conditioning(
             seed_data["river_noise"], y_index
         )  # Combine all data
@@ -269,9 +255,7 @@ class SeedInputLinker:
 
         return linked_example
 
-    def save_linked_example_npz(
-        self, linked_example: Dict[str, Any], output_path: Path
-    ) -> Path:
+    def save_linked_example_npz(self, linked_example: Dict[str, Any], output_path: Path) -> Path:
         """
         Save a linked training example to compressed NPZ format.
 

@@ -9,7 +9,6 @@ import pytest
 import numpy as np
 from pathlib import Path
 import tempfile
-import shutil
 
 from scripts.seed_inputs.generator import SeedInputGenerator
 
@@ -26,12 +25,8 @@ class TestSeedInputGeneratorBounds:
 
         for x, z in test_coords:
             biome_id = generator.get_biome(x, z)
-            assert isinstance(
-                biome_id, int
-            ), f"Biome ID should be int, got {type(biome_id)}"
-            assert (
-                0 <= biome_id <= 255
-            ), f"Biome ID {biome_id} out of range [0, 255] at ({x}, {z})"
+            assert isinstance(biome_id, int), f"Biome ID should be int, got {type(biome_id)}"
+            assert 0 <= biome_id <= 255, f"Biome ID {biome_id} out of range [0, 255] at ({x}, {z})"
 
     def test_heightmap_bounds_are_valid(self):
         """Test that heightmap values are within valid Minecraft range [0, 384]."""
@@ -43,9 +38,7 @@ class TestSeedInputGeneratorBounds:
         for x, z in test_coords:
             height = generator.get_heightmap(x, z)
             assert isinstance(height, int), f"Height should be int, got {type(height)}"
-            assert (
-                0 <= height <= 384
-            ), f"Height {height} out of range [0, 384] at ({x}, {z})"
+            assert 0 <= height <= 384, f"Height {height} out of range [0, 384] at ({x}, {z})"
 
     def test_river_noise_is_float(self):
         """Test that river noise returns float values."""
@@ -79,9 +72,7 @@ class TestPatchGeneration:
                 patch = generator.get_patch(x, z, size)
 
                 # Check that patch is a dictionary
-                assert isinstance(
-                    patch, dict
-                ), f"Patch should be dict, got {type(patch)}"
+                assert isinstance(patch, dict), f"Patch should be dict, got {type(patch)}"
 
                 # Check array shapes
                 assert patch["biomes"].shape == (
@@ -155,15 +146,11 @@ class TestFileOperations:
                 loaded_keys = set(loaded_data.keys())
 
                 missing_keys = required_keys - loaded_keys
-                assert (
-                    not missing_keys
-                ), f"NPZ file missing required keys: {missing_keys}"
+                assert not missing_keys, f"NPZ file missing required keys: {missing_keys}"
 
                 # Verify data integrity
                 np.testing.assert_array_equal(loaded_data["biomes"], patch["biomes"])
-                np.testing.assert_array_equal(
-                    loaded_data["heightmap"], patch["heightmap"]
-                )
+                np.testing.assert_array_equal(loaded_data["heightmap"], patch["heightmap"])
                 np.testing.assert_array_equal(loaded_data["river"], patch["river"])
                 assert loaded_data["x"] == patch["x"]
                 assert loaded_data["z"] == patch["z"]
@@ -238,9 +225,7 @@ class TestBatchOperations:
             # Verify all files exist
             for path in saved_paths:
                 assert path.exists(), f"Saved file {path} does not exist"
-                assert (
-                    path.suffix == ".npz"
-                ), f"Saved file {path} should have .npz extension"
+                assert path.suffix == ".npz", f"Saved file {path} should have .npz extension"
 
             # Verify filenames match coordinates
             for i, (x, z) in enumerate(coordinates):

@@ -73,9 +73,7 @@ class ChunkExtractor:
 
         logger.info(f"ChunkExtractor initialized with output_dir={self.output_dir}")
 
-    def extract_chunk_data(
-        self, region_file: Path, chunk_x: int, chunk_z: int
-    ) -> Dict[str, Any]:
+    def extract_chunk_data(self, region_file: Path, chunk_x: int, chunk_z: int) -> Dict[str, Any]:
         """
         Extract single chunk data from .mca file.
 
@@ -112,9 +110,7 @@ class ChunkExtractor:
                 pass
             except Exception as chunk_error:
                 if "Chunk does not exist" in str(chunk_error):
-                    logger.warning(
-                        f"Chunk ({chunk_x}, {chunk_z}) not found in {region_file.name}"
-                    )
+                    logger.warning(f"Chunk ({chunk_x}, {chunk_z}) not found in {region_file.name}")
                     # Create empty chunk data instead of returning None
                     return {
                         "block_types": np.zeros((16, 16, 384), dtype=np.uint8),
@@ -157,17 +153,13 @@ class ChunkExtractor:
             return chunk_data
         except Exception as e:
             if "Chunk does not exist" in str(e):
-                logger.error(
-                    f"Chunk ({chunk_x}, {chunk_z}) not found in {region_file}: {e}"
-                )
+                logger.error(f"Chunk ({chunk_x}, {chunk_z}) not found in {region_file}: {e}")
                 raise RuntimeError(f"Failed to find chunk: {e}")
             elif "Region does not exist" in str(e):
                 logger.error(f"Invalid region file {region_file}: {e}")
                 raise RuntimeError(f"Failed to read region: {e}")
             # If not handled above, always raise to satisfy return type
-            logger.error(
-                f"Failed to extract chunk {chunk_x},{chunk_z} from {region_file}: {e}"
-            )
+            logger.error(f"Failed to extract chunk {chunk_x},{chunk_z} from {region_file}: {e}")
             raise RuntimeError(f"Unexpected error during chunk extraction: {e}")
 
     def process_block_data(self, chunk_data) -> Tuple[np.ndarray, np.ndarray]:
@@ -182,9 +174,7 @@ class ChunkExtractor:
         """
         # Convert from Minecraft YZX format to XZY format for training
         blocks_yzx = chunk_data.blocks  # Shape: (16, 384, 16)
-        block_types = np.transpose(blocks_yzx, (0, 2, 1)).astype(
-            np.uint8
-        )  # Shape: (16, 16, 384)
+        block_types = np.transpose(blocks_yzx, (0, 2, 1)).astype(np.uint8)  # Shape: (16, 16, 384)
 
         # Create air mask
         air_mask = np.isin(block_types, list(self.air_blocks))
@@ -236,9 +226,7 @@ class ChunkExtractor:
 
         return heightmap.astype(np.uint16)
 
-    def save_chunk_npz(
-        self, chunk_data: Dict[str, Any], chunk_x: int, chunk_z: int
-    ) -> Path:
+    def save_chunk_npz(self, chunk_data: Dict[str, Any], chunk_x: int, chunk_z: int) -> Path:
         """
         Save chunk data as compressed .npz file.
 
@@ -276,15 +264,11 @@ class ChunkExtractor:
             for chunk_x in range(2):  # Mock: 2x2 chunks per region
                 for chunk_z in range(2):
                     try:
-                        chunk_data = self.extract_chunk_data(
-                            region_file, chunk_x, chunk_z
-                        )
+                        chunk_data = self.extract_chunk_data(region_file, chunk_x, chunk_z)
                         output_path = self.save_chunk_npz(chunk_data, chunk_x, chunk_z)
                         output_files.append(output_path)
                     except Exception as e:
-                        logger.warning(
-                            f"Failed to extract chunk {chunk_x},{chunk_z}: {e}"
-                        )
+                        logger.warning(f"Failed to extract chunk {chunk_x},{chunk_z}: {e}")
                         continue
 
             logger.info(f"Extracted {len(output_files)} chunks from {region_file.name}")
@@ -310,9 +294,7 @@ class ChunkExtractor:
         if num_workers is None:
             num_workers = self.num_workers
 
-        logger.info(
-            f"Processing {len(region_files)} regions with {num_workers} workers"
-        )
+        logger.info(f"Processing {len(region_files)} regions with {num_workers} workers")
 
         # Use multiprocessing Pool
         with multiprocessing.Pool(processes=num_workers) as pool:
@@ -326,9 +308,7 @@ class ChunkExtractor:
             else:
                 all_output_files.append(str(result))
 
-        logger.info(
-            f"Parallel extraction complete: {len(all_output_files)} chunks processed"
-        )
+        logger.info(f"Parallel extraction complete: {len(all_output_files)} chunks processed")
         return all_output_files
 
     def validate_extraction_results(self, output_dir: Path) -> Dict[str, Any]:
@@ -363,13 +343,9 @@ class ChunkExtractor:
                     "region_file",
                 ]
 
-                missing_fields = [
-                    field for field in required_fields if field not in data
-                ]
+                missing_fields = [field for field in required_fields if field not in data]
                 if missing_fields:
-                    corrupted_files.append(
-                        f"{npz_file.name} (missing: {missing_fields})"
-                    )
+                    corrupted_files.append(f"{npz_file.name} (missing: {missing_fields})")
                     continue
 
                 # Check array shapes
@@ -402,7 +378,5 @@ class ChunkExtractor:
             "total_chunks": len(npz_files),
         }
 
-        logger.info(
-            f"Validation complete: {len(valid_files)}/{len(npz_files)} files valid"
-        )
+        logger.info(f"Validation complete: {len(valid_files)}/{len(npz_files)} files valid")
         return validation_result

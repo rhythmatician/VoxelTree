@@ -1,48 +1,93 @@
-✅ Perfectly summarized — your development environment for VoxelTree is ready and robust!
-
-Here’s a handy `README` block you can paste into `docs/ENVIRONMENT.md` (optional), or into your internal wiki or onboarding guide:
-
----
-
-## 🧪 VoxelTree Development Environment Setup
+## 🧪 VoxelTree Development Environment Setup (2025)
 
 ### ✅ Virtual Environment Summary
 
-| Component        | Details                                         |
-| ---------------- | ----------------------------------------------- |
-| Python Version   | 3.11 or higher (currently 3.13.3 tested)        |
-| Environment Name | `venv` (created in project root)                |
-| Package Manager  | `pip` (upgraded to 25.1.1)                      |
-| Installed Core   | `torch`, `numpy`, `scipy`, `tqdm`, `PyYAML`     |
-| Visualization    | `matplotlib`, `seaborn`, `plotly`               |
-| Testing          | `pytest`, `pytest-cov`                          |
-| Lint/Type Check  | `black`, `flake8`, `mypy`                       |
-| Optional Noise   | `opensimplex` (✅), `noise` (❌ build tools req.) |
+| Component           | Details                                                |
+| ------------------- | ------------------------------------------------------ |
+| **Python Version**  | 3.13+ (fully tested with 3.13.1, 3.13.3 recommended)   |
+| **Env Tool**        | Built-in `venv` (resides in project root)              |
+| **Package Manager** | `pip` (>=25.1.1 confirmed)                             |
+| **Core Libraries**  | `torch`, `numpy`, `scipy`, `PyYAML`, `tqdm`            |
+| **World Tools**     | `anvil-parser`, `cubiomes` (cloned, built from source) |
+| **Noise Gen**       | `opensimplex`                                          |
+| **Testing**         | `pytest`, `pytest-cov`, `hypothesis`                   |
+| **Linting/Type**    | `black`, `flake8`, `mypy`, `autoflake`                 |
+| **Pre-Commit**      | `pre-commit` with automated formatting and cleanup     |
+| **Visualization**   | `matplotlib`, `plotly`                                 |
 
 ---
 
-### 🚀 Commands
+### ⚙️ Pre-commit Hooks
+
+These are **run automatically before each commit**:
+
+| Hook        | What It Does                              |
+| ----------- | ----------------------------------------- |
+| `black`     | Formats code (max line length = 100)      |
+| `autoflake` | Removes unused imports and variables      |
+| `flake8`    | Lints with `.flake8` rules (E501 ignored) |
+| `mypy`      | Static type checks                        |
+| `pytest`    | Runs unit tests (quick validation gate)   |
+
+To set it up:
 
 ```bash
-# Activate environment (Windows)
-source venv/Scripts/activate
+pre-commit install
+pre-commit run --all-files
+```
+
+---
+
+### 🚀 Common Commands
+
+```bash
+# Activate virtual environment
+source venv/Scripts/activate  # Windows
+source venv/bin/activate      # macOS/Linux
+
+# Install Python packages
+pip install -r requirements.txt
 
 # Run tests
 pytest
 
-# Run type checker
+# Type-check with mypy
 mypy train scripts tests
 
-# Format code
+# Lint manually (if needed)
+flake8
+
+# Format with black
 black .
 
-# Deactivate environment
+# Run autoflake manually
+autoflake --remove-all-unused-imports --remove-unused-variables --in-place --recursive .
+
+# Deactivate
 deactivate
 ```
 
 ---
 
+### 📂 Requirements File Structure
+
+* `requirements.txt` → base install
+* `.pre-commit-config.yaml` → hooks
+* `.flake8` → linting rules
+
+---
+
+### 🧠 Tips for Copilot Integration
+
+* Keep `docs/PROJECT-OUTLINE.md` and `.github/copilot-instructions.md` up to date.
+* Use consistent, minimal test output — it's Copilot’s reference point for next actions.
+
+---
+
 ### ⚠️ Known Issues
 
-* `noise` package requires Visual C++ Build Tools on Windows.
-* Use `opensimplex` for seed-based river and biome noise instead.
+| Issue                         | Workaround                                       |
+| ----------------------------- | ------------------------------------------------ |
+| Visual C++ needed for `noise` | Use `opensimplex` instead — already included     |
+| Some hooks slow on first run  | Cache builds automatically on subsequent commits |
+| `cubiomes` is not on PyPI     | Clone & build from source in `tools/cubiomes/`   |

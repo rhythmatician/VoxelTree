@@ -55,9 +55,7 @@ class TestWorldGenBootstrap:
         mock_subprocess.return_value = MagicMock(returncode=0)
 
         # Test region generation - this creates the world directory
-        result_path = self.bootstrap.generate_region_batch(
-            x_range=(0, 32), z_range=(0, 32)
-        )
+        result_path = self.bootstrap.generate_region_batch(x_range=(0, 32), z_range=(0, 32))
 
         # The world directory should exist
         assert result_path.exists()

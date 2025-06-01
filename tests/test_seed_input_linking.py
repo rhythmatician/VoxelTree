@@ -8,12 +8,10 @@ RED phase tests for linking LOD pairs with seed-derived conditioning variables
 import pytest
 import numpy as np
 from pathlib import Path
-from unittest.mock import Mock, patch
 import tempfile
 import shutil
 
 # Import the classes we'll be testing (these will be extended)
-from scripts.pairing.patch_pairer import PatchPairer
 from scripts.pairing.seed_input_linker import SeedInputLinker  # This doesn't exist yet
 
 
@@ -96,9 +94,7 @@ class TestBiomeHeightmapPairing:
 
         pair_file = pairs_dir / "pair_chunk_10_15_y5.npz"
 
-        linked_example = linker.link_pair_with_seed_inputs(
-            pair_file, seed_inputs_dir, output_dir
-        )
+        linked_example = linker.link_pair_with_seed_inputs(pair_file, seed_inputs_dir, output_dir)
 
         # Should contain all original pair data plus seed inputs
         assert "parent_voxel" in linked_example
@@ -156,7 +152,6 @@ class TestBiomeHeightmapPairing:
 
         heightmap = np.random.randint(50, 150, size=(16, 16), dtype=np.uint16)
         y_index = 5
-        y_world = y_index * 16 - 64  # Convert to world Y coordinate
 
         height_conditioning = linker.extract_height_conditioning(heightmap, y_index)
 
@@ -198,12 +193,8 @@ class TestBatchLinking:
                 # Create seed input for this chunk
                 seed_data = {
                     "biomes": np.random.randint(0, 50, size=(16, 16), dtype=np.uint8),
-                    "heightmap": np.random.randint(
-                        60, 100, size=(16, 16), dtype=np.uint16
-                    ),
-                    "river_noise": np.random.uniform(-1, 1, size=(16, 16)).astype(
-                        np.float32
-                    ),
+                    "heightmap": np.random.randint(60, 100, size=(16, 16), dtype=np.uint16),
+                    "river_noise": np.random.uniform(-1, 1, size=(16, 16)).astype(np.float32),
                     "chunk_x": chunk_x,
                     "chunk_z": chunk_z,
                 }
@@ -215,12 +206,8 @@ class TestBatchLinking:
                 for y_index in range(3):  # Just 3 y-levels for testing
                     pair_data = {
                         "parent_voxel": np.random.choice([True, False], size=(8, 8, 8)),
-                        "target_mask": np.random.choice(
-                            [True, False], size=(16, 16, 16)
-                        ),
-                        "target_types": np.random.randint(
-                            0, 5, size=(16, 16, 16), dtype=np.uint8
-                        ),
+                        "target_mask": np.random.choice([True, False], size=(16, 16, 16)),
+                        "target_types": np.random.randint(0, 5, size=(16, 16, 16), dtype=np.uint8),
                         "y_index": y_index,
                         "chunk_x": chunk_x,
                         "chunk_z": chunk_z,
@@ -242,9 +229,7 @@ class TestBatchLinking:
         seed_inputs_dir = temp_batch_data / "seed_inputs"
         output_dir = temp_batch_data / "linked"
 
-        linked_count = linker.process_batch_linking(
-            pairs_dir, seed_inputs_dir, output_dir
-        )
+        linked_count = linker.process_batch_linking(pairs_dir, seed_inputs_dir, output_dir)
 
         # Should process 2x2 chunks × 3 y-levels = 12 linked examples
         assert linked_count == 12

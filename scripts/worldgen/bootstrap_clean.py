@@ -73,9 +73,7 @@ class WorldGenBootstrap:
         hash_bytes = hashlib.sha256(seed.encode()).digest()
         return int.from_bytes(hash_bytes[:4], byteorder="big", signed=True)
 
-    def generate_region_batch(
-        self, x_range: Tuple[int, int], z_range: Tuple[int, int]
-    ) -> Path:
+    def generate_region_batch(self, x_range: Tuple[int, int], z_range: Tuple[int, int]) -> Path:
         """
         Generate .mca files for specified chunk ranges.
 
@@ -160,15 +158,13 @@ class WorldGenBootstrap:
             "--output",
             str(world_dir),
             "--region-x",
-            f"{x_range[0]//32},{x_range[1]//32}",
+            f"{x_range[0] // 32},{x_range[1] // 32}",
             "--region-z",
-            f"{z_range[0]//32},{z_range[1]//32}",
+            f"{z_range[0] // 32},{z_range[1] // 32}",
         ]
 
         try:
-            result = subprocess.run(
-                cmd, capture_output=True, text=True, timeout=300
-            )  # noqa: E501
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)  # noqa: E501
             return result.returncode == 0
         except (subprocess.TimeoutExpired, FileNotFoundError):
             return False
@@ -198,7 +194,6 @@ class WorldGenBootstrap:
         # For now, just log that we're reducing batch size
         # In full implementation, this would modify internal batch parameters
         logger.info("Reducing batch size for retry after heap exhaustion")
-        pass
 
     def validate_mca_output(self, region_dir: Path) -> Dict[str, Any]:
         """
@@ -232,8 +227,7 @@ class WorldGenBootstrap:
 
         result["total_size_mb"] = total_bytes / (1024 * 1024)
         logger.info(
-            f"MCA validation: {result['files_found']} files, "
-            f"{result['total_size_mb']:.1f}MB"
+            f"MCA validation: {result['files_found']} files, " f"{result['total_size_mb']:.1f}MB"
         )
         return result
 
@@ -248,18 +242,13 @@ class WorldGenBootstrap:
             return
 
         # Get all world directories sorted by name (which includes timestamp)
-        world_dirs = sorted(
-            [d for d in self.temp_world_dir.iterdir() if d.is_dir()]
-        )  # noqa: E501
+        world_dirs = sorted([d for d in self.temp_world_dir.iterdir() if d.is_dir()])  # noqa: E501
 
         # Remove all but the latest N directories
-        to_remove = (
-            world_dirs[:-keep_latest] if len(world_dirs) > keep_latest else []
-        )  # noqa: E501
+        to_remove = world_dirs[:-keep_latest] if len(world_dirs) > keep_latest else []  # noqa: E501
 
         logger.info(
-            f"Cleaning up {len(to_remove)} old world directories, "
-            f"keeping {keep_latest}"
+            f"Cleaning up {len(to_remove)} old world directories, " f"keeping {keep_latest}"
         )
 
         for world_dir in to_remove:

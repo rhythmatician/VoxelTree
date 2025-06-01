@@ -9,7 +9,6 @@ patch pairing functionality.
 import pytest
 import numpy as np
 from pathlib import Path
-from unittest.mock import Mock, patch
 import tempfile
 import shutil
 
@@ -150,9 +149,7 @@ class TestLODAlignment:
 
         # Invalid LOD pair (wrong dimensions)
         invalid_parent = np.ones((4, 4, 4), dtype=bool)
-        is_invalid = validator.validate_lod_alignment(
-            invalid_parent, target, lod_level=1
-        )
+        is_invalid = validator.validate_lod_alignment(invalid_parent, target, lod_level=1)
         assert is_invalid is False
 
     def test_detect_lod_mismatch(self):
@@ -186,14 +183,10 @@ class TestBatchPairProcessing:
         for x in range(3):
             for z in range(3):
                 chunk_data = {
-                    "block_types": np.random.randint(
-                        0, 5, size=(16, 16, 384), dtype=np.uint8
-                    ),
+                    "block_types": np.random.randint(0, 5, size=(16, 16, 384), dtype=np.uint8),
                     "air_mask": np.random.choice([True, False], size=(16, 16, 384)),
                     "biomes": np.random.randint(0, 50, size=(16, 16), dtype=np.uint8),
-                    "heightmap": np.random.randint(
-                        60, 100, size=(16, 16), dtype=np.uint16
-                    ),
+                    "heightmap": np.random.randint(60, 100, size=(16, 16), dtype=np.uint16),
                     "chunk_x": np.int32(x),
                     "chunk_z": np.int32(z),
                     "region_file": f"test_region_{x}_{z}.mca",
@@ -225,9 +218,7 @@ class TestBatchPairProcessing:
         chunks_dir = temp_batch_dir / "chunks"
         output_dir = temp_batch_dir / "pairs_parallel"
 
-        pair_count = pairer.process_batch_parallel(
-            chunks_dir, output_dir, num_workers=2
-        )
+        pair_count = pairer.process_batch_parallel(chunks_dir, output_dir, num_workers=2)
 
         # Should produce same result as sequential processing
         assert pair_count == 216

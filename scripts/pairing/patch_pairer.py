@@ -9,9 +9,8 @@ import logging
 import numpy as np
 import yaml
 from pathlib import Path
-from typing import Dict, List, Any, Optional, Tuple
-from multiprocessing import Pool, cpu_count
-import shutil
+from typing import Dict, List, Any, Optional
+from multiprocessing import cpu_count
 
 logger = logging.getLogger(__name__)
 
@@ -42,12 +41,8 @@ class PatchPairer:
 
         # Extract pairing configuration
         pairing_config = config.get("pairing", {})
-        self.extracted_data_dir = Path(
-            pairing_config.get("extracted_data_dir", "data/chunks")
-        )
-        self.seed_inputs_dir = Path(
-            pairing_config.get("seed_inputs_dir", "data/seed_inputs")
-        )
+        self.extracted_data_dir = Path(pairing_config.get("extracted_data_dir", "data/chunks"))
+        self.seed_inputs_dir = Path(pairing_config.get("seed_inputs_dir", "data/seed_inputs"))
         self.output_dir = Path(pairing_config.get("output_dir", "data/pairs"))
         self.lod_levels = pairing_config.get("lod_levels", 4)
 
@@ -84,9 +79,7 @@ class PatchPairer:
         ]
         for key in required_keys:
             if key not in chunk_data:
-                raise KeyError(
-                    f"Missing required key '{key}' in chunk file {chunk_file}"
-                )
+                raise KeyError(f"Missing required key '{key}' in chunk file {chunk_file}")
 
         # Validate dimensions
         expected_shape = (16, 16, 384)
@@ -163,9 +156,7 @@ class PatchPairer:
 
         return pooled
 
-    def create_training_pair(
-        self, subchunk: Dict[str, Any], lod_level: int
-    ) -> Dict[str, Any]:
+    def create_training_pair(self, subchunk: Dict[str, Any], lod_level: int) -> Dict[str, Any]:
         """
         Create a training pair from a subchunk.
 
@@ -238,9 +229,7 @@ class PatchPairer:
                 self.save_pair_npz(pair, output_path)
                 total_pairs += 1
 
-        logger.info(
-            f"Processed {len(chunk_files)} chunks into {total_pairs} training pairs"
-        )
+        logger.info(f"Processed {len(chunk_files)} chunks into {total_pairs} training pairs")
         return total_pairs
 
     def process_batch_parallel(
@@ -260,7 +249,7 @@ class PatchPairer:
         if num_workers is None:
             num_workers = min(cpu_count(), 4)  # Reasonable default
 
-        chunk_files = list(chunks_dir.glob("*.npz"))
+        list(chunks_dir.glob("*.npz"))
 
         # For this minimal implementation, we'll just call the sequential version
         # In a full implementation, we'd use multiprocessing.Pool
@@ -291,10 +280,7 @@ class LODValidator:
             expected_parent_shape = (8, 8, 8)
             expected_target_shape = (16, 16, 16)
 
-            return (
-                parent.shape == expected_parent_shape
-                and target.shape == expected_target_shape
-            )
+            return parent.shape == expected_parent_shape and target.shape == expected_target_shape
 
         # For other LOD levels, implement additional validation logic as needed
         return True

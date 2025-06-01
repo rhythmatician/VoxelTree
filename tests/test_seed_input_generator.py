@@ -5,7 +5,6 @@ Following TDD RED phase: Write failing tests first.
 These tests define the expected behavior for seed-based conditioning variables.
 """
 
-import pytest
 import numpy as np
 from pathlib import Path
 import tempfile
@@ -57,8 +56,8 @@ class TestSeedInputGenerator:
         generator2 = SeedInputGenerator(seed=654321)
 
         # Same coordinates with different seeds should potentially differ
-        biome1 = self.generator.get_biome(50, 50)
-        biome2 = generator2.get_biome(50, 50)
+        self.generator.get_biome(50, 50)
+        generator2.get_biome(50, 50)
 
         # While they might be the same by chance, the generators should be different objects
         assert self.generator.seed != generator2.seed
@@ -85,9 +84,7 @@ class TestSeedInputGenerator:
 
         # Heights should not be wildly different (within 50 blocks)
         height_diff = abs(height_center - height_nearby)
-        assert (
-            height_diff <= 50
-        ), f"Heights too different: {height_center} vs {height_nearby}"
+        assert height_diff <= 50, f"Heights too different: {height_center} vs {height_nearby}"
 
     # TDD Cycle 1B.3: River signal patch
     def test_river_noise_valid_range(self):
@@ -224,7 +221,7 @@ class TestSeedInputGenerator:
     def test_save_patch_naming_convention(self):
         """Test that automatic naming follows the expected convention."""
         x, z = 128, 256
-        patch = self.generator.get_patch(x, z, 16)
+        self.generator.get_patch(x, z, 16)
 
         # Test auto-naming
         auto_path = self.generator.get_patch_filename(x, z, self.test_output_dir)
@@ -301,9 +298,7 @@ class TestSeedInputIntegration:
 
         # Terrain should have some variation but not be too extreme
         height_std = np.std(heights)
-        assert (
-            5 <= height_std <= 100
-        ), f"Terrain variation unrealistic: std={height_std}"
+        assert 5 <= height_std <= 100, f"Terrain variation unrealistic: std={height_std}"
 
         # Should not have impossible height values
         assert np.all(heights >= 0)
