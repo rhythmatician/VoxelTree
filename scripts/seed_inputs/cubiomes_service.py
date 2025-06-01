@@ -5,15 +5,13 @@ This module provides deterministic biome and height generation using the cubiome
 C library via subprocess calls to a compiled CLI tool.
 """
 
-import json
 import logging
 import os
 import subprocess
 import tempfile
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Dict, Optional, Tuple
 
-import numpy as np
 
 logger = logging.getLogger(__name__)
 

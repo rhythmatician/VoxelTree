@@ -5,7 +5,6 @@ This module provides a service for looking up biome IDs using vanilla Minecraft
 algorithms via external Java tools or cached results.
 """
 
-import hashlib
 import json
 import logging
 import subprocess
