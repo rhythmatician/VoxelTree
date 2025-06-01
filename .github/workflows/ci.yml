@@ -33,7 +33,7 @@ jobs:
         run: flake8 .
 
       - name: Type check with mypy
-        run: mypy src tests
+        run: mypy --explicit-package-bases src tests
 
       - name: Run unit tests
         run: pytest --tb=short --disable-warnings

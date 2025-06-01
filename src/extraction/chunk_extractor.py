@@ -13,7 +13,7 @@ from typing import Dict, Any, List, Tuple, Optional
 import numpy as np
 import anvil  # type: ignore
 
-from worldgen.config import load_config
+from src.worldgen.config import load_config
 
 
 logger = logging.getLogger(__name__)
