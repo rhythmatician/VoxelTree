@@ -100,8 +100,7 @@ class TestWorldGenBootstrap:
         """Test that validation detects corrupted .mca files."""
         region_dir = self.test_temp_dir / "region"
         region_dir.mkdir(parents=True)
-        
-        # Create corrupted .mca file (too small)
+          # Create corrupted .mca file (too small)
         (region_dir / "r.0.0.mca").write_bytes(b"bad")
         
         validation_result = self.bootstrap.validate_mca_output(region_dir)
@@ -113,7 +112,7 @@ class TestWorldGenBootstrap:
         """Test automatic cleanup respects disk limits."""
         # Create multiple temp world directories
         temp_worlds_dir = self.bootstrap.temp_world_dir
-        temp_worlds_dir.mkdir(parents=True)
+        temp_worlds_dir.mkdir(parents=True, exist_ok=True)  # Allow existing directory
         
         world_dirs = []
         for i in range(5):
@@ -167,10 +166,14 @@ class TestWorldGenConfiguration:
     
     def test_config_loading_from_yaml(self):
         """Test that worldgen configuration loads correctly from config.yaml."""
-        # This test will pass once we implement config loading
-        with pytest.raises(FileNotFoundError):
-            from worldgen.config import load_worldgen_config
-            config = load_worldgen_config()
+        # Test that config loads successfully now that we have a config.yaml file
+        from worldgen.config import load_worldgen_config
+        config = load_worldgen_config()
+        
+        # Verify expected configuration keys exist
+        assert "seed" in config
+        assert "java_heap" in config
+        assert config["seed"] == "VoxelTree"
     
     def test_java_tool_fallback_chain(self):
         """Test that Java tool selection follows fallback hierarchy."""
