@@ -51,7 +51,7 @@
 |-----------|------------------------------|------------------------------------------------|
 | [X] 2.1       | Assemble parent-child pairs  | Fails if LOD mismatch or alignment issue       |
 | [X] 2.2       | Link with seed-derived input | Fails if biome/heightmap pairing is incorrect  |
-| [ ] 2.3       | Validate patch format        | Fails if any training example is malformed     |
+| [X] 2.3       | Validate patch format        | Fails if any training example is malformed     |
 
 ---
 

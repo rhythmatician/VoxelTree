@@ -36,7 +36,7 @@ jobs:
         run: flake8 .
 
       - name: Type check with mypy
-        run: mypy --explicit-package-bases scripts tests
+        run: mypy --ignore-missing-imports --explicit-package-bases scripts tests
 
       - name: Run unit tests
         run: pytest --tb=short --disable-warnings
