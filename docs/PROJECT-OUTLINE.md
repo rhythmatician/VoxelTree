@@ -50,7 +50,7 @@
 | TDD Cycle | Goal                         | RED Test Focus                                 |
 |-----------|------------------------------|------------------------------------------------|
 | [X] 2.1       | Assemble parent-child pairs  | Fails if LOD mismatch or alignment issue       |
-| [ ] 2.2       | Link with seed-derived input | Fails if biome/heightmap pairing is incorrect  |
+| [X] 2.2       | Link with seed-derived input | Fails if biome/heightmap pairing is incorrect  |
 | [ ] 2.3       | Validate patch format        | Fails if any training example is malformed     |
 
 ---

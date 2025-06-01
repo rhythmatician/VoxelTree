@@ -24,95 +24,104 @@ logger = logging.getLogger(__name__)
 class SeedInputGenerator:
     """
     Generate conditioning variables from seed and coordinates alone.
-    
+
     Uses deterministic vanilla-accurate biome generation and procedural noise
     for heightmaps and river features for ML model conditioning.
     """
-    
+
     seed: int
     config_path: Optional[Path] = None
-    
+
     def __post_init__(self):
         """Initialize generators with seed and load configuration."""
         # Load configuration
         self._load_config()
-        
+
         # Initialize biome generation system
         self._init_biome_generator()
-        
+
         # Create noise generators for non-biome features
         self.height_noise = opensimplex.OpenSimplex(seed=self.seed + 1)
         self.river_noise = opensimplex.OpenSimplex(seed=self.seed + 2)
-        
-        logger.info(f"SeedInputGenerator initialized with seed={self.seed}, biome_source={self.biome_source}")
-    
+
+        logger.info(
+            f"SeedInputGenerator initialized with seed={self.seed}, biome_source={self.biome_source}"
+        )
+
     def _load_config(self):
         """Load configuration from YAML file."""
         if self.config_path is None:
             # Default to config.yaml in project root
             self.config_path = Path(__file__).parent.parent.parent / "config.yaml"
-        
+
         if self.config_path.exists():
-            with open(self.config_path, 'r') as f:
+            with open(self.config_path, "r") as f:
                 config = yaml.safe_load(f)
-                self.config = config.get('seed_inputs', {})
+                self.config = config.get("seed_inputs", {})
         else:
-            logger.warning(f"Config file not found at {self.config_path}, using defaults")
+            logger.warning(
+                f"Config file not found at {self.config_path}, using defaults"
+            )
             self.config = {}
-        
+
         # Set biome generation parameters
-        self.biome_source = self.config.get('biome_source', 'vanilla')
-        self.resolution = self.config.get('resolution', 4)
-        
+        self.biome_source = self.config.get("biome_source", "vanilla")
+        self.resolution = self.config.get("resolution", 4)
+
         # Set noise parameters (only for height and river)
-        noise_params = self.config.get('noise_parameters', {})
-        self.height_scale = noise_params.get('height_scale', 0.01)
-        self.river_scale = noise_params.get('river_scale', 0.005)
-        
-        height_params = self.config.get('height_parameters', {})
-        self.base_height = height_params.get('base_height', 64)
-        self.height_variation = height_params.get('height_variation', 60)
-        self.min_height = height_params.get('min_height', 0)
-        self.max_height = height_params.get('max_height', 384)
-        
+        noise_params = self.config.get("noise_parameters", {})
+        self.height_scale = noise_params.get("height_scale", 0.01)
+        self.river_scale = noise_params.get("river_scale", 0.005)
+
+        height_params = self.config.get("height_parameters", {})
+        self.base_height = height_params.get("base_height", 64)
+        self.height_variation = height_params.get("height_variation", 60)
+        self.min_height = height_params.get("min_height", 0)
+        self.max_height = height_params.get("max_height", 384)
+
         # Vanilla biome generation settings
-        vanilla_config = self.config.get('vanilla_biome', {})
-        self.java_tool = vanilla_config.get('java_tool', 'tools/amidst-cli.jar')
-        self.fallback_tool = vanilla_config.get('fallback_tool', 'tools/cubeseed.jar')
-        self.cache_dir = Path(vanilla_config.get('cache_dir', 'data/biome_cache'))
-        self.chunk_batch_size = vanilla_config.get('chunk_batch_size', 64)
-    
+        vanilla_config = self.config.get("vanilla_biome", {})
+        self.java_tool = vanilla_config.get("java_tool", "tools/amidst-cli.jar")
+        self.fallback_tool = vanilla_config.get("fallback_tool", "tools/cubeseed.jar")
+        self.cache_dir = Path(vanilla_config.get("cache_dir", "data/biome_cache"))
+        self.chunk_batch_size = vanilla_config.get("chunk_batch_size", 64)
+
     def _init_biome_generator(self):
         """Initialize the biome generation system."""
-        if self.biome_source == 'vanilla':
+        if self.biome_source == "vanilla":
             # Ensure cache directory exists
             self.cache_dir.mkdir(parents=True, exist_ok=True)
-            
+
             # Check if Java tools are available
             self.java_tool_path = Path(self.java_tool)
             self.fallback_tool_path = Path(self.fallback_tool)
-            
-            if not self.java_tool_path.exists() and not self.fallback_tool_path.exists():
-                logger.warning("No vanilla biome tools found, falling back to noise-based biomes")
-                self.biome_source = 'noise'
+
+            if (
+                not self.java_tool_path.exists()
+                and not self.fallback_tool_path.exists()
+            ):
+                logger.warning(
+                    "No vanilla biome tools found, falling back to noise-based biomes"
+                )
+                self.biome_source = "noise"
                 self._init_noise_biomes()
         else:
             self._init_noise_biomes()
-    
+
     def _init_noise_biomes(self):
         """Initialize noise-based biome generation as fallback."""
         self.biome_noise = opensimplex.OpenSimplex(seed=self.seed)
         self.biome_scale = 0.001  # Large scale for biome regions
-        
+
         # Simple biome mapping for fallback
         self.biome_ranges = [
-            ([0.0, 0.1], 16),      # Beach
-            ([0.1, 0.2], 7),       # River
-            ([0.2, 0.4], 1),       # Plains
-            ([0.4, 0.6], 4),       # Forest
-            ([0.6, 0.75], 18),     # Forest Hills
-            ([0.75, 0.9], 3),      # Extreme Hills
-            ([0.9, 1.0], 12),      # Ice Plains
+            ([0.0, 0.1], 16),  # Beach
+            ([0.1, 0.2], 7),  # River
+            ([0.2, 0.4], 1),  # Plains
+            ([0.4, 0.6], 4),  # Forest
+            ([0.6, 0.75], 18),  # Forest Hills
+            ([0.75, 0.9], 3),  # Extreme Hills
+            ([0.9, 1.0], 12),  # Ice Plains
         ]
 
     def get_biome(self, x: int, z: int) -> int:
@@ -129,7 +138,7 @@ class SeedInputGenerator:
         # Use low-frequency noise for large biome regions
         noise_value = self.biome_noise.noise2(
             x * self.biome_scale, z * self.biome_scale
-        )        # Map noise [-1, 1] to biome IDs using configured ranges
+        )  # Map noise [-1, 1] to biome IDs using configured ranges
         normalized = (noise_value + 1) / 2  # Map to [0, 1]
 
         for (range_min, range_max), biome_id in self.biome_ranges:
