@@ -83,7 +83,7 @@ class SeedInputLinker:
         return {
             "biomes": seed_data["biomes"],
             "heightmap": seed_data["heightmap"],
-            "river_noise": seed_data["river_noise"],
+            "river": seed_data["river"],
         }
 
     def link_pair_with_seed_inputs(
