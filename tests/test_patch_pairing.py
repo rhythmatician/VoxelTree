@@ -14,6 +14,7 @@ import numpy as np
 import pytest
 
 from scripts.pairing.lod_validator import LODValidator
+
 # Import the classes we'll be testing (these don't exist yet - will fail)
 from scripts.pairing.patch_pairer import PatchPairer
 

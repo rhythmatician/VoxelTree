@@ -13,8 +13,7 @@ import numpy as np
 import pytest
 
 # Import the classes we'll be testing (these will be extended)
-from scripts.pairing.seed_input_linker import \
-    SeedInputLinker  # This doesn't exist yet
+from scripts.pairing.seed_input_linker import SeedInputLinker  # This doesn't exist yet
 
 
 class TestSeedInputLinker:
