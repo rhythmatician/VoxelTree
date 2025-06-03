@@ -37,7 +37,7 @@ for filename in [
         diff = DeepDiff(reference, candidate, ignore_order=True)
 
         if not diff:
-            pass # print("✅ No differences")
+            pass  # print("✅ No differences")
         else:
             print(f"\n===== {version_dir.name} =====")
             print("❌ Differences found:")

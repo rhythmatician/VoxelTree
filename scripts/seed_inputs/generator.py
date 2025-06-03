@@ -206,14 +206,12 @@ class SeedInputGenerator:
         """
         # Validate size parameter
         if size <= 0:
-            raise ValueError(f"Patch size must be positive, got {size}")
-
-        # Initialize output arrays
+            raise ValueError(f"Patch size must be positive, got {size}")  # Initialize output arrays
         biomes = np.zeros((size, size), dtype=np.uint8)
         heightmap = np.zeros((size, size), dtype=np.uint16)
-        river = np.zeros((size, size), dtype=np.float32)
-
-        # Fill arrays by sampling each coordinate
+        river_noise = np.zeros(
+            (size, size), dtype=np.float32
+        )  # Fill arrays by sampling each coordinate
         for i in range(size):
             for j in range(size):
                 world_x = x_start + i
@@ -221,13 +219,13 @@ class SeedInputGenerator:
 
                 biomes[i, j] = self.get_biome(world_x, world_z)
                 heightmap[i, j] = self.get_heightmap(world_x, world_z)
-                river[i, j] = self.get_river_noise(world_x, world_z)
-
-        # Create patch dictionary
+                river_noise[i, j] = self.get_river_noise(
+                    world_x, world_z
+                )  # Create patch dictionary
         patch = {
             "biomes": biomes,
             "heightmap": heightmap,
-            "river": river,
+            "river": river_noise,
             "x": x_start,
             "z": z_start,
             "seed": self.seed,

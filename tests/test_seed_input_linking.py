@@ -30,7 +30,6 @@ class TestSeedInputLinker:
         assert hasattr(linker, "output_dir")
         assert hasattr(linker, "seed")
 
-    def test_load_seed_input_patch(self):
         """RED: Fails if seed input loading is incorrect."""
         linker = SeedInputLinker()
 
