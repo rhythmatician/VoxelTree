@@ -35,12 +35,12 @@ def load_config(config_path: Optional[Path] = None) -> Dict[str, Any]:
     return config
 
 
-def load_worldgen_config(config_path: Optional[Path] = Path("config.yaml")) -> Dict[str, Any]:
+def load_worldgen_config(config_path: Path = Path("config.yaml")) -> Dict[str, Any]:
     """
     Load worldgen configuration from config.yaml.
 
     Args:
-        config_path: Path to config.yaml file
+        config_path: Path to config.yaml file (defaults to "config.yaml" in current directory)
 
     Returns:
         Dictionary with worldgen configuration

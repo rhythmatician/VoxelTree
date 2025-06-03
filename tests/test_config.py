@@ -54,3 +54,18 @@ def test_load_worldgen_config_missing_section():
         with patch("pathlib.Path.exists", return_value=True):
             worldgen_config = load_worldgen_config(Path("config.yaml"))
             assert worldgen_config == {}
+
+
+def test_load_worldgen_config_default_path():
+    """Test that load_worldgen_config uses default config.yaml path when none provided."""
+    mock_yaml_content = """
+    worldgen:
+      seed: "VoxelTree"
+      java_heap: "4G"
+    """
+    with patch("builtins.open", mock_open(read_data=mock_yaml_content)):
+        with patch("pathlib.Path.exists", return_value=True):
+            # Call without providing config_path to test default behavior
+            worldgen_config = load_worldgen_config()
+            assert worldgen_config["seed"] == "VoxelTree"
+            assert worldgen_config["java_heap"] == "4G"

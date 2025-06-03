@@ -13,7 +13,7 @@ Key Features:
 - Memory-efficient architecture suitable for training on consumer GPUs
 """
 
-from typing import Dict, Literal
+from typing import Dict, Literal, Union
 from dataclasses import dataclass
 import torch
 import torch.nn as nn
@@ -67,6 +67,11 @@ class UNet3DConfig:
 
 class Conv3DBlock(nn.Module):
     """Basic 3D convolution block with normalization and activation."""
+
+    # Explicit type annotations to handle conditional assignments
+    norm: Union[nn.GroupNorm, nn.Identity]
+    activation: Union[nn.ReLU, nn.LeakyReLU, nn.GELU]
+    dropout: Union[nn.Dropout3d, nn.Identity]
 
     def __init__(
         self,
@@ -277,8 +282,6 @@ class ConditioningFusion(nn.Module):
         y_index: torch.Tensor,
         lod: torch.Tensor,
     ) -> torch.Tensor:
-        batch_size = biome_patch.size(0)
-
         # Process biome embeddings
         biome_embeds = self.biome_embedding(biome_patch)  # (B, 16, 16, E)
         biome_embeds = biome_embeds.permute(0, 3, 1, 2)  # (B, E, 16, 16)
