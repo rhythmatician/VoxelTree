@@ -11,6 +11,7 @@ Test Focus: "Fails if output doesn't vary by timestep"
 import pytest
 import torch
 from train.unet3d import VoxelUNet3D, UNet3DConfig
+import torch.nn as nn
 
 
 class TestLODTimestepEmbedding:
@@ -205,23 +206,41 @@ class TestLODTimestepEmbedding:
         Create a model that ignores LOD and verify it FAILS the variation test.
 
         This is a negative test to ensure our main test is meaningful.
+        A complete bypass of LOD conditioning requires disabling:
+        1. The LOD embedding in ConditioningFusion
+        2. The sinusoidal timestep embeddings via lod_projection
+        3. The FiLM layer conditioning at each level
         """
         model, inputs = model_and_inputs
 
         # Manually zero out LOD embedding weights and disable other LOD conditioning mechanisms
         with torch.no_grad():
+            # 1. Zero out the embedding vectors
             model.lod_embedding.weight.fill_(0.0)
+
+            # 2. Zero out the sinusoidal projection layers
             if hasattr(model, "lod_projection"):
-                model.lod_projection.weight.fill_(0.0)
-                model.lod_projection.bias.fill_(0.0)
+                # Access each layer in the Sequential module
+                for name, module in model.lod_projection.named_modules():
+                    if isinstance(module, nn.Linear):
+                        module.weight.fill_(0.0)
+                        module.bias.fill_(0.0)
             if hasattr(model, "encoder_film_layers"):
                 for layer in model.encoder_film_layers:
-                    layer.weight.fill_(0.0)
-                    layer.bias.fill_(0.0)
+                    if hasattr(layer, "scale_net"):
+                        layer.scale_net.weight.fill_(0.0)
+                        layer.scale_net.bias.fill_(0.0)
+                    if hasattr(layer, "shift_net"):
+                        layer.shift_net.weight.fill_(0.0)
+                        layer.shift_net.bias.fill_(0.0)
             if hasattr(model, "decoder_film_layers"):
                 for layer in model.decoder_film_layers:
-                    layer.weight.fill_(0.0)
-                    layer.bias.fill_(0.0)
+                    if hasattr(layer, "scale_net"):
+                        layer.scale_net.weight.fill_(0.0)
+                        layer.scale_net.bias.fill_(0.0)
+                    if hasattr(layer, "shift_net"):
+                        layer.shift_net.weight.fill_(0.0)
+                        layer.shift_net.bias.fill_(0.0)
 
         # Same test as test_output_varies_with_lod
         lod_low = torch.tensor([1, 1], dtype=torch.long)
