@@ -12,6 +12,7 @@ from typing import Any, Dict, List, Optional, Union
 import numpy as np
 import torch
 from torch.utils.data import Dataset, DataLoader
+from torch import Tensor
 
 logger = logging.getLogger(__name__)
 
@@ -46,10 +47,8 @@ class VoxelTreeDataset(Dataset):
         self.cache_in_memory = cache_in_memory
 
         # Find all valid training files
-        self.file_paths = self._find_valid_files()
-
-        # Memory cache for data if enabled
-        self._cache = {} if cache_in_memory else None
+        self.file_paths = self._find_valid_files()  # Memory cache for data if enabled
+        self._cache: Optional[Dict[int, Dict[str, Any]]] = {} if cache_in_memory else None
 
         # Pre-load data if caching enabled
         if self.cache_in_memory:
@@ -176,10 +175,10 @@ class VoxelTreeDataset(Dataset):
             Dictionary containing training example data
         """
         if idx >= len(self.file_paths):
-            raise IndexError(f"Index {idx} out of range for dataset of size {len(self.file_paths)}")
-
-        # Use cache if available
-        if self.cache_in_memory and idx in self._cache:
+            raise IndexError(
+                f"Index {idx} out of range for dataset of size {len(self.file_paths)}"
+            )  # Use cache if available
+        if self.cache_in_memory and self._cache is not None and idx in self._cache:
             return self._cache[idx]
 
         # Load from file
@@ -194,7 +193,7 @@ class TrainingDataCollator:
     Handles proper tensor stacking and dtype conversion for PyTorch DataLoader.
     """
 
-    def __call__(self, samples: List[Dict[str, Any]]) -> Dict[str, torch.Tensor]:
+    def __call__(self, samples: List[Dict[str, Any]]) -> Dict[str, Union[torch.Tensor, List[Any]]]:
         """
         Collate a list of samples into a batch.
 
@@ -206,10 +205,9 @@ class TrainingDataCollator:
         """
         if not samples:
             return {}
-
         # Get all keys from first sample
         keys = samples[0].keys()
-        batch = {}
+        batch: Dict[str, Union[torch.Tensor, List[Any]]] = {}
 
         for key in keys:
             values = [sample[key] for sample in samples]
