@@ -19,11 +19,12 @@ class VoxelTrainer:
 
     def __init__(self, config: Dict[str, Any]):
         self.config = config
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-        # Initialize model
+        self.device = torch.device(
+            "cuda" if torch.cuda.is_available() else "cpu"
+        )  # Initialize model
         model_config = UNet3DConfig(**config.get("model", {}))
         self.model = VoxelUNet3D(model_config).to(self.device)
+        self.model.train()  # Ensure model is in training mode
 
         # Initialize optimizer
         training_config = config.get("training", {})
