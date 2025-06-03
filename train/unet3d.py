@@ -36,6 +36,7 @@ def get_timestep_embedding(timesteps: torch.Tensor, embedding_dim: int) -> torch
         (B, embedding_dim) tensor of embeddings
     """
     assert len(timesteps.shape) == 1  # Should be 1D
+    assert embedding_dim >= 2, "embedding_dim must be at least 2 to avoid division by zero."
 
     half_dim = embedding_dim // 2
     log_base = math.log(10000) / (half_dim - 1)
