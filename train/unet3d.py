@@ -420,12 +420,11 @@ class VoxelUNet3D(nn.Module):
         self.encoder_film_layers = nn.ModuleList()
         self.decoder_film_layers = nn.ModuleList()
 
-        # Create FiLM layers for each encoder/decoder level
-        encoder_channels = [config.base_channels]
-        for i in range(config.depth):
-            encoder_channels.append(config.base_channels * (2 ** (i + 1)))
+        # Compute encoder channel sizes once and reuse
+        self.encoder_channels = [config.base_channels * (2 ** i) for i in range(config.depth + 1)]
 
-        for channels in encoder_channels:
+        # Create FiLM layers for each encoder/decoder level
+        for channels in self.encoder_channels:
             self.encoder_film_layers.append(FiLMLayer(channels, config.lod_embed_dim))
 
         for i in range(config.depth):
