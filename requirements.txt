@@ -10,7 +10,7 @@ types-PyYAML  # type stubs for yaml
 scipy                 # For interpolation, pooling
 h5py                  # Optional: for storing large datasets
 joblib                # Parallel chunk loading
-anvil-parser          # Minecraft .mca file parsing
+anvil-parser2          # Minecraft .mca file parsing
 
 # === Visualization ===
 matplotlib
@@ -28,9 +28,6 @@ black
 flake8
 autoflake
 mypy
-
-# === Additional Libraries for Specific Features ===
-anvil-parser2
 
 # === Optional: Seed-based Input Generator ===
 noise                 # Perlin/Simplex for river/biome simulation (Python)
