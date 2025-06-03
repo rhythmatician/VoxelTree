@@ -162,9 +162,44 @@ class TestForwardPass:
 
         # Outputs should be on GPU
         assert out["air_mask_logits"].device.type == "cuda"
-        assert out["block_type_logits"].device.type == "cuda"
+        assert out["block_type_logits"].device.type == "cuda"  # Check correct shapes
+        assert out["air_mask_logits"].shape == (batch_size, 1, 16, 16, 16)
+        assert out["block_type_logits"].shape == (batch_size, 10, 16, 16, 16)
 
-        # Check correct shapes
+    @pytest.mark.parametrize(
+        "scenario_name,biome_id,y_val,lod_val",
+        [
+            ("plains_surface", 1, 10, 1),
+            ("desert_underground", 15, 5, 3),
+            ("ocean_deep", 0, 2, 2),
+            ("mountain_high", 3, 18, 4),
+        ],
+    )
+    def test_individual_conditioning_scenarios(
+        self, model, scenario_name, biome_id, y_val, lod_val
+    ):
+        """Should handle individual conditioning scenarios without errors."""
+        batch_size = 2
+        parent_voxel = torch.randn(batch_size, 1, 8, 8, 8)
+        biome_patch = torch.full((batch_size, 16, 16), biome_id, dtype=torch.long)
+        heightmap_patch = torch.randn(batch_size, 1, 16, 16)
+        river_patch = torch.randn(batch_size, 1, 16, 16)
+        y_index = torch.full((batch_size,), y_val, dtype=torch.long)
+        lod = torch.full((batch_size,), lod_val, dtype=torch.long)
+
+        with torch.no_grad():
+            out = model(
+                parent_voxel=parent_voxel,
+                biome_patch=biome_patch,
+                heightmap_patch=heightmap_patch,
+                river_patch=river_patch,
+                y_index=y_index,
+                lod=lod,
+            )
+
+        # Should produce finite outputs with correct shapes
+        assert torch.isfinite(out["air_mask_logits"]).all()
+        assert torch.isfinite(out["block_type_logits"]).all()
         assert out["air_mask_logits"].shape == (batch_size, 1, 16, 16, 16)
         assert out["block_type_logits"].shape == (batch_size, 10, 16, 16, 16)
 
@@ -172,8 +207,10 @@ class TestForwardPass:
         """Should produce different outputs for different conditioning."""
         batch_size = 2
         parent_voxel = torch.randn(batch_size, 1, 8, 8, 8)
+        heightmap_patch = torch.randn(batch_size, 1, 16, 16)
+        river_patch = torch.randn(batch_size, 1, 16, 16)
 
-        # Different conditioning scenarios
+        # Two contrasting scenarios for comparison
         scenarios = [
             # Plains biome, surface level, LOD 1
             {
@@ -188,9 +225,6 @@ class TestForwardPass:
                 "lod": torch.full((batch_size,), 3, dtype=torch.long),
             },
         ]
-
-        heightmap_patch = torch.randn(batch_size, 1, 16, 16)
-        river_patch = torch.randn(batch_size, 1, 16, 16)
 
         outputs = []
         for scenario in scenarios:
