@@ -18,6 +18,80 @@ from dataclasses import dataclass
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import math
+
+
+def get_timestep_embedding(timesteps: torch.Tensor, embedding_dim: int) -> torch.Tensor:
+    """
+    Create sinusoidal timestep embeddings for LOD conditioning.
+
+    This creates embeddings similar to those used in diffusion models,
+    allowing the model to understand temporal/scale relationships between LOD levels.
+
+    Args:
+        timesteps: (B,) tensor of timestep values
+        embedding_dim: dimension of the embedding space
+
+    Returns:
+        (B, embedding_dim) tensor of embeddings
+    """
+    assert len(timesteps.shape) == 1  # Should be 1D
+    assert embedding_dim >= 2, "embedding_dim must be at least 2 to avoid division by zero."
+
+    half_dim = embedding_dim // 2
+    log_base = math.log(10000) / (half_dim - 1)
+    frequencies = torch.exp(
+        torch.arange(half_dim, dtype=torch.float32, device=timesteps.device) * -log_base
+    )
+    angles = timesteps.float()[:, None] * frequencies[None, :]
+    emb = torch.cat([torch.sin(angles), torch.cos(angles)], dim=1)
+
+    if embedding_dim % 2 == 1:  # Zero pad for odd dimensions
+        emb = torch.cat([emb, torch.zeros_like(emb[:, :1])], dim=1)
+
+    return emb
+
+
+class FiLMLayer(nn.Module):
+    """
+    Feature-wise Linear Modulation layer for conditioning.
+
+    This applies affine transformations conditioned on LOD,
+    allowing the model to adaptively scale and shift features
+    based on the level of detail.
+    """
+
+    def __init__(self, feature_dim: int, conditioning_dim: int):
+        super().__init__()
+        self.scale_net = nn.Linear(conditioning_dim, feature_dim)
+        self.shift_net = nn.Linear(conditioning_dim, feature_dim)
+
+        # Initialize to identity transformation
+        nn.init.zeros_(self.scale_net.weight)
+        nn.init.ones_(self.scale_net.bias)
+        nn.init.zeros_(self.shift_net.weight)
+        nn.init.zeros_(self.shift_net.bias)
+
+    def forward(self, features: torch.Tensor, conditioning: torch.Tensor) -> torch.Tensor:
+        """
+        Apply FiLM conditioning to features.
+
+        Args:
+            features: (B, C, ...) feature tensor
+            conditioning: (B, conditioning_dim) conditioning vector
+
+        Returns:
+            Modulated features with same shape as input
+        """
+        scale = self.scale_net(conditioning)
+        shift = self.shift_net(conditioning)
+
+        # Reshape for broadcasting to feature dimensions
+        while len(scale.shape) < len(features.shape):
+            scale = scale.unsqueeze(-1)
+            shift = shift.unsqueeze(-1)
+
+        return features * scale + shift
 
 
 @dataclass
@@ -28,15 +102,13 @@ class UNet3DConfig:
     input_channels: int = 1
     output_channels: int = 2  # Air mask + block types (will be split)
     base_channels: int = 32
-    depth: int = 3
-
-    # Conditioning inputs
+    depth: int = 3  # Conditioning inputs
     biome_vocab_size: int = 50
     biome_embed_dim: int = 16
     heightmap_channels: int = 1
     river_channels: int = 1
     y_embed_dim: int = 8
-    lod_embed_dim: int = 8
+    lod_embed_dim: int = 32  # Increased for more expressive LOD conditioning
 
     # Training hyperparameters
     dropout_rate: float = 0.1
@@ -310,16 +382,29 @@ class ConditioningFusion(nn.Module):
 
 class VoxelUNet3D(nn.Module):
     """
-    3D U-Net for voxel super-resolution with multi-modal conditioning.
+    3D U-Net for voxel super-resolution with enhanced LOD timestep conditioning.
 
     Takes 8³ parent voxels and upsamples to 16³ target voxels,
     conditioned on biome, heightmap, river, Y-level, and LOD information.
+
+    Enhanced LOD Integration:
+    - Sinusoidal timestep embeddings for temporal modeling
+    - FiLM conditioning applied at multiple network levels
+    - Stronger architectural integration of LOD information
     """
 
     def __init__(self, config: UNet3DConfig):
         super().__init__()
 
         self.config = config
+
+        # Enhanced LOD timestep embedding with sinusoidal encoding
+        self.lod_embed_dim = config.lod_embed_dim
+        self.lod_projection = nn.Sequential(
+            nn.Linear(config.lod_embed_dim, config.lod_embed_dim),
+            nn.ReLU(),
+            nn.Linear(config.lod_embed_dim, config.lod_embed_dim),
+        )
 
         # Conditioning fusion module
         self.conditioning_fusion = ConditioningFusion(
@@ -331,6 +416,21 @@ class VoxelUNet3D(nn.Module):
             lod_embed_dim=config.lod_embed_dim,
             output_channels=config.base_channels,
         )
+
+        # FiLM conditioning layers for LOD awareness at multiple levels
+        self.encoder_film_layers = nn.ModuleList()
+        self.decoder_film_layers = nn.ModuleList()
+
+        # Compute encoder channel sizes once and reuse
+        self.encoder_channels = [config.base_channels * (2**i) for i in range(config.depth + 1)]
+
+        # Create FiLM layers for each encoder/decoder level
+        for channels in self.encoder_channels:
+            self.encoder_film_layers.append(FiLMLayer(channels, config.lod_embed_dim))
+
+        for i in range(config.depth):
+            out_channels = config.base_channels * (2 ** (config.depth - i - 1))
+            self.decoder_film_layers.append(FiLMLayer(out_channels, config.lod_embed_dim))
 
         # U-Net encoder (downsampling path)
         self.encoder = nn.ModuleList()
@@ -345,11 +445,11 @@ class VoxelUNet3D(nn.Module):
         )
 
         # Encoder blocks
-        encoder_channels = []
+        encoder_channels_list = []
         in_channels = config.base_channels
         for i in range(config.depth):
             out_channels = config.base_channels * (2 ** (i + 1))
-            encoder_channels.append(in_channels)
+            encoder_channels_list.append(in_channels)
 
             self.encoder.append(
                 DownBlock(
@@ -361,7 +461,8 @@ class VoxelUNet3D(nn.Module):
                 )
             )
             in_channels = out_channels
-        # Bottleneck
+
+        # Bottleneck with extra FiLM conditioning
         self.bottleneck = DoubleConv3D(
             in_channels,
             in_channels * 2,
@@ -369,13 +470,14 @@ class VoxelUNet3D(nn.Module):
             activation=config.activation,
             dropout_rate=config.dropout_rate,
         )
+        self.bottleneck_film = FiLMLayer(in_channels * 2, config.lod_embed_dim)
 
         # U-Net decoder (upsampling path)
         self.decoder = nn.ModuleList()
         in_channels = in_channels * 2
 
         for i in range(config.depth):
-            skip_channels = encoder_channels[-(i + 1)]
+            skip_channels = encoder_channels_list[-(i + 1)]
             out_channels = config.base_channels * (2 ** (config.depth - i - 1))
 
             self.decoder.append(
@@ -391,18 +493,24 @@ class VoxelUNet3D(nn.Module):
             in_channels = out_channels
 
         # Additional upsampling layer to go from 8³ to 16³
-        # After decoder, we have (B, base_channels, 8, 8, 8)
-        # Need one more 2x upsample to reach (B, base_channels, 16, 16, 16)
         self.final_upsample = nn.ConvTranspose3d(
             config.base_channels, config.base_channels, kernel_size=2, stride=2
         )
+        self.final_film = FiLMLayer(config.base_channels, config.lod_embed_dim)
 
-        # Conditioning injection layer
-        # Projects 2D conditioning to 3D and combines with decoder features
-        self.conditioning_projection = nn.Conv3d(
-            config.base_channels + config.base_channels,  # Features + conditioning
-            config.base_channels,
-            kernel_size=1,
+        # Conditioning injection layer (enhanced for stronger integration)
+        self.conditioning_projection = nn.Sequential(
+            nn.Conv3d(
+                config.base_channels + config.base_channels,  # Features + conditioning
+                config.base_channels * 2,
+                kernel_size=3,
+                padding=1,
+            ),
+            nn.GroupNorm(
+                num_groups=min(8, config.base_channels * 2), num_channels=config.base_channels * 2
+            ),
+            nn.ReLU(inplace=True),
+            nn.Conv3d(config.base_channels * 2, config.base_channels, kernel_size=1),
         )
 
         # Output heads
@@ -429,23 +537,21 @@ class VoxelUNet3D(nn.Module):
         lod: torch.Tensor,
     ) -> Dict[str, torch.Tensor]:
         """
-        Forward pass through the 3D U-Net.
+        Forward pass with enhanced LOD timestep conditioning.
 
-        Args:
-            parent_voxel: (B, 1, 8, 8, 8) - Parent voxel data
-            biome_patch: (B, 16, 16) - Biome IDs per spatial location
-            heightmap_patch: (B, 1, 16, 16) - Height data
-            river_patch: (B, 1, 16, 16) - River noise data
-            y_index: (B,) - Vertical subchunk index
-            lod: (B,) - Level of detail
-
-        Returns:
-            Dictionary containing:
-                - air_mask_logits: (B, 1, 16, 16, 16) - Air/solid predictions
-                - block_type_logits: (B, 10, 16, 16, 16) - Block type predictions
+        LOD conditioning is applied at multiple levels:
+        1. Sinusoidal timestep embedding generation
+        2. FiLM conditioning in encoder layers
+        3. FiLM conditioning in bottleneck
+        4. FiLM conditioning in decoder layers
+        5. Final conditioning projection
         """
 
-        # Get conditioning features (B, C, 16, 16)
+        # Create enhanced LOD embeddings using sinusoidal encoding
+        lod_sinusoidal = get_timestep_embedding(lod, self.lod_embed_dim)
+        lod_enhanced = self.lod_projection(lod_sinusoidal)
+
+        # Get spatial conditioning features (B, C, 16, 16)
         conditioning = self.conditioning_fusion(
             biome_patch, heightmap_patch, river_patch, y_index, lod
         )
@@ -453,37 +559,40 @@ class VoxelUNet3D(nn.Module):
         # Initial convolution on parent voxel
         x = self.initial_conv(parent_voxel)  # (B, base_channels, 8, 8, 8)
 
-        # Encoder path with skip connections
-        skip_connections = [x]
-        for encoder_block in self.encoder:
-            x = encoder_block(x)
-            skip_connections.append(x)
-        # Bottleneck
-        x = self.bottleneck(x)
+        # Apply LOD conditioning to initial features
+        x = self.encoder_film_layers[0](x, lod_enhanced)
 
-        # Decoder path with skip connections
+        # Encoder path with skip connections and LOD conditioning
+        skip_connections = [x]
+        for i, encoder_block in enumerate(self.encoder):
+            x = encoder_block(x)
+            # Apply FiLM conditioning after each encoder block
+            x = self.encoder_film_layers[i + 1](x, lod_enhanced)
+            skip_connections.append(x)
+
+        # Bottleneck with LOD conditioning
+        x = self.bottleneck(x)
+        x = self.bottleneck_film(x, lod_enhanced)
+
+        # Decoder path with skip connections and LOD conditioning
         skip_connections = skip_connections[:-1]  # Remove last (bottleneck input)
         for i, decoder_block in enumerate(self.decoder):
             skip = skip_connections[-(i + 1)]
             x = decoder_block(x, skip)
+            # Apply FiLM conditioning after each decoder block
+            x = self.decoder_film_layers[i](x, lod_enhanced)
 
-        # Final upsampling from 8³ to 16³
+        # Final upsampling from 8³ to 16³ with LOD conditioning
         x = self.final_upsample(x)  # (B, base_channels, 16, 16, 16)
+        x = self.final_film(x, lod_enhanced)
 
-        # At this point x should be (B, base_channels, 16, 16, 16)
-        # We need to inject 2D conditioning into 3D features
-
-        # Expand conditioning to 3D by replicating across depth dimension
+        # Expand spatial conditioning to 3D
         batch_size, cond_channels, height, width = conditioning.shape
         depth = x.size(2)
-
-        # Expand conditioning: (B, C, 16, 16) -> (B, C, 16, 16, 16)
         conditioning_3d = conditioning.unsqueeze(2).expand(-1, -1, depth, -1, -1)
 
-        # Concatenate features and conditioning
+        # Enhanced conditioning projection
         combined = torch.cat([x, conditioning_3d], dim=1)
-
-        # Project to final feature representation
         features = self.conditioning_projection(combined)
 
         # Generate outputs

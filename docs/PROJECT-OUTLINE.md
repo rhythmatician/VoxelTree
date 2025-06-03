@@ -71,8 +71,8 @@
 |-----------|------------------------------|--------------------------------------------------|
 | [X] 4.1       | 3D U-Net instantiate         | Fails if network doesn't build with config       |
 | [X] 4.2       | Forward pass (8³→16³)        | Fails if logits or mask shapes are incorrect     |
-| [ ] 4.3       | Conditioning via inputs      | Fails if biome/heightmap/y-index not used        |
-| [ ] 4.4       | LOD timestep embedding       | Fails if output doesn't vary by timestep         |
+| [X] 4.3       | Conditioning via inputs      | Fails if biome/heightmap/y-index not used        |
+| [X] 4.4       | LOD timestep embedding       | Fails if output doesn't vary by timestep         |
 ---
 
 ## 🏋️ Phase 5 — Training Loop
