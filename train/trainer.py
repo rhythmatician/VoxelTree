@@ -3,12 +3,11 @@ VoxelTree training orchestration and checkpoint management.
 """
 
 import torch
-import torch.nn as nn
 import torch.optim as optim
 from pathlib import Path
-from typing import Dict, Any, Tuple, Optional
+from typing import Dict, Any, Tuple
 import time
-import json
+import logging
 
 from .unet3d import VoxelUNet3D, UNet3DConfig
 from .losses import voxel_loss_fn
@@ -46,7 +45,7 @@ class VoxelTrainer:
 
     def training_step(self, batch: Dict[str, torch.Tensor]) -> torch.Tensor:
         """Execute one training step."""
-        self.model.train()  # Move batch to device
+        self.model.train()
         batch = {
             k: v.to(self.device) if isinstance(v, torch.Tensor) else v for k, v in batch.items()
         }
@@ -158,7 +157,7 @@ class VoxelTrainer:
             raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
 
         epoch, loss = self.load_checkpoint(checkpoint_path)
-        print(f"Resumed training from epoch {epoch} with loss {loss:.6f}")
+        logging.info(f"Resumed training from epoch {epoch} with loss {loss:.6f}")
 
     def _create_dummy_batch(self) -> Dict[str, torch.Tensor]:
         """Create dummy batch for testing."""
