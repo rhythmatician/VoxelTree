@@ -208,9 +208,20 @@ class TestLODTimestepEmbedding:
         """
         model, inputs = model_and_inputs
 
-        # Manually zero out LOD embedding weights to simulate ignoring LOD
+        # Manually zero out LOD embedding weights and disable other LOD conditioning mechanisms
         with torch.no_grad():
             model.lod_embedding.weight.fill_(0.0)
+            if hasattr(model, "lod_projection"):
+                model.lod_projection.weight.fill_(0.0)
+                model.lod_projection.bias.fill_(0.0)
+            if hasattr(model, "encoder_film_layers"):
+                for layer in model.encoder_film_layers:
+                    layer.weight.fill_(0.0)
+                    layer.bias.fill_(0.0)
+            if hasattr(model, "decoder_film_layers"):
+                for layer in model.decoder_film_layers:
+                    layer.weight.fill_(0.0)
+                    layer.bias.fill_(0.0)
 
         # Same test as test_output_varies_with_lod
         lod_low = torch.tensor([1, 1], dtype=torch.long)
