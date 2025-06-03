@@ -79,7 +79,7 @@
 
 | TDD Cycle | Goal                         | RED Test Focus                                  |
 |-----------|------------------------------|--------------------------------------------------|
-| [ ] 5.1       | Dry run 1 epoch              | Fails if no gradient/backprop recorded           |
+| [X] 5.1       | Dry run 1 epoch              | Fails if no gradient/backprop recorded           |
 | [ ] 5.2       | Checkpoint saving            | Fails if `.pt` missing or corrupted              |
 | [ ] 5.3       | Resume training              | Fails if epoch count doesn’t continue            |
 | [ ] 5.4       | CSV or TensorBoard logs      | Fails if logs not written                        |
