@@ -56,7 +56,7 @@ def voxel_loss_fn(
         )
     else:
         # No solid blocks, zero loss
-        type_loss = torch.tensor(0.0, device=air_mask_logits.device, requires_grad=True)
+        type_loss = torch.zeros(1, device=air_mask_logits.device, requires_grad=True)
     
     # Combine losses
     total_loss = mask_weight * mask_loss + type_weight * type_loss
