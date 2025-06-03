@@ -12,7 +12,6 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
-import opensimplex
 import yaml
 
 logger = logging.getLogger(__name__)
@@ -37,10 +36,6 @@ class SeedInputGenerator:
 
         # Initialize biome generation system
         self._init_biome_generator()
-
-        # Create noise generators for non-biome features
-        self.height_noise = opensimplex.OpenSimplex(seed=self.seed + 1)
-        self.river_noise = opensimplex.OpenSimplex(seed=self.seed + 2)
 
         logger.info(
             f"SeedInputGenerator initialized with seed={self.seed}, biome_source={self.biome_source}"  # noqa: E501
@@ -101,7 +96,6 @@ class SeedInputGenerator:
 
     def _init_noise_biomes(self):
         """Initialize noise-based biome generation as fallback."""
-        self.biome_noise = opensimplex.OpenSimplex(seed=self.seed)
         self.biome_scale = 0.001  # Large scale for biome regions
 
         # Simple biome mapping for fallback

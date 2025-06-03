@@ -93,7 +93,6 @@ class TestSeedInputGenerator:
         river_value = self.generator.get_river_noise(0, 0)
 
         assert isinstance(river_value, float)
-        # OpenSimplex noise typically returns values in [-1, 1]
         assert -2.0 <= river_value <= 2.0
 
     def test_river_noise_deterministic(self):
@@ -318,7 +317,6 @@ class TestSeedInputIntegration:
 
         river_values = np.array(river_values)
 
-        # Should be roughly centered around 0 (property of OpenSimplex)
         mean_value = np.mean(river_values)
         assert abs(mean_value) < 0.5, f"River noise not centered: mean={mean_value}"
 
