@@ -12,7 +12,7 @@ import time
 try:
     from torch.utils.tensorboard import SummaryWriter
 except ImportError:
-    SummaryWriter = None
+    SummaryWriter = None  # type: ignore
 
 
 class TrainingLogger:
