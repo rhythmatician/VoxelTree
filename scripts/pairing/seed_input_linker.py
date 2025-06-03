@@ -184,7 +184,7 @@ class SeedInputLinker:
         y_world = y_index * 16 - 64  # Minecraft world coordinates
 
         # Calculate relative height (distance from surface)
-        height_relative = heightmap.astype(np.float32) - y_world
+        height_relative = heightmap.astype(np.float32) - np.float32(y_world)
 
         # Normalize to reasonable range
         height_relative = np.clip(height_relative, -100, 100) / 100.0
