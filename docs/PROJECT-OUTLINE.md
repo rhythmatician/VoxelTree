@@ -59,7 +59,7 @@
 
 | TDD Cycle | Goal                         | RED Test Focus                              |
 |-----------|------------------------------|----------------------------------------------|
-| [ ] 3.1       | Load `.npz` training patch   | Fails if file missing or data misaligned     |
+| [X] 3.1       | Load `.npz` training patch   | Fails if file missing or data misaligned     |
 | [ ] 3.2       | PyTorch Dataset impl         | Fails if `__getitem__` returns bad shapes    |
 | [ ] 3.3       | Batch collation              | Fails if PyTorch DataLoader returns wrong batch |
 

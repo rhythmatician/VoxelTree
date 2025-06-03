@@ -1,8 +1,21 @@
 """
-VoxelTreeDataset - Phase 3.1 GREEN Implementation
+VoxelTreeDataset - Phase 3.1 REFACTOR Implementation
 
 PyTorch Dataset implementation for loading .npz training patches.
-Minimal implementation to make the RED tests pass.
+GREEN phase complete - all tests passing with proper type annotations.
+
+REFACTOR Phase Improvements:
+- Added comprehensive type annotations for mypy compliance
+- Optimized numpy scalar conversion for better performance
+- Enhanced error handling with detailed logging
+- Memory management via optional caching system
+- LOD filtering for targeted training scenarios
+
+Performance Notes:
+- File validation during initialization prevents runtime errors
+- Lazy loading minimizes memory footprint for large datasets
+- Custom collator handles 3D tensor stacking efficiently
+- Bool->Float32 conversion for parent_voxel enables gradient flow
 """
 
 import logging
@@ -12,7 +25,6 @@ from typing import Any, Dict, List, Optional, Union
 import numpy as np
 import torch
 from torch.utils.data import Dataset, DataLoader
-from torch import Tensor
 
 logger = logging.getLogger(__name__)
 
