@@ -8,6 +8,12 @@ from pathlib import Path
 from typing import Dict, Any, Optional
 import time
 
+# Import SummaryWriter at module level for easier testing
+try:
+    from torch.utils.tensorboard import SummaryWriter
+except ImportError:
+    SummaryWriter = None
+
 
 class TrainingLogger:
     """Handles CSV and TensorBoard logging for training metrics."""
@@ -15,7 +21,6 @@ class TrainingLogger:
     def __init__(self, log_dir: Path, use_tensorboard: bool = False):
         self.log_dir = Path(log_dir)
         self.log_dir.mkdir(parents=True, exist_ok=True)
-
         self.csv_path = self.log_dir / "training_log.csv"
         self.json_path = self.log_dir / "training_log.jsonl"
 
@@ -23,11 +28,9 @@ class TrainingLogger:
         self.writer = None
 
         if use_tensorboard:
-            try:
-                from torch.utils.tensorboard import SummaryWriter
-
+            if SummaryWriter is not None:
                 self.writer = SummaryWriter(log_dir=str(self.log_dir / "tensorboard"))
-            except ImportError:
+            else:
                 print("Warning: TensorBoard not available, falling back to CSV only")
                 self.use_tensorboard = False
 
@@ -86,7 +89,8 @@ class TrainingLogger:
             step = metrics.get("global_step", 0)
 
         for key, value in metrics.items():
-            if isinstance(value, (int, float)) and key != "timestamp":
+            # Skip timestamp and global_step (global_step is used as step parameter, not logged as metric)
+            if isinstance(value, (int, float)) and key not in ["timestamp", "global_step"]:
                 self.writer.add_scalar(key, value, step)
 
         self.writer.flush()
