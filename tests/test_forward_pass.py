@@ -46,34 +46,33 @@ class TestForwardPass:
             y_index=y_index,
             lod=lod,
         )
-
         assert "air_mask_logits" in out
         assert "block_type_logits" in out
         assert out["air_mask_logits"].shape == (batch_size, 1, 16, 16, 16)
         assert out["block_type_logits"].shape == (batch_size, 10, 16, 16, 16)
 
-    def test_variable_batch_sizes(self, model):
+    @pytest.mark.parametrize("batch_size", [1, 2, 4, 8])
+    def test_variable_batch_sizes(self, model, batch_size):
         """Should handle different batch sizes correctly."""
-        for batch_size in [1, 2, 4, 8]:
-            parent_voxel = torch.randn(batch_size, 1, 8, 8, 8)
-            biome_patch = torch.randint(0, 50, (batch_size, 16, 16), dtype=torch.long)
-            heightmap_patch = torch.randn(batch_size, 1, 16, 16)
-            river_patch = torch.randn(batch_size, 1, 16, 16)
-            y_index = torch.randint(0, 24, (batch_size,), dtype=torch.long)
-            lod = torch.randint(1, 5, (batch_size,), dtype=torch.long)
+        parent_voxel = torch.randn(batch_size, 1, 8, 8, 8)
+        biome_patch = torch.randint(0, 50, (batch_size, 16, 16), dtype=torch.long)
+        heightmap_patch = torch.randn(batch_size, 1, 16, 16)
+        river_patch = torch.randn(batch_size, 1, 16, 16)
+        y_index = torch.randint(0, 24, (batch_size,), dtype=torch.long)
+        lod = torch.randint(1, 5, (batch_size,), dtype=torch.long)
 
-            with torch.no_grad():
-                out = model(
-                    parent_voxel=parent_voxel,
-                    biome_patch=biome_patch,
-                    heightmap_patch=heightmap_patch,
-                    river_patch=river_patch,
-                    y_index=y_index,
-                    lod=lod,
-                )
+        with torch.no_grad():
+            out = model(
+                parent_voxel=parent_voxel,
+                biome_patch=biome_patch,
+                heightmap_patch=heightmap_patch,
+                river_patch=river_patch,
+                y_index=y_index,
+                lod=lod,
+            )
 
-            assert out["air_mask_logits"].shape == (batch_size, 1, 16, 16, 16)
-            assert out["block_type_logits"].shape == (batch_size, 10, 16, 16, 16)
+        assert out["air_mask_logits"].shape == (batch_size, 1, 16, 16, 16)
+        assert out["block_type_logits"].shape == (batch_size, 10, 16, 16, 16)
 
     def test_edge_case_all_zeros(self, model):
         """Should handle all-zero input gracefully."""
