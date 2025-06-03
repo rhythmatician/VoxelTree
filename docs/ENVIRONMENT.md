@@ -8,9 +8,9 @@
 | **Env Tool**        | Built-in `venv` (resides in project root)              |
 | **Package Manager** | `pip` (>=25.1.1 confirmed)                             |
 | **Core Libraries**  | `torch`, `numpy`, `scipy`, `PyYAML`, `tqdm`            |
-| **World Tools**     | `anvil-parser`, `cubiomes` (cloned, built from source) |
-| **Noise Gen**       | `opensimplex`                                          |
-| **Testing**         | `pytest`, `pytest-cov`, `hypothesis`                   |
+| **World Tools**     | `anvil-parser2`, `cubiomes` (built manually, CLI stored in tools/) |
+| **Chunk Gen**       | Fabric server + Chunky mod (stored in `tools/`)        |
+| **Testing**         | `pytest`, `pytest-cov`                                 |
 | **Linting/Type**    | `black`, `flake8`, `mypy`, `autoflake`                 |
 | **Pre-Commit**      | `pre-commit` with automated formatting and cleanup     |
 | **Visualization**   | `matplotlib`, `plotly`                                 |
@@ -88,6 +88,5 @@ deactivate
 
 | Issue                         | Workaround                                       |
 | ----------------------------- | ------------------------------------------------ |
-| Visual C++ needed for `noise` | Use `opensimplex` instead — already included     |
 | Some hooks slow on first run  | Cache builds automatically on subsequent commits |
 | `cubiomes` is not on PyPI     | Clone & build from source in `tools/cubiomes/`   |
