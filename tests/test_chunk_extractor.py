@@ -6,14 +6,15 @@ This module tests the ChunkExtractor class that converts Minecraft region files
 into compressed numpy training data.
 """
 
-import tempfile
 import shutil
+import tempfile
 from pathlib import Path
-import numpy as np
 from unittest.mock import Mock, patch
 
-from src.worldgen.config import load_config
-from src.extraction.chunk_extractor import ChunkExtractor
+import numpy as np
+
+from scripts.extraction.chunk_extractor import ChunkExtractor
+from scripts.worldgen.config import load_config
 
 
 class TestChunkExtractor:
@@ -82,9 +83,7 @@ class TestChunkExtractor:
         mock_mca_path.write_bytes(b"fake_mca_data" + b"\x00" * 2000)
 
         # Should extract chunk data as dictionary
-        chunk_data = self.extractor.extract_chunk_data(
-            mock_mca_path, chunk_x=0, chunk_z=0
-        )
+        chunk_data = self.extractor.extract_chunk_data(mock_mca_path, chunk_x=0, chunk_z=0)
 
         # Should contain required fields
         assert isinstance(chunk_data, dict)
@@ -192,9 +191,7 @@ class TestChunkExtractor:
         assert "region_file" in loaded_data
 
         # Should preserve data integrity
-        np.testing.assert_array_equal(
-            loaded_data["block_types"], test_data["block_types"]
-        )
+        np.testing.assert_array_equal(loaded_data["block_types"], test_data["block_types"])
         np.testing.assert_array_equal(loaded_data["air_mask"], test_data["air_mask"])
         assert loaded_data["chunk_x"].item() == 5
         assert loaded_data["chunk_z"].item() == 10
@@ -272,9 +269,7 @@ class TestChunkExtractor:
         memory_growth = peak_memory - initial_memory
 
         # Should not use more than 500MB additional memory
-        assert (
-            memory_growth < 500
-        ), f"Memory usage grew by {memory_growth:.1f}MB, expected <500MB"
+        assert memory_growth < 500, f"Memory usage grew by {memory_growth:.1f}MB, expected <500MB"
 
         # Should still produce output
         assert len(output_files) > 0
@@ -303,16 +298,12 @@ class TestChunkExtractor:
 
         # Create invalid file (wrong shape)
         invalid_data = valid_data.copy()
-        invalid_data["block_types"] = np.zeros(
-            (8, 8, 192), dtype=np.uint8
-        )  # Wrong shape
+        invalid_data["block_types"] = np.zeros((8, 8, 192), dtype=np.uint8)  # Wrong shape
         invalid_path = self.extractor.output_dir / "chunk_2_2.npz"
         np.savez_compressed(invalid_path, **invalid_data)
 
         # Should validate extraction results
-        validation_result = self.extractor.validate_extraction_results(
-            self.extractor.output_dir
-        )
+        validation_result = self.extractor.validate_extraction_results(self.extractor.output_dir)
 
         # Should identify valid, corrupted, and invalid files
         assert "valid_files" in validation_result

@@ -51,9 +51,7 @@ class WorldGenBootstrap:
         else:
             self.temp_world_dir = Path(temp_world_dir)
 
-        logger.info(
-            f"WorldGenBootstrap initialized: seed={self.seed}, heap={java_heap}"
-        )
+        logger.info(f"WorldGenBootstrap initialized: seed={self.seed}, heap={java_heap}")
 
         # Ensure temp directory exists
         self.temp_world_dir.mkdir(parents=True, exist_ok=True)
@@ -71,9 +69,7 @@ class WorldGenBootstrap:
         hash_bytes = hashlib.sha256(seed.encode()).digest()
         return int.from_bytes(hash_bytes[:4], byteorder="big", signed=True)
 
-    def generate_region_batch(
-        self, x_range: Tuple[int, int], z_range: Tuple[int, int]
-    ) -> Path:
+    def generate_region_batch(self, x_range: Tuple[int, int], z_range: Tuple[int, int]) -> Path:
         """
         Generate .mca files for specified chunk ranges.
 
@@ -93,9 +89,7 @@ class WorldGenBootstrap:
         # Check disk space limit before generation
         current_disk_usage = self._get_directory_size_gb(self.temp_world_dir)
         if current_disk_usage > 5.0:
-            logger.error(
-                f"Disk space limit exceeded: {current_disk_usage:.1f}GB > 5.0GB"
-            )
+            logger.error(f"Disk space limit exceeded: {current_disk_usage:.1f}GB > 5.0GB")
             raise RuntimeError("Disk space limit exceeded: temp worlds > 5GB")
 
         # Create unique world directory
@@ -107,9 +101,7 @@ class WorldGenBootstrap:
             # Attempt Java world generation
             success = self._run_worldgen_java(world_dir, x_range, z_range)
             if not success:
-                logger.warning(
-                    "Initial worldgen failed, attempting retry with reduced batch size"
-                )
+                logger.warning("Initial worldgen failed, attempting retry with reduced batch size")
                 # Check if it was heap exhaustion and retry with smaller batch
                 self._reduce_batch_size()
                 success = self._run_worldgen_java(world_dir, x_range, z_range)
@@ -155,9 +147,9 @@ class WorldGenBootstrap:
             "--output",
             str(world_dir),
             "--region-x",
-            f"{x_range[0]//32},{x_range[1]//32}",
+            f"{x_range[0] // 32},{x_range[1] // 32}",
             "--region-z",
-            f"{z_range[0]//32},{z_range[1]//32}",
+            f"{z_range[0] // 32},{z_range[1] // 32}",
         ]
 
         try:
@@ -191,7 +183,6 @@ class WorldGenBootstrap:
         # For now, just log that we're reducing batch size
         # In full implementation, this would modify internal batch parameters
         logger.info("Reducing batch size for retry after heap exhaustion")
-        pass
 
     def validate_mca_output(self, region_dir: Path) -> Dict[str, Any]:
         """
@@ -245,9 +236,7 @@ class WorldGenBootstrap:
         # Remove all but the latest N directories
         to_remove = world_dirs[:-keep_latest] if len(world_dirs) > keep_latest else []
 
-        logger.info(
-            f"Cleaning up {len(to_remove)} old world directories, keeping {keep_latest}"
-        )
+        logger.info(f"Cleaning up {len(to_remove)} old world directories, keeping {keep_latest}")
 
         for world_dir in to_remove:
             import shutil

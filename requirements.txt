@@ -26,6 +26,7 @@ types-psutil   # type stubs for psutil
 # === Linting / Formatting / Type Checking (for CI) ===
 black
 flake8
+autoflake
 mypy
 
 # === Optional: Seed-based Input Generator ===
@@ -34,5 +35,4 @@ opensimplex          # Optional: smoother noise
 
 # === Optional: Additional Tools ===
 pre-commit            # For pre-commit hooks
-types-PyYAML          # type stubs for yaml
 types-psutil          # type stubs for psutil

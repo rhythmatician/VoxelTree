@@ -5,13 +5,14 @@ Following TDD RED phase: Write failing tests first.
 These tests define the expected behavior for .mca world generation.
 """
 
-import pytest
-import tempfile
 import shutil
+import tempfile
 from pathlib import Path
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 
-from src.worldgen.bootstrap import WorldGenBootstrap
+import pytest
+
+from scripts.worldgen.bootstrap import WorldGenBootstrap
 
 
 class TestWorldGenBootstrap:
@@ -55,9 +56,7 @@ class TestWorldGenBootstrap:
         mock_subprocess.return_value = MagicMock(returncode=0)
 
         # Test region generation - this creates the world directory
-        result_path = self.bootstrap.generate_region_batch(
-            x_range=(0, 32), z_range=(0, 32)
-        )
+        result_path = self.bootstrap.generate_region_batch(x_range=(0, 32), z_range=(0, 32))
 
         # The world directory should exist
         assert result_path.exists()
@@ -164,7 +163,7 @@ class TestWorldGenConfiguration:
     def test_config_loading_from_yaml(self):
         """Test that worldgen configuration loads correctly from config.yaml."""
         # Test that config loads successfully now that we have a config.yaml file
-        from src.worldgen.config import load_worldgen_config
+        from scripts.worldgen.config import load_worldgen_config
 
         config = load_worldgen_config()
 
