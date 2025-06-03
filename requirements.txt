@@ -29,10 +29,12 @@ flake8
 autoflake
 mypy
 
+# === Additional Libraries for Specific Features ===
+anvil-parser2
+
 # === Optional: Seed-based Input Generator ===
 noise                 # Perlin/Simplex for river/biome simulation (Python)
 opensimplex          # Optional: smoother noise
 
 # === Optional: Additional Tools ===
-pre-commit            # For pre-commit hooks
 types-psutil          # type stubs for psutil
