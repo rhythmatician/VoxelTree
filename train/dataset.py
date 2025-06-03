@@ -141,6 +141,37 @@ class VoxelTreeDataset(Dataset):
 
         return sample
 
+    @staticmethod
+    def _convert_array_to_tensor(key: str, value: np.ndarray) -> torch.Tensor:
+        """
+        Convert numpy array to PyTorch tensor with appropriate dtype for a given key.
+
+        Args:
+            key: The data field name (determines dtype conversion)
+            value: Numpy array to convert
+
+        Returns:
+            PyTorch tensor with appropriate dtype
+        """
+        if key in ["parent_voxel", "target_mask"]:
+            # Boolean masks
+            return torch.from_numpy(value.astype(bool))
+        elif key == "target_types":
+            # Block type IDs
+            return torch.from_numpy(value.astype(np.uint8))
+        elif key == "biome_patch":
+            # Biome IDs
+            return torch.from_numpy(value.astype(np.uint8))
+        elif key == "heightmap_patch":
+            # Height values (promote uint16 to int16 for PyTorch compatibility)
+            return torch.from_numpy(value.astype(np.int16))
+        elif key == "river_patch":
+            # River noise values
+            return torch.from_numpy(value.astype(np.float32))
+        else:
+            # Default conversion
+            return torch.from_numpy(value)
+
     def _convert_to_tensors(self, sample: Dict[str, Any]) -> Dict[str, Any]:
         """Convert numpy arrays to PyTorch tensors with appropriate dtypes."""
         tensor_sample = {}
@@ -148,24 +179,7 @@ class VoxelTreeDataset(Dataset):
         for key, value in sample.items():
             if isinstance(value, np.ndarray):
                 # Convert to appropriate tensor dtype
-                if key in ["parent_voxel", "target_mask"]:
-                    # Boolean masks
-                    tensor_sample[key] = torch.from_numpy(value.astype(bool))
-                elif key == "target_types":
-                    # Block type IDs
-                    tensor_sample[key] = torch.from_numpy(value.astype(np.uint8))
-                elif key == "biome_patch":
-                    # Biome IDs
-                    tensor_sample[key] = torch.from_numpy(value.astype(np.uint8))
-                elif key == "heightmap_patch":
-                    # Height values (promote uint16 to int16 for PyTorch compatibility)
-                    tensor_sample[key] = torch.from_numpy(value.astype(np.int16))
-                elif key == "river_patch":
-                    # River noise values
-                    tensor_sample[key] = torch.from_numpy(value.astype(np.float32))
-                else:
-                    # Default conversion
-                    tensor_sample[key] = torch.from_numpy(value)
+                tensor_sample[key] = self._convert_array_to_tensor(key, value)
             else:
                 # Keep scalar values as-is
                 tensor_sample[key] = value
@@ -184,9 +198,8 @@ class VoxelTreeDataset(Dataset):
             idx: Index of the training example
 
         Returns:
-            Dictionary containing training example data
-        """
-        if idx >= len(self.file_paths):
+            Dictionary containing training example data"""
+        if idx < 0 or idx >= len(self.file_paths):
             raise IndexError(
                 f"Index {idx} out of range for dataset of size {len(self.file_paths)}"
             )  # Use cache if available
@@ -232,26 +245,14 @@ class TrainingDataCollator:
                 "biome_patch",
                 "heightmap_patch",
                 "river_patch",
-            ]:
-                # Stack tensor arrays
+            ]:  # Stack tensor arrays
                 if isinstance(values[0], torch.Tensor):
                     stacked = torch.stack(values)
                 else:
                     # Convert numpy arrays to tensors first
-                    tensors = []
-                    for value in values:
-                        if key in ["parent_voxel", "target_mask"]:
-                            tensors.append(torch.from_numpy(value.astype(bool)))
-                        elif key == "target_types":
-                            tensors.append(torch.from_numpy(value.astype(np.uint8)))
-                        elif key == "biome_patch":
-                            tensors.append(torch.from_numpy(value.astype(np.uint8)))
-                        elif key == "heightmap_patch":
-                            tensors.append(torch.from_numpy(value.astype(np.int16)))
-                        elif key == "river_patch":
-                            tensors.append(torch.from_numpy(value.astype(np.float32)))
-                        else:
-                            tensors.append(torch.from_numpy(value))
+                    tensors = [
+                        VoxelTreeDataset._convert_array_to_tensor(key, value) for value in values
+                    ]
                     stacked = torch.stack(tensors)
 
                 # Special handling for parent_voxel (convert bool to float32 for training)

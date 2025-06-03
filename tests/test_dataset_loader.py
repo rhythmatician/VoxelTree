@@ -141,6 +141,18 @@ class TestVoxelTreeDataset:
         # Should skip corrupted files and only load valid ones
         assert len(dataset) == 10  # Still 10 valid files
 
+    def test_dataset_negative_index_handling(self, temp_training_data):
+        """RED: Fails if negative indices aren't handled properly."""
+        training_dir = temp_training_data / "training_data"
+        dataset = VoxelTreeDataset(training_dir)
+
+        # Test negative indices raise IndexError
+        with pytest.raises(IndexError, match="Index -1 out of range"):
+            dataset[-1]
+
+        with pytest.raises(IndexError, match="Index -5 out of range"):
+            dataset[-5]
+
 
 class TestTrainingDataCollator:
     """Test batch collation for PyTorch DataLoader."""
