@@ -13,8 +13,8 @@ Key Features:
 - Memory-efficient architecture suitable for training on consumer GPUs
 """
 
-from typing import Dict, Optional, Union, Literal
-from dataclasses import dataclass, field
+from typing import Dict, Literal
+from dataclasses import dataclass
 import torch
 import torch.nn as nn
 import torch.nn.functional as F

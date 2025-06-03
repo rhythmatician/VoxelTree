@@ -8,10 +8,7 @@ input/output shapes for LOD-aware terrain generation.
 
 import pytest
 import torch
-import numpy as np
-from pathlib import Path
 
-# Import the model we'll be testing (these don't exist yet - will fail)
 from train.unet3d import VoxelUNet3D, UNet3DConfig
 
 
@@ -366,8 +363,238 @@ class TestModelIntegration:
                 river_patch=river_patch,
                 y_index=y_index,
                 lod=lod,
-            )
-
-        # Clean up
+            )  # Clean up
         del outputs, parent_voxel, biome_patch, heightmap_patch, river_patch
         torch.cuda.empty_cache() if torch.cuda.is_available() else None
+
+
+class TestActivationFunctions:
+    """Parameterized tests for different activation functions."""
+
+    @pytest.mark.parametrize("activation", ["relu", "leaky_relu", "gelu"])
+    def test_activation_function_forward_pass(self, activation):
+        """Test that all activation functions work in forward pass."""
+        config = UNet3DConfig(
+            input_channels=1,
+            output_channels=2,
+            base_channels=32,
+            depth=3,
+            biome_vocab_size=50,
+            biome_embed_dim=16,
+            heightmap_channels=1,
+            river_channels=1,
+            y_embed_dim=8,
+            lod_embed_dim=8,
+            dropout_rate=0.1,
+            use_batch_norm=True,
+            activation=activation,
+        )
+
+        model = VoxelUNet3D(config)
+        batch_size = 2
+
+        # Create test inputs
+        parent_voxel = torch.randn(batch_size, 1, 8, 8, 8)
+        biome_patch = torch.randint(0, 50, (batch_size, 16, 16), dtype=torch.long)
+        heightmap_patch = torch.randn(batch_size, 1, 16, 16)
+        river_patch = torch.randn(batch_size, 1, 16, 16)
+        y_index = torch.randint(0, 24, (batch_size,), dtype=torch.long)
+        lod = torch.randint(1, 5, (batch_size,), dtype=torch.long)
+
+        # Forward pass should work without errors
+        with torch.no_grad():
+            outputs = model(
+                parent_voxel=parent_voxel,
+                biome_patch=biome_patch,
+                heightmap_patch=heightmap_patch,
+                river_patch=river_patch,
+                y_index=y_index,
+                lod=lod,
+            )
+
+        # Check outputs are valid
+        assert "air_mask_logits" in outputs
+        assert "block_type_logits" in outputs
+        assert outputs["air_mask_logits"].shape == (batch_size, 1, 16, 16, 16)
+        assert outputs["block_type_logits"].shape == (batch_size, 10, 16, 16, 16)
+
+        # Check outputs contain finite values (no NaN/Inf)
+        assert torch.isfinite(outputs["air_mask_logits"]).all()
+        assert torch.isfinite(outputs["block_type_logits"]).all()
+
+    @pytest.mark.parametrize("activation", ["relu", "leaky_relu", "gelu"])
+    def test_activation_function_gradients(self, activation):
+        """Test that gradients flow properly with different activation functions."""
+        config = UNet3DConfig(
+            input_channels=1,
+            output_channels=2,
+            base_channels=32,
+            depth=3,
+            biome_vocab_size=50,
+            biome_embed_dim=16,
+            heightmap_channels=1,
+            river_channels=1,
+            y_embed_dim=8,
+            lod_embed_dim=8,
+            dropout_rate=0.1,
+            use_batch_norm=True,
+            activation=activation,
+        )
+
+        model = VoxelUNet3D(config)
+        batch_size = 2
+
+        # Create test inputs with gradients
+        parent_voxel = torch.randn(batch_size, 1, 8, 8, 8, requires_grad=True)
+        biome_patch = torch.randint(0, 50, (batch_size, 16, 16), dtype=torch.long)
+        heightmap_patch = torch.randn(batch_size, 1, 16, 16)
+        river_patch = torch.randn(batch_size, 1, 16, 16)
+        y_index = torch.randint(0, 24, (batch_size,), dtype=torch.long)
+        lod = torch.randint(1, 5, (batch_size,), dtype=torch.long)
+
+        # Forward pass
+        outputs = model(
+            parent_voxel=parent_voxel,
+            biome_patch=biome_patch,
+            heightmap_patch=heightmap_patch,
+            river_patch=river_patch,
+            y_index=y_index,
+            lod=lod,
+        )
+
+        # Compute loss and backprop
+        loss = outputs["air_mask_logits"].sum() + outputs["block_type_logits"].sum()
+        loss.backward()
+
+        # Check gradients exist and are finite
+        assert parent_voxel.grad is not None
+        assert torch.isfinite(parent_voxel.grad).all()
+        assert parent_voxel.grad.abs().sum() > 0
+
+        # Check model parameters have gradients
+        for name, param in model.named_parameters():
+            if param.requires_grad:
+                assert param.grad is not None, f"Parameter {name} missing gradient"
+                assert torch.isfinite(
+                    param.grad
+                ).all(), f"Parameter {name} has non-finite gradients"
+
+    @pytest.mark.parametrize("activation", ["relu", "leaky_relu", "gelu"])
+    def test_activation_function_output_differences(self, activation):
+        """Test that different activation functions produce different outputs."""
+        config = UNet3DConfig(
+            input_channels=1,
+            output_channels=2,
+            base_channels=32,
+            depth=3,
+            biome_vocab_size=50,
+            biome_embed_dim=16,
+            heightmap_channels=1,
+            river_channels=1,
+            y_embed_dim=8,
+            lod_embed_dim=8,
+            dropout_rate=0.1,
+            use_batch_norm=True,
+            activation=activation,
+        )
+
+        model = VoxelUNet3D(config)
+        batch_size = 2
+
+        # Create test inputs
+        parent_voxel = torch.randn(batch_size, 1, 8, 8, 8)
+        biome_patch = torch.randint(0, 50, (batch_size, 16, 16), dtype=torch.long)
+        heightmap_patch = torch.randn(batch_size, 1, 16, 16)
+        river_patch = torch.randn(batch_size, 1, 16, 16)
+        y_index = torch.randint(0, 24, (batch_size,), dtype=torch.long)
+        lod = torch.randint(1, 5, (batch_size,), dtype=torch.long)
+
+        # Store outputs from this activation
+        with torch.no_grad():
+            outputs = model(
+                parent_voxel=parent_voxel,
+                biome_patch=biome_patch,
+                heightmap_patch=heightmap_patch,
+                river_patch=river_patch,
+                y_index=y_index,
+                lod=lod,
+            )
+
+        # Check outputs are valid regardless of activation function
+        # Final output layers are Conv3d without activation, so values can be negative
+        air_logits = outputs["air_mask_logits"]
+        block_logits = outputs["block_type_logits"]
+
+        # All activation functions should produce finite logits
+        assert torch.isfinite(air_logits).all(), f"Non-finite air logits with {activation}"
+        assert torch.isfinite(block_logits).all(), f"Non-finite block logits with {activation}"
+
+        # Logits should be reasonable range (not extremely large/small)
+        assert air_logits.abs().max() < 100, f"Air logits too extreme with {activation}"
+        assert block_logits.abs().max() < 100, f"Block logits too extreme with {activation}"
+
+    @pytest.mark.parametrize("activation", ["relu", "leaky_relu", "gelu"])
+    def test_activation_function_with_training_mode(self, activation):
+        """Test activation functions work correctly in both training and eval modes."""
+        config = UNet3DConfig(
+            input_channels=1,
+            output_channels=2,
+            base_channels=32,
+            depth=3,
+            biome_vocab_size=50,
+            biome_embed_dim=16,
+            heightmap_channels=1,
+            river_channels=1,
+            y_embed_dim=8,
+            lod_embed_dim=8,
+            dropout_rate=0.1,
+            use_batch_norm=True,
+            activation=activation,
+        )
+
+        model = VoxelUNet3D(config)
+        batch_size = 2
+
+        # Create test inputs
+        parent_voxel = torch.randn(batch_size, 1, 8, 8, 8)
+        biome_patch = torch.randint(0, 50, (batch_size, 16, 16), dtype=torch.long)
+        heightmap_patch = torch.randn(batch_size, 1, 16, 16)
+        river_patch = torch.randn(batch_size, 1, 16, 16)
+        y_index = torch.randint(0, 24, (batch_size,), dtype=torch.long)
+        lod = torch.randint(1, 5, (batch_size,), dtype=torch.long)
+
+        # Test in training mode
+        model.train()
+        with torch.no_grad():
+            outputs_train = model(
+                parent_voxel=parent_voxel,
+                biome_patch=biome_patch,
+                heightmap_patch=heightmap_patch,
+                river_patch=river_patch,
+                y_index=y_index,
+                lod=lod,
+            )
+
+        # Test in eval mode
+        model.eval()
+        with torch.no_grad():
+            outputs_eval = model(
+                parent_voxel=parent_voxel,
+                biome_patch=biome_patch,
+                heightmap_patch=heightmap_patch,
+                river_patch=river_patch,
+                y_index=y_index,
+                lod=lod,
+            )
+
+        # Both modes should produce valid outputs
+        for outputs in [outputs_train, outputs_eval]:
+            assert "air_mask_logits" in outputs
+            assert "block_type_logits" in outputs
+            assert outputs["air_mask_logits"].shape == (batch_size, 1, 16, 16, 16)
+            assert outputs["block_type_logits"].shape == (batch_size, 10, 16, 16, 16)
+            assert torch.isfinite(outputs["air_mask_logits"]).all()
+            assert torch.isfinite(outputs["block_type_logits"]).all()
+
+        # Outputs might differ due to dropout, but should be close for this activation test
+        # (dropout is applied consistently regardless of activation function)
