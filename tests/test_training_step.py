@@ -23,7 +23,7 @@ class TestTrainingStep:
 
     def test_training_step_backprop(self):
         """Test that training step performs forward pass, loss computation, and backprop"""
-        from train.step import training_step
+        from train.step import perform_training_step
 
         # Setup
         config = UNet3DConfig()
@@ -43,7 +43,7 @@ class TestTrainingStep:
         target_types = torch.randint(0, 10, (batch_size, 16, 16, 16)).long()
 
         # This should fail until training_step() is implemented
-        loss = training_step(
+        loss = perform_training_step(
             model=model,
             optimizer=optimizer,
             batch={
@@ -65,7 +65,7 @@ class TestTrainingStep:
 
     def test_training_step_updates_parameters(self):
         """Test that training step actually updates model parameters"""
-        from train.step import training_step
+        from train.step import perform_training_step
 
         # Setup
         config = UNet3DConfig()
@@ -90,7 +90,7 @@ class TestTrainingStep:
         }
 
         # Run training step
-        loss = training_step(
+        loss = perform_training_step(
             model=model,
             optimizer=optimizer,
             batch=batch,
@@ -110,7 +110,7 @@ class TestTrainingStep:
 
     def test_training_step_zero_gradients(self):
         """Test that training step properly zeros gradients before computation"""
-        from train.step import training_step
+        from train.step import perform_training_step
 
         config = UNet3DConfig()
         model = VoxelUNet3D(config)
@@ -136,7 +136,7 @@ class TestTrainingStep:
                 param.grad.fill_(1.0)
 
         # Run training step - should zero gradients internally
-        loss = training_step(
+        loss = perform_training_step(
             model=model,
             optimizer=optimizer,
             batch=batch,

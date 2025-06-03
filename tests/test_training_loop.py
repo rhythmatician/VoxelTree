@@ -55,7 +55,7 @@ class TestTrainingLoop:
         from train.trainer import VoxelTrainer
 
         config = {
-            "model": {"base_channels": 32, "num_levels": 3},
+            "model": {"base_channels": 32, "depth": 3},
             "training": {"batch_size": 2, "learning_rate": 1e-4},
         }
 
@@ -69,13 +69,14 @@ class TestTrainingLoop:
             from train.trainer import VoxelTrainer
 
             # Create mock data batch
+
             batch = {
                 "parent_voxel": torch.randn(2, 1, 8, 8, 8),
                 "biome_patch": torch.randint(0, 50, (2, 16, 16)),
-                "heightmap_patch": torch.randint(50, 100, (2, 16, 16)),
-                "river_patch": torch.randn(2, 16, 16),
+                "heightmap_patch": torch.randint(50, 100, (2, 1, 16, 16)).float(),
+                "river_patch": torch.randn(2, 1, 16, 16),
                 "y_index": torch.randint(0, 24, (2,)),
-                "lod_timestep": torch.randint(1, 10, (2,)),
+                "lod": torch.randint(0, 5, (2,)),
                 "target_mask": torch.randint(0, 2, (2, 1, 16, 16, 16)).float(),
                 "target_types": torch.randint(0, 10, (2, 16, 16, 16)).long(),
             }

@@ -13,7 +13,7 @@ import torch.nn as nn
 from typing import Dict, Any, Callable
 
 
-def training_step(
+def perform_training_step(
     model: nn.Module,
     optimizer: torch.optim.Optimizer,
     batch: Dict[str, torch.Tensor],
@@ -45,8 +45,7 @@ def training_step(
             batch_device[key] = value
 
     # Move model to device
-    model = model.to(device)
-    # Forward pass through model
+    model = model.to(device)  # Forward pass through model
     outputs = model(
         parent_voxel=batch_device["parent_voxel"],
         biome_patch=batch_device["biome_patch"],
