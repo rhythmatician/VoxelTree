@@ -35,7 +35,7 @@ def load_config(config_path: Optional[Path] = None) -> Dict[str, Any]:
     return config
 
 
-def load_worldgen_config(config_path: Optional[Path] = None) -> Dict[str, Any]:
+def load_worldgen_config(config_path: Optional[Path] = Path("config.yaml")) -> Dict[str, Any]:
     """
     Load worldgen configuration from config.yaml.
 
@@ -48,9 +48,6 @@ def load_worldgen_config(config_path: Optional[Path] = None) -> Dict[str, Any]:
     Raises:
         FileNotFoundError: If config file doesn't exist
     """
-    if config_path is None:
-        config_path = Path("config.yaml")
-
     if not config_path.exists():
         raise FileNotFoundError(f"Config file not found: {config_path}")
 
