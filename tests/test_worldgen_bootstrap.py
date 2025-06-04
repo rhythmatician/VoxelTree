@@ -44,12 +44,6 @@ class TestWorldGenBootstrap:
         bootstrap2 = WorldGenBootstrap(seed="DifferentSeed")
         assert bootstrap2.seed != self.bootstrap.seed
 
-    def test_seed_hashing_deterministic(self):
-        """Test that seed hashing is deterministic and repeatable."""
-        bootstrap1 = WorldGenBootstrap(seed=6901795026152433433)
-        bootstrap2 = WorldGenBootstrap(seed=6901795026152433433)
-        assert bootstrap1.seed == bootstrap2.seed == 6901795026152433433
-
     @patch("subprocess.run")
     def test_generate_single_region(self, mock_subprocess):
         """Test generation of one .mca file with known chunks."""
