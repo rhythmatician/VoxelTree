@@ -9,7 +9,7 @@ input/output shapes for LOD-aware terrain generation.
 import pytest
 import torch
 
-from train.unet3d import VoxelUNet3D, UNet3DConfig
+from train.unet3d import UNet3DConfig, VoxelUNet3D
 
 
 class TestVoxelUNet3D:

@@ -13,12 +13,13 @@ Key Features:
 - Memory-efficient architecture suitable for training on consumer GPUs
 """
 
-from typing import Dict, Literal, Union
+import math
 from dataclasses import dataclass
+from typing import Dict, Literal, Union
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import math
 
 
 def get_timestep_embedding(timesteps: torch.Tensor, embedding_dim: int) -> torch.Tensor:

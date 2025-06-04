@@ -24,7 +24,7 @@ from typing import Any, Dict, List, Optional, Union
 
 import numpy as np
 import torch
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import DataLoader, Dataset
 
 logger = logging.getLogger(__name__)
 

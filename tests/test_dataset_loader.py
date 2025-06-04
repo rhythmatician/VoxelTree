@@ -14,7 +14,7 @@ import pytest
 import torch
 
 # Import the classes we'll be testing (these don't exist yet - will fail)
-from train.dataset import VoxelTreeDataset, VoxelTreeDataLoader, TrainingDataCollator
+from train.dataset import TrainingDataCollator, VoxelTreeDataLoader, VoxelTreeDataset
 
 
 class TestVoxelTreeDataset:

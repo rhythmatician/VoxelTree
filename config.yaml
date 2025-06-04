@@ -12,8 +12,9 @@ worldgen:
     z_min: 0
     z_max: 128
   java_tools:
-    primary: "tools/minecraft-worldgen.jar"
-    fallback: "tools/fabric-worldgen-mod.jar"
+    primary: "tools/fabric-server/fabric-server-mc.1.21.5-loader.0.16.14-launcher.1.0.3.jar"
+    chunky: "tools/chunky/Chunky-Fabric-1.4.36.jar"
+    cubiomes: "tools/voxeltree_cubiomes_cli/voxeltree_cubiomes_cli.exe"
 
 # Extraction configuration (Phase 0C)
 extraction:

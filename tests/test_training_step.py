@@ -8,14 +8,15 @@ Tests a single training step with:
 - Optimizer step
 """
 
+from pathlib import Path
+
 import pytest
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from pathlib import Path
 
-from train.unet3d import VoxelUNet3D, UNet3DConfig
 from train.losses import voxel_loss_fn
+from train.unet3d import UNet3DConfig, VoxelUNet3D
 
 
 class TestTrainingStep:

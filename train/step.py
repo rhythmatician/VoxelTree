@@ -8,9 +8,10 @@ Implements a single training step that:
 - Updates model parameters
 """
 
+from typing import Any, Callable, Dict
+
 import torch
 import torch.nn as nn
-from typing import Dict, Any, Callable
 
 
 def perform_training_step(

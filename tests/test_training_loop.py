@@ -8,20 +8,21 @@ Tests the basic training loop with:
 - CSV/TensorBoard logs (5.4)
 """
 
+import csv
+import json
+import shutil
+import tempfile
+from pathlib import Path
+from unittest.mock import MagicMock, patch
+
+import numpy as np
 import pytest
 import torch
 import torch.nn as nn
-from pathlib import Path
-import tempfile
-import shutil
 import yaml
-from unittest.mock import MagicMock, patch
-import numpy as np
-import csv
-import json
 
-from train.unet3d import VoxelUNet3D, UNet3DConfig
 from train.dataset import VoxelTreeDataset
+from train.unet3d import UNet3DConfig, VoxelUNet3D
 
 
 class TestTrainingLoop:

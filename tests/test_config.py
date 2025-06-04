@@ -1,7 +1,9 @@
-import pytest
 from pathlib import Path
-from scripts.worldgen.config import load_config, load_worldgen_config
 from unittest.mock import mock_open, patch
+
+import pytest
+
+from scripts.worldgen.config import load_config, load_worldgen_config
 
 
 def test_load_config_file_not_found():

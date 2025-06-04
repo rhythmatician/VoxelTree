@@ -10,8 +10,8 @@ import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-import pytest
 import numpy as np
+import pytest
 
 from scripts.worldgen.vanilla_chunkgen import VanillaChunkGenerator
 

@@ -60,5 +60,6 @@ This directory contains tools for generating and extracting Minecraft world data
 
 ## References
 
-* Chunk pregen: [https://modrinth.com/mod/chunky](https://modrinth.com/mod/chunky)
-* Anvil parser: [https://github.com/0xTiger/anvil-parser2](https://github.com/0xTiger/anvil-parser2)
+* **Chunk pregen**: [Chunky Mod](https://modrinth.com/mod/chunky)
+* **Documentation**: [Chunky Wiki](https://github.com/pop4959/Chunky/wiki) - Complete reference for commands and configuration
+* **Anvil parser**: [anvil-parser2](https://github.com/0xTiger/anvil-parser2)
