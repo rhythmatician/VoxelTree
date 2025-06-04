@@ -20,13 +20,12 @@ class TestVanillaChunkGenerator:
     """Test suite for vanilla-accurate chunk generation."""
 
     example_region_path = "data/VoxelTree/r.0.0.mca.zip"
-    example_seed_text = "VoxelTree"
-    example_seed_numeric = 6901795026152433433  # Hash of the example seed (Do not change!)
+    example_seed_numeric = 6901795026152433433  # (Do not change!)
 
     @pytest.mark.skip(reason="Not implemented yet")
     def test_hash_seed(self):
         """Test that seed hashing produces consistent numeric output."""
-        generator = VanillaChunkGenerator(seed=self.example_seed_text)
+        generator = VanillaChunkGenerator(seed=self.example_seed_numeric)
         assert (
             generator.seed_numeric == self.example_seed_numeric
         ), f"Expected {self.example_seed_numeric}, got {generator.seed_numeric}"
@@ -35,7 +34,7 @@ class TestVanillaChunkGenerator:
         """Set up test fixtures before each test method."""
         self.test_temp_dir = Path(tempfile.mkdtemp())
         self.generator = VanillaChunkGenerator(
-            seed="VoxelTree",
+            seed=self.example_seed_numeric,
             minecraft_version="1.21.1",
             temp_world_dir=self.test_temp_dir / "temp_worlds",
         )
