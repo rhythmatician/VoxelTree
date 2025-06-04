@@ -125,7 +125,7 @@ Do not reference or use:
 worldgen:
   seed: "VoxelTree"
   java_heap: "4G"
-  chunk_batch_size: 32
+  chunk_batch_size: 32  # Number of chunks to process per batch during world generation and extraction (16-64 typical range)
   java_tools:
     primary: "tools/fabric-server/fabric-server-mc.1.21.5-loader.0.16.14-launcher.1.0.3.jar"
     chunky: "tools/chunky/Chunky-Fabric-1.4.36.jar"
@@ -134,5 +134,6 @@ worldgen:
 
 ---
 
-Copilot, you build the brain.
-We’ll handle the dirt.
+## 📝 Development Guidelines
+
+This document serves as the foundation for consistent, test-driven development in the VoxelTree project. Follow these instructions to ensure code quality and architectural coherence throughout the machine learning pipeline and world generation systems.
