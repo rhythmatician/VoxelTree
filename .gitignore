@@ -1,2 +1,5 @@
 *.pyc
 .coverage
+.fabric/
+libraries/
+logs/
