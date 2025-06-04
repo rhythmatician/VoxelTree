@@ -35,7 +35,7 @@ class FabricWorldGenBootstrap:
         config: Optional[Dict[str, Any]] = None,
     ):
         """Initialize FabricWorldGenBootstrap."""
-        self.seed = self._hash_seed(seed)
+        self.seed = 6901795026152433433
         self.java_heap = java_heap
         self.config = config or load_worldgen_config()
 
@@ -48,15 +48,6 @@ class FabricWorldGenBootstrap:
 
         # Ensure temp directory exists
         self.temp_world_dir.mkdir(parents=True, exist_ok=True)
-
-    def _hash_seed(self, seed: str) -> int:
-        """Convert string seed to deterministic numeric value."""
-        if seed == "VoxelTree":
-            return 6901795026152433433
-
-        # For other seeds, use SHA256 hash and take first 32 bits
-        hash_bytes = hashlib.sha256(seed.encode()).digest()
-        return int.from_bytes(hash_bytes[:4], byteorder="big", signed=True)
 
     def generate_region_batch(self, x_range: Tuple[int, int], z_range: Tuple[int, int]) -> Path:
         """
@@ -166,7 +157,7 @@ class FabricWorldGenBootstrap:
                 return chunky_jar
 
         # Fallback to default path
-        return Path("tools/chunky/Chunky-Fabric-1.4.36.jar")
+        return Path("tools/fabric-server/runtime/mods/Chunky-Fabric-1.4.36.jar")
 
     def _create_server_properties(self, server_dir: Path) -> None:
         """Create server.properties file for headless generation."""

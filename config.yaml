@@ -2,7 +2,7 @@
 # This file defines parameters for Minecraft world generation and training
 
 worldgen:
-  seed: "VoxelTree"  # Converts to -526697884
+  seed: 6901795026152433433
   java_heap: "4G"
   batch_size: 16     # Chunks per .mca generation batch
   max_temp_disk_gb: 5

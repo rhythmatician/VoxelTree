@@ -245,7 +245,7 @@ class TestWorldGenIntegration:
         fabric_jar = Path(
             "tools/fabric-server/fabric-server-mc.1.21.5-loader.0.16.14-launcher.1.0.3.jar"
         )
-        chunky_jar = Path("tools/chunky/Chunky-Fabric-1.4.36.jar")
+        chunky_jar = Path("tools/fabric-server/runtime/mods/Chunky-Fabric-1.4.36.jar")
 
         # Skip test if tools not available (CI environment)
         if not fabric_jar.exists() or not chunky_jar.exists():
@@ -285,7 +285,7 @@ class TestWorldGenIntegration:
         fabric_jar = Path(
             "tools/fabric-server/fabric-server-mc.1.21.5-loader.0.16.14-launcher.1.0.3.jar"
         )
-        chunky_jar = Path("tools/chunky/Chunky-Fabric-1.4.36.jar")
+        chunky_jar = Path("tools/fabric-server/runtime/mods/Chunky-Fabric-1.4.36.jar")
 
         if not fabric_jar.exists() or not chunky_jar.exists():
             pytest.skip("Fabric server or Chunky mod not available")
