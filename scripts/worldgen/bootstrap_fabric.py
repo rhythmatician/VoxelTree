@@ -191,7 +191,9 @@ force-gamemode=true
         Returns:
             True if successful, False otherwise
         """
-        cmd = ["java", f"-Xmx{self.java_heap}", "-jar", str(fabric_jar), "nogui"]
+        # Use Java 21 explicitly for Minecraft 1.21.5 compatibility
+        java_exe = r"C:/Program Files/Java/jdk-21/bin/java.exe"
+        cmd = [java_exe, f"-Xmx{self.java_heap}", "-jar", str(fabric_jar), "nogui"]
 
         try:
             # Start server process

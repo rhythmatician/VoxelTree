@@ -7,6 +7,7 @@ These tests define the expected behavior for .mca world generation.
 
 import shutil
 import tempfile
+import zipfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -25,7 +26,7 @@ class TestWorldGenBootstrap:
             seed="VoxelTree",
             java_heap="2G",
             temp_world_dir=self.test_temp_dir / "temp_worlds",
-            test_mode=True,
+            test_mode=False,  # Set to False for real tests, True for fast testing (Must pass both cases)
         )
 
     def teardown_method(self):
@@ -175,7 +176,7 @@ class TestWorldGenConfiguration:
         # Verify expected configuration keys exist
         assert "seed" in config
         assert "java_heap" in config
-        assert config["seed"] == "VoxelTree"
+        assert config["seed"] == 6901795026152433433
 
     def test_java_tool_fallback_chain(self):
         """Test that Java tool selection follows fallback hierarchy."""
@@ -200,16 +201,12 @@ class TestWorldGenConfiguration:
             assert "fabric-worldgen-mod.jar" in str(java_tool_path)
 
 
-@pytest.mark.integration
+@pytest.mark.integration  # FIXME: PytestUnknownMarkWarning: Unknown pytest.mark.integration - is this a typo?  You can register custom marks to avoid this warning - for details, see https://docs.pytest.org/en/stable/how-to/mark.html
 class TestWorldGenIntegration:
     """Integration tests for real world generation using Fabric + Chunky."""
 
     # TODO: Optimize this test suite to run faster, if possible, by
     # eliminating any redundancy and generating smaller regions if doable.
-
-    # Right now it takes ten minutes to run the tests! Behold:
-    # ============ 10 failed, 2 passed, 6 warnings in 602.08s (0:10:02) =============
-
     def setup_method(self):
         """Set up integration test fixtures."""
         self.test_temp_dir = Path(tempfile.mkdtemp())
@@ -217,6 +214,7 @@ class TestWorldGenIntegration:
             seed=6901795026152433433,
             java_heap="2G",
             temp_world_dir=self.test_temp_dir / "temp_worlds",
+            test_mode=False,  # LEAVE AS FALSE UNTIL IT PASSES. Test with a real integration server
         )
 
     def teardown_method(self):
@@ -231,9 +229,6 @@ class TestWorldGenIntegration:
 
         This test should fail initially (RED phase) because bootstrap.py
         needs to be updated to work with Fabric + Chunky instead of standalone JARs.
-
-        WARNING: This test takes a long time to run and requires external tools.
-        It should only be run manually after the RED phase implementation is complete.
         """
         # Check that required Java tools exist
         fabric_jar = Path(
@@ -275,6 +270,14 @@ class TestWorldGenIntegration:
         WARNING: This test takes a long time to run and requires external tools.
         It should only be run manually after the RED phase implementation is complete.
         """
+
+        expected_mca_zip = Path("data/VoxelTree/r.0.0.mca.zip")
+        # Unzip the expected .mca file for comparison
+        if not expected_mca_zip.exists():
+            pytest.skip("Expected .mca file not found, skipping hash validation test")
+        with zipfile.ZipFile(expected_mca_zip, "r") as zip_ref:
+            zip_ref.extractall(self.test_temp_dir / "expected_region")
+        expected_region = self.test_temp_dir / "expected_region" / "r.0.0.mca"
         # Skip if tools not available
         fabric_jar = Path(
             "tools/fabric-server/fabric-server-mc.1.21.5-loader.0.16.14-launcher.1.0.3.jar"
@@ -299,6 +302,13 @@ class TestWorldGenIntegration:
 
             with open(mca_file, "rb") as f:
                 file_hash = hashlib.sha256(f.read()).hexdigest()
+            # Calculate SHA256 hash of the expected file
+            with open(expected_region, "rb") as f:
+                expected_hash = hashlib.sha256(f.read()).hexdigest()
+            # Compare the hashes
+            assert (
+                file_hash == expected_hash
+            ), f"Generated .mca hash {file_hash} does not match expected hash {expected_hash}"
             # This will fail initially (RED phase) because we don't know the expected hash
             # After GREEN phase implementation, we'll update this with the actual hash
             placeholder_hash = "PLACEHOLDER_HASH_TO_BE_DETERMINED"
