@@ -396,9 +396,8 @@ class FabricWorldGenBootstrap:
             eula_file = world_path / "eula.txt"
             eula_file.write_text("eula=true\n")
             self.logger.info("Created EULA acceptance")
-
             # Start server
-            java_exe = r"C:/Program Files/Java/jdk-21/bin/java.exe"
+            java_exe = r"C:/Program Files/Eclipse Adoptium/jdk-21.0.7.6-hotspot/bin/java.exe"
             cmd = [
                 java_exe,
                 f"-Xmx{java_heap}",

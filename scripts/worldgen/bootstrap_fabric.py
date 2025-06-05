@@ -4,7 +4,6 @@ WorldGenBootstrap implementation for Fabric server + Chunky mod.
 This is the GREEN phase implementation to make integration tests pass.
 """
 
-import hashlib
 import json
 import logging
 import os
@@ -192,7 +191,7 @@ force-gamemode=true
             True if successful, False otherwise
         """
         # Use Java 21 explicitly for Minecraft 1.21.5 compatibility
-        java_exe = r"C:/Program Files/Java/jdk-21/bin/java.exe"
+        java_exe = r"C:/Program Files/Eclipse Adoptium/jdk-21.0.7.6-hotspot/bin/java.exe"
         cmd = [java_exe, f"-Xmx{self.java_heap}", "-jar", str(fabric_jar), "nogui"]
 
         try:
@@ -228,7 +227,7 @@ force-gamemode=true
                         logger.info("Server startup complete")
                         break
                     time.sleep(0.1)
-                except:
+                except Exception:
                     break
 
             if not server_ready:
@@ -301,7 +300,7 @@ force-gamemode=true
                             logger.info("Chunk generation completed")
                             break
                     time.sleep(0.1)
-                except:
+                except Exception:
                     break
 
             return generation_complete
