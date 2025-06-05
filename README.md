@@ -1,4 +1,4 @@
-![VoxelTree-logo-med](https://github.com/user-attachments/assets/c323591b-3fb1-48b6-a3c3-4a19cfcbeebf)
+![VoxelTree logo](https://github.com/user-attachments/assets/c323591b-3fb1-48b6-a3c3-4a19cfcbeebf)
 
 # 🌲 VoxelTree
 
