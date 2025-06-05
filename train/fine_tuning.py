@@ -14,6 +14,10 @@ import torch
 import torch.nn as nn
 from torch.optim import Optimizer
 
+from scripts.extraction.structure_extractor import (
+    StructureExtractor,
+    StructureValidationError,
+)
 from train.unet3d import UNet3DConfig, VoxelUNet3D
 
 logger = logging.getLogger(__name__)
@@ -144,3 +148,74 @@ def create_structure_aware_config(
 
     # Create new config
     return UNet3DConfig(**config_dict)
+
+
+def validate_structure_data_for_training(data_path: Path, world_path: Path = None) -> None:
+    """
+    Validate that structure data is available and sufficient for fine-tuning.
+
+    Args:
+        data_path: Path to the extracted data directory
+        world_path: Optional path to the world directory for level.dat validation
+
+    Raises:
+        StructureValidationError: If validation fails
+    """
+    logger.info("Validating structure data for fine-tuning...")
+
+    # Initialize structure extractor for validation
+    extractor = StructureExtractor()
+
+    if not extractor.enabled:
+        raise StructureValidationError(
+            "Structure extraction is disabled in config. "
+            "Enable 'extraction.structures.enabled=true' for structure-aware fine-tuning."
+        )
+
+    # Validate world structure generation if world path provided
+    if world_path and world_path.exists():
+        extractor.validate_world_structure_generation(world_path)
+
+    # Check if structure data files exist in the data directory
+    structure_files = list(data_path.glob("**/*structure*.npz"))
+
+    if not structure_files:
+        raise StructureValidationError(
+            f"No structure data files (*structure*.npz) found in {data_path}. "
+            f"Structure-aware fine-tuning requires extracted structure data. "
+            f"Run extraction with structure extraction enabled first."
+        )
+
+    logger.info(f"Found {len(structure_files)} structure data files")
+
+    # Sample a few files to validate structure content
+    sample_files = structure_files[: min(10, len(structure_files))]
+    files_with_structures = 0
+
+    for file_path in sample_files:
+        try:
+            import numpy as np
+
+            data = np.load(file_path)
+
+            # Check if structure data exists and has non-zero content
+            if "structure_mask" in data:
+                structure_mask = data["structure_mask"]
+                if structure_mask.sum() > 0:
+                    files_with_structures += 1
+
+        except Exception as e:
+            logger.warning(f"Could not validate structure file {file_path}: {e}")
+
+    structure_ratio = files_with_structures / len(sample_files) if sample_files else 0
+
+    if structure_ratio < 0.1:  # Less than 10% of files contain structures
+        raise StructureValidationError(
+            f"Only {structure_ratio:.3f} of sampled structure files contain actual structure data. "
+            f"This indicates the world may have been generated with generate-structures=false. "
+            f"Structure-aware fine-tuning requires worlds with structure generation enabled."
+        )
+
+    logger.info(
+        f"Structure validation passed: {structure_ratio:.3f} of files contain structure data"
+    )

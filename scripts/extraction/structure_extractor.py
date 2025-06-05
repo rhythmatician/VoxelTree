@@ -7,7 +7,7 @@ structure data from region files and prepares it for machine learning input.
 
 import logging
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Dict, List, Optional, Union
 
 import anvil  # type: ignore
 import numpy as np
@@ -15,6 +15,12 @@ import numpy as np
 from scripts.worldgen.config import load_config
 
 logger = logging.getLogger(__name__)
+
+
+class StructureValidationError(Exception):
+    """Raised when structure generation validation fails."""
+
+    pass
 
 
 class StructureExtractor:
@@ -60,6 +66,18 @@ class StructureExtractor:
         )
         self.position_encoding = structure_config.get("position_encoding", "normalized_offset")
 
+        # Validation settings
+        self.validate_structure_generation = structure_config.get(
+            "validate_structure_generation", True
+        )
+        self.min_structure_chunks_ratio = structure_config.get(
+            "min_structure_chunks_ratio", 0.1
+        )  # At least 10% of chunks should have structures
+
+        # Tracking for validation
+        self._chunks_processed = 0
+        self._chunks_with_structures = 0
+
         logger.info(f"StructureExtractor initialized with enabled={self.enabled}")
 
     def extract_structure_data(
@@ -98,15 +116,20 @@ class StructureExtractor:
 
             # Get chunk NBT data
             chunk_nbt = chunk.get_nbt()
-
             # Extract structure references from NBT data
             structures_found = []
             structure_positions = []
 
-            if (
-                "Structures" in chunk_nbt and "References" in chunk_nbt["Structures"]
-            ):  # Process each structure type in the chunk
-                for structure_key, structure_data in chunk_nbt["Structures"]["References"].items():
+            # Validate that structure generation was enabled when the world was created
+            has_structure_data = False
+
+            if "Structures" in chunk_nbt and "References" in chunk_nbt["Structures"]:
+                structure_refs = chunk_nbt["Structures"]["References"]
+                if structure_refs:  # Check if References dict is not empty
+                    has_structure_data = True
+
+                # Process each structure type in the chunk
+                for structure_key, structure_data in structure_refs.items():
                     # Remove minecraft: prefix if present
                     structure_type = structure_key.replace("minecraft:", "")
 
@@ -129,11 +152,29 @@ class StructureExtractor:
 
                             # Once matched, break out of the loop to avoid multiple matches
                             break
-
                     if not matched:
                         logger.warning(
                             f"Couldn't match structure type: {structure_type} to any base type"
-                        )
+                        )  # Log warning if no structure data was found (may indicate generate-structures=false)
+            if not has_structure_data:
+                logger.debug(
+                    f"No structure data found in chunk ({chunk_x}, {chunk_z}). "
+                    "This may be normal for some chunks, or could indicate that "
+                    "the world was generated with generate-structures=false."
+                )
+
+            # Update validation tracking
+            self._chunks_processed += 1
+            if has_structure_data:
+                self._chunks_with_structures += 1
+
+            # Check if we should validate structure generation
+            if (
+                self.validate_structure_generation
+                and self._chunks_processed > 0
+                and self._chunks_processed % 100 == 0
+            ):  # Check every 100 chunks
+                self._check_structure_generation_ratio()
 
             # Create structure mask (8×8×1 resolution)
             structure_mask = np.zeros(
@@ -261,3 +302,97 @@ class StructureExtractor:
         offset_z = np.clip(offset_z, -1.0, 1.0)
 
         return np.array([offset_x, offset_z], dtype=np.float32)
+
+    def _check_structure_generation_ratio(self) -> None:
+        """
+        Check if the ratio of chunks with structures meets the minimum threshold.
+
+        Raises:
+            StructureValidationError: If structure ratio is below threshold
+        """
+        if self._chunks_processed == 0:
+            return
+
+        structure_ratio = self._chunks_with_structures / self._chunks_processed
+
+        logger.info(
+            f"Structure validation: {self._chunks_with_structures}/{self._chunks_processed} "
+            f"chunks have structures ({structure_ratio:.3f} ratio)"
+        )
+
+        if structure_ratio < self.min_structure_chunks_ratio:
+            raise StructureValidationError(
+                f"Only {structure_ratio:.3f} of chunks contain structure data, "
+                f"which is below the minimum threshold of {self.min_structure_chunks_ratio}. "
+                f"This likely indicates that the world was generated with "
+                f"'generate-structures=false' in server.properties. "
+                f"Structure-aware fine-tuning requires worlds with structure generation enabled."
+            )
+
+    def validate_world_structure_generation(self, world_path: Path) -> None:
+        """
+        Validate that a world was generated with structure generation enabled.
+
+        Args:
+            world_path: Path to the world directory containing level.dat
+
+        Raises:
+            StructureValidationError: If validation fails
+        """
+        level_dat_path = world_path / "level.dat"
+
+        if not level_dat_path.exists():
+            raise StructureValidationError(
+                f"level.dat not found at {level_dat_path}. "
+                f"Cannot validate structure generation settings."
+            )
+
+        try:
+            # Try to read level.dat with anvil-parser
+            import anvil
+
+            level_nbt = anvil.read_level_dat(level_dat_path)
+            # Check if structure generation was enabled
+            data = level_nbt.get("Data", {})
+
+            # Check if generateStructures flag is disabled
+            generate_structures = data.get("generateStructures", True)
+
+            if not generate_structures:
+                raise StructureValidationError(
+                    f"World at {world_path} was generated with generateStructures=false. "
+                    f"Structure-aware fine-tuning requires worlds with structure generation enabled."
+                )
+
+            logger.info("World validation passed: structure generation is enabled")
+
+        except Exception as e:
+            logger.warning(
+                f"Could not validate structure generation settings for world at {world_path}: {e}. "
+                f"Proceeding with extraction but structure validation may fail later."
+            )
+
+    def get_structure_statistics(self) -> Dict[str, Union[int, float]]:
+        """
+        Get statistics about structure extraction progress.
+
+        Returns:
+            Dictionary with structure extraction statistics
+        """
+        if self._chunks_processed == 0:
+            structure_ratio = 0.0
+        else:
+            structure_ratio = self._chunks_with_structures / self._chunks_processed
+
+        return {
+            "chunks_processed": self._chunks_processed,
+            "chunks_with_structures": self._chunks_with_structures,
+            "structure_ratio": structure_ratio,
+            "min_required_ratio": self.min_structure_chunks_ratio,
+            "validation_enabled": self.validate_structure_generation,
+        }
+
+    def reset_validation_tracking(self) -> None:
+        """Reset validation tracking counters."""
+        self._chunks_processed = 0
+        self._chunks_with_structures = 0
