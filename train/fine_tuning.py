@@ -196,13 +196,12 @@ def validate_structure_data_for_training(data_path: Path, world_path: Path = Non
         try:
             import numpy as np
 
-            data = np.load(file_path)
-
-            # Check if structure data exists and has non-zero content
-            if "structure_mask" in data:
-                structure_mask = data["structure_mask"]
-                if structure_mask.sum() > 0:
-                    files_with_structures += 1
+            with np.load(file_path) as data:
+                # Check if structure data exists and has non-zero content
+                if "structure_mask" in data:
+                    structure_mask = data["structure_mask"]
+                    if structure_mask.sum() > 0:
+                        files_with_structures += 1
 
         except Exception as e:
             logger.warning(f"Could not validate structure file {file_path}: {e}")
