@@ -1,8 +1,9 @@
 # compare_noise_versions.py
 # Compares each overworld.json file in data/noise_settings/*/ to the 1.21.5 reference
 
-from pathlib import Path
 import json
+from pathlib import Path
+
 from deepdiff import DeepDiff
 
 base_path = Path("data/noise_settings")

@@ -7,9 +7,10 @@ in response to different conditioning inputs (biome, heightmap, y_index).
 RED Phase: These tests MUST FAIL initially if the model ignores conditioning inputs.
 """
 
-import torch
 import pytest
-from train.unet3d import VoxelUNet3D, UNet3DConfig
+import torch
+
+from train.unet3d import UNet3DConfig, VoxelUNet3D
 
 
 class TestConditioning:

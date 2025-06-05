@@ -2,15 +2,16 @@
 VoxelTree training orchestration and checkpoint management.
 """
 
+import logging
+import time
+from pathlib import Path
+from typing import Any, Dict, Tuple
+
 import torch
 import torch.optim as optim
-from pathlib import Path
-from typing import Dict, Any, Tuple
-import time
-import logging
 
-from .unet3d import VoxelUNet3D, UNet3DConfig
 from .losses import voxel_loss_fn
+from .unet3d import UNet3DConfig, VoxelUNet3D
 
 
 class VoxelTrainer:

@@ -1,7 +1,8 @@
 # tests\test_forward_pass.py
-import torch
 import pytest
-from train.unet3d import VoxelUNet3D, UNet3DConfig
+import torch
+
+from train.unet3d import UNet3DConfig, VoxelUNet3D
 
 
 class TestForwardPass:

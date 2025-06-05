@@ -4,9 +4,9 @@ Training logging utilities for VoxelTree.
 
 import csv
 import json
-from pathlib import Path
-from typing import Dict, Any, Optional
 import time
+from pathlib import Path
+from typing import Any, Dict, Optional
 
 # Import SummaryWriter at module level for easier testing
 try:

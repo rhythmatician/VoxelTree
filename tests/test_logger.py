@@ -1,9 +1,11 @@
-import pytest
 import csv
 import json
 import tempfile
 from pathlib import Path
-from unittest.mock import Mock, patch, mock_open
+from unittest.mock import Mock, mock_open, patch
+
+import pytest
+
 from train.logger import TrainingLogger
 
 

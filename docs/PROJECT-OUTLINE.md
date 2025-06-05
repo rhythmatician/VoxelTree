@@ -1,140 +1,146 @@
-# 🌲 VoxelTree Project Outline — TDD-Driven
+# 🌲 VoxelTree Project Outline — **Current Status (2025‑06‑05)**
 
-> Each numbered phase below corresponds to a **feature-driven TDD cycle**:
-
-* Begin by writing a failing test (RED)
-* Implement the logic to pass the test (GREEN)
-* Reflect and document lessons or pitfalls (REFACTOR)
-* Merge to `main` only after completing the cycle
+> **TDD workflow legend**
+> **[X]** = Cycle complete (RED → GREEN → REFACTOR)  **[ ]** = Not started  **[\~]** = In‑progress  **[🆕]** = Added or heavily modified since last outline
 
 ---
 
-## ✅ Phase 0 — Developer Infrastructure
+## ✅ Phase 0 — Developer Infrastructure
 
-| TDD Cycle | Goal               | Description                                    |
-| --------- | ------------------ | ---------------------------------------------- |
-| [X] 0.1  | Repo scaffold      | Set up `train/`, `scripts/`, `tests/`, `docs/` |
-| [X] 0.2  | CI with Pytest     | GitHub Actions or pre-commit hooks             |
-| [X] 0.3  | config.yaml loader | Validate all config options centrally          |
+**Status:** Complete
 
----
-
-## 🔄 Phase 0B — Real Chunk Generation (Vanilla-Compatible)
-
-| TDD Cycle | Goal                       | RED Test Focus                              |
-| --------- | -------------------------- | ------------------------------------------- |
-| [X] 0B.1 | Headless chunkgen CLI      | Fails if no `.mca` files are created        |
-| [X] 0B.2 | Validate `.mca` structure  | Fails if file lacks expected chunk sections |
-| [X] 0B.3 | Extract 16³ block arrays   | Fails if block states → arrays fail         |
-| [X] 0B.4 | Downsample → 8³            | Fails if pooling or alignment is wrong      |
-| [X] 0B.5 | Save `.npz` from real data | Fails if `.npz` keys differ from seed-only  |
-
-> 🆕 Hephaistos dependency has been removed. We now use [`anvil-parser2`](https://github.com/0xTiger/anvil-parser2), a modern Python library with full 1.18+ `.mca` support, to decode and extract chunk data.
-
-> 🆕 Chunk generation is handled via [`Chunky`](https://modrinth.com/mod/chunky) running on a Fabric server with Minecraft 1.21.5. The CLI spawns the server and invokes Chunky commands to pregenerate regions.
+| Cycle    | Goal                 | Notes                                                         |
+| -------- | -------------------- | ------------------------------------------------------------- |
+| [X] 0.1 | Repo scaffold        | `train/`, `scripts/`, `tests/`, `docs/` skeletons in place    |
+| [X] 0.2 | CI + pre‑commit      | GitHub Actions matrix (Ubuntu & Windows) + `pre‑commit` hooks |
+| [X] 0.3 | `config.yaml` loader | Centralised schema validation & env overrides                 |
 
 ---
 
-## 🧱 Phase 1 — `.mca` Chunk Extraction *(Legacy Mock Implementation)*
+## ✅ Phase 0B — Real Chunk Generation *(Vanilla 1.21.5 compatible)*
 
-| TDD Cycle | Goal                       | RED Test Focus                                   |
-| --------- | -------------------------- | ------------------------------------------------ |
-| [X] 1.1  | Load `.mca` file           | Fails if region is missing or unreadable         |
-| [X] 1.2  | Extract subchunks          | Fails if 16³ slices are incorrect or misaligned  |
-| [X] 1.3  | Downsample to 8³ parent    | Fails if pooling is inaccurate or shape mismatch |
-| [X] 1.4  | Save input-output `.npz`   | Fails if file format or keys are malformed       |
-| [X] 1.5  | Multiprocess batch extract | Fails if total sample count is off               |
+**Status:** Complete — 🆕 full refactor
 
----
+Implemented headless Fabric server bootstrap plus Chunky pregeneration. Region decode now uses **`anvil` (package: `anvil‑parser2`)** with verified 1.18 + support. Outputs: 16³ tensors, downsampled 8³ parents, persisted as `.npz`.
 
-## 🧬 Phase 1B — Seed-Based Input Generation
-
-> Headless extraction of biome, heightmap, and river signals using seed and position only.
-
-| TDD Cycle | Goal                          | RED Test Focus                               |
-| --------- | ----------------------------- | -------------------------------------------- |
-| [X] 1B.1 | Biome noise generator         | Fails if known `(x, z)` returns wrong biome  |
-| [X] 1B.2 | Heightmap sampler             | Fails if height doesn’t match reference      |
-| [X] 1B.3 | River noise patch             | Fails if expected signal is missing          |
-| [X] 1B.4 | Patch assembler (x, z window) | Fails if array shapes or padding are invalid |
-| [X] 1B.5 | Save `.npz` seed-only input   | Fails if file missing expected keys          |
+| Cycle     | Goal                      | Result                                                           |
+| --------- | ------------------------- | ---------------------------------------------------------------- |
+| [X] 0B.1 | Headless chunkgen CLI     | `scripts/worldgen/bootstrap.py` spawns & scripts Fabric + Chunky |
+| [X] 0B.2 | Validate `.mca` structure | Integrity tests ensure expected chunk sections exist             |
+| [X] 0B.3 | Extract 16³ block arrays  | `scripts/extraction/chunk_extractor.py` converts NBT → numpy     |
+| [X] 0B.4 | Downsample → 8³           | Verified pooling alignment unit tests                            |
+| [X] 0B.5 | Save real‑data `.npz`     | Parity with seed‑only format confirmed                           |
 
 ---
 
-## 🧮 Phase 2 — LOD Patch Pairing
+## ✅ Phase 1 — `.mca` Chunk Extraction *(Legacy mock remains for regression)*
 
-| TDD Cycle | Goal                         | RED Test Focus                                |
-| --------- | ---------------------------- | --------------------------------------------- |
-| [X] 2.1  | Assemble parent-child pairs  | Fails if LOD mismatch or alignment issue      |
-| [X] 2.2  | Link with seed-derived input | Fails if biome/heightmap pairing is incorrect |
-| [X] 2.3  | Validate patch format        | Fails if any training example is malformed    |
+**Status:** Complete – superseded by 0B but kept for sanity tests.
 
----
-
-## 📦 Phase 3 — Dataset Loader
-
-| TDD Cycle | Goal                       | RED Test Focus                                  |
-| --------- | -------------------------- | ----------------------------------------------- |
-| [X] 3.1  | Load `.npz` training patch | Fails if file missing or data misaligned        |
-| [ ] 3.2  | PyTorch Dataset impl       | Fails if `__getitem__` returns bad shapes       |
-| [ ] 3.3  | Batch collation            | Fails if PyTorch DataLoader returns wrong batch |
+| Cycle        | Goal                             | Result                                        |
+| ------------ | -------------------------------- | --------------------------------------------- |
+| [X] 1.1–1.5 | Mock extractor + multiproc batch | Tests still pass to guard against regressions |
 
 ---
 
-## 🧠 Phase 4 — Model Architecture
+## ✅ Phase 1B — Seed‑Based Input Generation
 
-| TDD Cycle | Goal                    | RED Test Focus                               |
-| --------- | ----------------------- | -------------------------------------------- |
-| [X] 4.1  | 3D U-Net instantiate    | Fails if network doesn't build with config   |
-| [X] 4.2  | Forward pass (8³→16³)   | Fails if logits or mask shapes are incorrect |
-| [X] 4.3  | Conditioning via inputs | Fails if biome/heightmap/y-index not used    |
-| [X] 4.4  | LOD timestep embedding  | Fails if output doesn't vary by timestep     |
+**Status:** Complete
+
+Generates biome IDs, heightmap slices, river noise & patch coordinates purely from `(seed, x, z)` via `tools/voxeltree_cubiomes_cli/`. Output cached as `.npz`.
 
 ---
 
-## 🏋️ Phase 5 — Training Loop
+## ✅ Phase 2 — LOD Patch Pairing
 
-| TDD Cycle | Goal                    | RED Test Focus                         |
-| --------- | ----------------------- | -------------------------------------- |
-| [X] 5.1  | Dry run 1 epoch         | Fails if no gradient/backprop recorded |
-| [ ] 5.2  | Checkpoint saving       | Fails if `.pt` missing or corrupted    |
-| [ ] 5.3  | Resume training         | Fails if epoch count doesn’t continue  |
-| [ ] 5.4  | CSV or TensorBoard logs | Fails if logs not written              |
+**Status:** Complete
+
+Parent 8³ + child 16³ + seed‑derived conditioning zipped into training samples; cross‑checked alignment tests.
 
 ---
 
-## 🧪 Phase 6 — Evaluation + Visualization
+## ✅ Phase 3 — Dataset Loader
 
-| TDD Cycle | Goal                   | RED Test Focus                                |
-| --------- | ---------------------- | --------------------------------------------- |
-| [ ] 6.1  | Accuracy metrics       | Fails if mask/type accuracy is incorrect      |
-| [ ] 6.2  | IoU / Dice scores      | Fails if overlap metrics are invalid          |
-| [ ] 6.3  | 3D voxel visualization | Fails if matplotlib renders are missing/blank |
+**Status:** Complete (Phase 3.1 REF factor finished)
+
+`train/dataset.py` + custom collator support lazy NPZ loading, optional RAM cache, and full type hints. All data‑shape validation tests pass.
 
 ---
 
-## 📤 Phase 7 — ONNX Export
+## ✅ Phase 4 — Model Architecture
 
-| TDD Cycle | Goal                     | RED Test Focus                   |
-| --------- | ------------------------ | -------------------------------- |
-| [ ] 7.1  | Export ONNX              | Fails if `.onnx` missing         |
-| [ ] 7.2  | Validate ONNX vs PyTorch | Fails if outputs diverge         |
-| [ ] 7.3  | ONNX shape tests         | Fails if runtime inference fails |
+**Status:** Complete
 
----
+`train/unet3d.py` implements multichannel 3‑D U‑Net with dual heads (block logits, air mask) and integrated conditioning (biome, height, river, LOD positional encoding).
 
-## 🚦 Phase 8 — Disk-Aware Batch Controller
-
-| TDD Cycle | Goal                   | RED Test Focus                              |
-| --------- | ---------------------- | ------------------------------------------- |
-| [ ] 8.1  | Cap disk usage         | Fails if chunk cache exceeds max GB         |
-| [ ] 8.2  | Delete old data        | Fails if temporary files remain after batch |
-| [ ] 8.3  | Region history logging | Fails if same (x, z) reused in epoch        |
-| [ ] 8.4  | Retry failed patches   | Fails if skipped examples aren’t retried    |
+| Cycle    | Goal                    |
+| -------- | ----------------------- |
+| [X] 4.1 | Instantiate network     |
+| [X] 4.2 | Forward pass (8³ → 16³) |
+| [X] 4.3 | Conditioning inputs     |
+| [X] 4.4 | LOD timestep embedding  |
 
 ---
 
-## 📘 References
+## ✅ Phase 5 — Training Loop
 
-* Training goals and input/output schema: see [`docs/TRAINING-OVERVIEW.md`](docs/TRAINING-OVERVIEW.md)
-* Model architecture and LOD support strategy: see [`copilot-instructions.md`](.github/copilot-instructions.md)
+**Status:** Complete
+
+`train/trainer.py` handles epoch loop, gradient step (`train/step.py`), checkpoint save/resume, CSV & TensorBoard logging (`train/logger.py`). End‑to‑end dry‑run integration test passes.
+
+| Cycle    | Goal               |
+| -------- | ------------------ |
+| [X] 5.1 | One‑epoch dry run  |
+| [X] 5.2 | Checkpoint saving  |
+| [X] 5.3 | Resume training    |
+| [X] 5.4 | Logging (CSV + TB) |
+
+---
+
+## 🧪 Phase 6 — Evaluation & Visualization
+
+**Status:** [ ] Not started
+
+| Planned Cycle | Goal                                 |
+| ------------- | ------------------------------------ |
+| 6.1           | Accuracy metrics (mask & block type) |
+| 6.2           | IoU / Dice scores                    |
+| 6.3           | 3‑D voxel render previews            |
+
+---
+
+## 📤 Phase 7 — ONNX Export
+
+**Status:** [ ] Not started
+
+| Planned Cycle | Goal                          |
+| ------------- | ----------------------------- |
+| 7.1           | Export to ONNX                |
+| 7.2           | PyTorch vs ONNX parity tests  |
+| 7.3           | Static‑shape compliance check |
+
+---
+
+## 🚦 Phase 8 — Disk‑Aware Batch Controller
+
+**Status:** [ ] Not started
+
+| Planned Cycle | Goal                            |
+| ------------- | ------------------------------- |
+| 8.1           | Cap disk usage during chunk gen |
+| 8.2           | Auto‑purge old batches          |
+| 8.3           | Generation history tracking     |
+| 8.4           | Retry failed patch extracts     |
+
+---
+
+## 📌 Immediate Next Steps
+
+1. Kick off Phase 6: draft RED tests for metrics & renders.
+2. Prototype lightweight voxel visualiser (matplotlib ↔ trame) for QA.
+3. Begin ONNX export early—catch unsupported ops ASAP.
+4. Draft spec for Phase 8 (likely SQLite state + daemonized worker).
+
+---
+
+*Outline refreshed on **2025‑06‑05** based on branch `feat‑headless‑chunk‑maker`.*

@@ -1,9 +1,9 @@
 # extract_noise_settings.py
 # Extracts all terrain noise_settings files from .jar files in .minecraft/versions/
 
+import shutil
 import zipfile
 from pathlib import Path
-import shutil
 
 # Input: official Minecraft version JARs
 jar_dir = Path.home() / "AppData/Roaming/.minecraft/versions"

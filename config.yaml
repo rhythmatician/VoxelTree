@@ -2,48 +2,49 @@
 # This file defines parameters for Minecraft world generation and training
 
 worldgen:
-  seed: "VoxelTree"  # Converts to -526697884
+  seed: 6901795026152433433
   java_heap: "4G"
-  batch_size: 16     # Chunks per .mca generation batch
+  batch_size: 16 # Chunks per .mca generation batch
   max_temp_disk_gb: 5
   chunk_region_bounds:
     x_min: 0
-    x_max: 128        # 2048 chunks = 128 regions
+    x_max: 128 # 2048 chunks = 128 regions
     z_min: 0
     z_max: 128
   java_tools:
-    primary: "tools/minecraft-worldgen.jar"
-    fallback: "tools/fabric-worldgen-mod.jar"
+    primary: "tools/fabric-server/fabric-server-mc.1.21.5-loader.0.16.14-launcher.1.0.3.jar"
+    chunky: "tools/fabric-server/runtime/mods/Chunky-Fabric-1.4.36.jar"
+    cubiomes: "tools/voxeltree_cubiomes_cli/voxeltree_cubiomes_cli.exe"
 
 # Extraction configuration (Phase 0C)
 extraction:
   output_dir: "data/chunks"
   temp_dir: "temp_extraction"
   max_disk_usage_gb: 10
-  batch_size: 64              # chunks per batch before disk write
-  num_workers: 4              # multiprocessing workers
-  compression_level: 6        # npz compression (1-9)
+  batch_size: 64 # chunks per batch before disk write
+  num_workers: 4 # multiprocessing workers
+  compression_level: 6 # npz compression (1-9)
   validation:
     verify_checksums: true
     detect_corruption: true
   block_mapping:
-    air_blocks: [0]           # block IDs considered "air"
-    solid_blocks: [1, 2, 3]   # common solid block IDs
+    air_blocks: [0] # block IDs considered "air"
+    solid_blocks: [1, 2, 3] # common solid block IDs
   heightmap:
     surface_blocks: [2, 3, 4] # blocks that count as "surface"
-    min_height: -64           # world bottom (Y coordinate)
-    max_height: 320           # world top (Y coordinate)
+    min_height: -64 # world bottom (Y coordinate)
+    max_height: 320 # world top (Y coordinate)
 
 # Training configuration (for later phases)
 training:
   batch_size: 32
   learning_rate: 0.001
   epochs: 100
-  device: "cuda"  # or "cpu"
+  device: "cuda" # or "cpu"
 
 # Data configuration
 data:
-  chunk_format: "npz"  # Compressed numpy format
+  chunk_format: "npz" # Compressed numpy format
   max_chunks_in_memory: 1000
   temp_data_dir: "data/temp"
   processed_data_dir: "data/processed"
@@ -52,38 +53,38 @@ data:
 seed_inputs:
   output_dir: "data/seed_inputs"
   default_patch_size: 16
-  biome_source: "vanilla"     # Use deterministic biome generator (not noise)
-  resolution: 4               # 4x4 blocks per biome sample (vanilla)
+  biome_source: "vanilla" # Use deterministic biome generator (not noise)
+  resolution: 4 # 4x4 blocks per biome sample (vanilla)
   noise_parameters:
     # Only used for heightmap and river generation
-    height_scale: 0.01        # Medium scale for height variation
-    river_scale: 0.005        # Medium scale for river features
+    height_scale: 0.01 # Medium scale for height variation
+    river_scale: 0.005 # Medium scale for river features
   height_parameters:
-    base_height: 64           # Sea level equivalent
-    height_variation: 60      # Max height variation (+/- from base)
-    min_height: 0             # Absolute minimum height
-    max_height: 384           # Absolute maximum height
+    base_height: 64 # Sea level equivalent
+    height_variation: 60 # Max height variation (+/- from base)
+    min_height: 0 # Absolute minimum height
+    max_height: 384 # Absolute maximum height
   vanilla_biome:
     # Configuration for deterministic biome generation
-    java_tool: "tools/amidst-cli.jar"  # Path to biome generation tool
-    fallback_tool: "tools/cubeseed.jar"  # Fallback biome tool
-    cache_dir: "data/biome_cache"      # Cache generated biome maps
-    chunk_batch_size: 64               # Chunks to generate per batch
+    java_tool: "tools/amidst-cli.jar" # Path to biome generation tool
+    fallback_tool: "tools/cubeseed.jar" # Fallback biome tool
+    cache_dir: "data/biome_cache" # Cache generated biome maps
+    chunk_batch_size: 64 # Chunks to generate per batch
 
 # Pairing configuration (Phase 2)
 pairing:
-  extracted_data_dir: "data/chunks"      # Input: extracted chunk data
-  seed_inputs_dir: "data/seed_inputs"    # Input: seed-derived inputs
-  output_dir: "data/pairs"               # Output: parent-child pairs
-  lod_levels: 4                          # Number of LOD levels to generate
+  extracted_data_dir: "data/chunks" # Input: extracted chunk data
+  seed_inputs_dir: "data/seed_inputs" # Input: seed-derived inputs
+  output_dir: "data/pairs" # Output: parent-child pairs
+  lod_levels: 4 # Number of LOD levels to generate
   pair_format:
-    parent_shape: [8, 8, 8]              # Parent voxel dimensions
-    target_shape: [16, 16, 16]           # Target voxel dimensions
-    compression_level: 6                 # NPZ compression level
+    parent_shape: [8, 8, 8] # Parent voxel dimensions
+    target_shape: [16, 16, 16] # Target voxel dimensions
+    compression_level: 6 # NPZ compression level
   validation:
-    validate_alignment: true             # Check LOD alignment
-    detect_corruption: true              # Detect corrupted pairs
+    validate_alignment: true # Check LOD alignment
+    detect_corruption: true # Detect corrupted pairs
   batch_processing:
-    chunk_batch_size: 32                 # Chunks per batch
-    num_workers: 4                       # Multiprocessing workers
-    max_memory_gb: 8                     # Memory limit during processing
+    chunk_batch_size: 32 # Chunks per batch
+    num_workers: 4 # Multiprocessing workers
+    max_memory_gb: 8 # Memory limit during processing

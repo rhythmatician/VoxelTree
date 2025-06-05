@@ -10,8 +10,9 @@ Test Focus: "Fails if output doesn't vary by timestep"
 
 import pytest
 import torch
-from train.unet3d import VoxelUNet3D, UNet3DConfig
 import torch.nn as nn
+
+from train.unet3d import UNet3DConfig, VoxelUNet3D
 
 
 class TestLODTimestepEmbedding:
