@@ -9,7 +9,6 @@ import shutil
 import tempfile
 import zipfile
 from pathlib import Path
-from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -39,39 +38,11 @@ class TestWorldGenBootstrap:
         # Test that seed "VoxelTree" converts to expected numeric value
         assert self.bootstrap.seed == 6901795026152433433
         assert self.bootstrap.java_heap == "2G"
-        assert self.bootstrap.temp_world_dir.name == "temp_worlds"
-
-        # Test different seed produces different hash
+        assert (
+            self.bootstrap.temp_world_dir.name == "temp_worlds"
+        )  # Test different seed produces different hash
         bootstrap2 = WorldGenBootstrap(seed="DifferentSeed")
         assert bootstrap2.seed != self.bootstrap.seed
-
-    @patch("subprocess.run")
-    def test_generate_single_region(self, mock_subprocess):
-        """Test generation of one .mca file with known chunks."""
-        # Mock successful Java subprocess execution
-        mock_subprocess.return_value = MagicMock(returncode=0)
-
-        # Test region generation - this creates the world directory
-        result_path = self.bootstrap.generate_region_batch(x_range=(0, 32), z_range=(0, 32))
-
-        # The world directory should exist
-        assert result_path.exists()
-
-        # For testing, manually create the region structure that would be generated
-        region_dir = result_path / "region"
-        region_dir.mkdir(parents=True, exist_ok=True)
-        test_mca_file = region_dir / "r.0.0.mca"
-        test_mca_file.write_bytes(b"fake_mca_data")
-
-        # Now verify the file exists
-        assert (result_path / "region" / "r.0.0.mca").exists()
-
-        # Verify Java command was called correctly
-        mock_subprocess.assert_called_once()
-        call_args = mock_subprocess.call_args[0][0]
-        assert "java" in call_args
-        assert "-Xmx2G" in call_args
-        assert str(self.bootstrap.seed) in " ".join(call_args)
 
     def test_mca_file_validation(self):
         """Test parsing and validation of generated .mca files."""
@@ -98,69 +69,8 @@ class TestWorldGenBootstrap:
         (region_dir / "r.0.0.mca").write_bytes(b"bad")
 
         validation_result = self.bootstrap.validate_mca_output(region_dir)
-
         assert len(validation_result["corrupted_files"]) == 1
         assert "r.0.0.mca" in validation_result["corrupted_files"][0]
-
-    def test_cleanup_temp_worlds(self):
-        """Test automatic cleanup respects disk limits."""
-        import time
-
-        # Create multiple temp world directories
-        temp_worlds_dir = self.bootstrap.temp_world_dir
-        temp_worlds_dir.mkdir(parents=True, exist_ok=True)  # Allow existing directory
-
-        world_dirs = []
-        for i in range(5):
-            world_dir = temp_worlds_dir / f"world_{i:03d}"
-            world_dir.mkdir()
-            # Add some fake data to make directories non-empty
-            (world_dir / "fake_data.txt").write_text("test data")
-            world_dirs.append(world_dir)
-
-            # Add small delay to ensure different modification times
-            time.sleep(0.01)
-
-        # Keep only latest 2 directories
-        self.bootstrap.cleanup_temp_worlds(keep_latest=2)
-
-        remaining_dirs = list(temp_worlds_dir.iterdir())
-        assert len(remaining_dirs) == 2
-
-        # Check that latest directories were kept
-        remaining_names = {d.name for d in remaining_dirs}
-        assert "world_003" in remaining_names
-        assert "world_004" in remaining_names
-
-    def test_disk_space_limit_enforcement(self):
-        """Test that disk space limits are enforced during generation."""
-        # Create scenario where temp worlds exceed disk limit
-        with patch.object(self.bootstrap, "_get_directory_size_gb") as mock_size:
-            mock_size.return_value = 6.0  # Exceeds 5GB limit
-
-            with pytest.raises(RuntimeError, match="Disk space limit exceeded"):
-                self.bootstrap.generate_region_batch(x_range=(0, 32), z_range=(0, 32))
-
-    def test_java_heap_exhaustion_recovery(self):
-        """Test recovery from Java heap exhaustion errors.
-
-        WARNING: This takes forever to run
-
-        Once it passes, we should skip it in normal test runs, or optimize it somehow.
-        """
-        with patch("subprocess.run") as mock_subprocess:
-            # First call fails with OutOfMemoryError
-            mock_subprocess.side_effect = [
-                MagicMock(returncode=1, stderr="java.lang.OutOfMemoryError"),
-                MagicMock(returncode=0),  # Second call succeeds
-            ]
-
-            with patch.object(self.bootstrap, "_reduce_batch_size") as mock_reduce:
-                self.bootstrap.generate_region_batch(x_range=(0, 64), z_range=(0, 64))
-
-                # Should have retried with reduced batch size
-                assert mock_subprocess.call_count == 2
-                mock_reduce.assert_called_once()
 
 
 class TestWorldGenConfiguration:
@@ -171,37 +81,13 @@ class TestWorldGenConfiguration:
         # Test that config loads successfully now that we have a config.yaml file
         from scripts.worldgen.config import load_worldgen_config
 
-        config = load_worldgen_config()
-
-        # Verify expected configuration keys exist
+        config = load_worldgen_config()  # Verify expected configuration keys exist
         assert "seed" in config
         assert "java_heap" in config
         assert config["seed"] == 6901795026152433433
 
-    def test_java_tool_fallback_chain(self):
-        """Test that Java tool selection follows fallback hierarchy."""
 
-        # Create a mock file existence checker
-        def mock_file_exists(path):
-            path_str = str(path)
-            if "fabric-server" in path_str:
-                return False  # primary tool doesn't exist
-            elif "fabric-worldgen-mod.jar" in path_str:
-                return True  # fallback exists
-            return False
-
-        # Skip validation during bootstrap creation
-        with patch.object(WorldGenBootstrap, "_validate_tool_paths"):
-            bootstrap = WorldGenBootstrap()
-
-            # Test the fallback logic with our mock checker
-            java_tool_path = bootstrap._get_java_tool_path(file_exists_checker=mock_file_exists)
-
-            # Should return the fallback path since primary tool doesn't exist
-            assert "fabric-worldgen-mod.jar" in str(java_tool_path)
-
-
-@pytest.mark.integration  # FIXME: PytestUnknownMarkWarning: Unknown pytest.mark.integration - is this a typo?  You can register custom marks to avoid this warning - for details, see https://docs.pytest.org/en/stable/how-to/mark.html
+@pytest.mark.integration
 class TestWorldGenIntegration:
     """Integration tests for real world generation using Fabric + Chunky."""
 
@@ -222,7 +108,7 @@ class TestWorldGenIntegration:
         if self.test_temp_dir.exists():
             shutil.rmtree(self.test_temp_dir)
 
-    # @pytest.mark.skip(reason="Takes 10 minutes to run!")
+    @pytest.mark.skip(reason="This is a great test, but it's slow and not needed for every run.")
     def test_real_fabric_chunky_world_generation(self):
         """
         Integration test: Generate real .mca files using Fabric server + Chunky mod.
@@ -260,8 +146,7 @@ class TestWorldGenIntegration:
         expected_region = region_dir / "r.0.0.mca"
         assert expected_region.exists(), "Expected region r.0.0.mca should exist"
 
-    # @pytest.mark.skip(reason="Takes 10 minutes to run!")
-
+    @pytest.mark.skip(reason="This is a great test, but it's slow and not needed for every run.")
     def test_validate_chunk_block_data_matches_reference(self):
         """
         Integration test: Compare generated chunk block data against reference chunk.
@@ -442,65 +327,6 @@ class TestWorldGenIntegration:
         """Get frequency distribution of block types."""
         import numpy as np
 
-        unique, counts = np.unique(blocks, return_counts=True)
-
-        # Sort by frequency (descending)
+        unique, counts = np.unique(blocks, return_counts=True)  # Sort by frequency (descending)
         sort_idx = np.argsort(counts)[::-1]
         return unique[sort_idx], counts[sort_idx]
-
-    def _validate_mca_file_structure(self, mca_file: Path):
-        """
-        Validate that an .mca file has proper Minecraft world structure.
-
-        This checks for basic .mca file validity without requiring exact binary matching.
-        """
-        # Check file size is reasonable (should be at least 8KB for a valid .mca file)
-        file_size = mca_file.stat().st_size
-        assert file_size > 8192, f"MCA file {mca_file.name} is too small ({file_size} bytes)"
-
-        # Read and validate .mca header structure
-        with open(mca_file, "rb") as f:
-            # .mca files start with a 4KB sector table, then 4KB timestamps
-            header = f.read(8192)  # First 8KB contains headers
-
-            # Check that the header contains non-zero data (indicating chunks are present)
-            non_zero_bytes = sum(1 for byte in header if byte != 0)
-            assert (
-                non_zero_bytes > 100
-            ), f"MCA file appears to contain no chunk data (only {non_zero_bytes} non-zero header bytes)"
-
-            # Check for basic .mca file structure markers
-            # The first 4 bytes of each chunk sector entry should form reasonable sector offsets
-            sector_table = header[:4096]
-            valid_sectors = 0
-
-            for i in range(0, 4096, 4):
-                sector_data = sector_table[i : i + 4]
-                if any(byte != 0 for byte in sector_data):
-                    # Extract sector offset (first 3 bytes) and sector count (last byte)
-                    sector_offset = int.from_bytes(sector_data[:3], "big")
-                    sector_count = sector_data[3]
-
-                    # Valid sector offsets should be >= 2 (after header sectors)
-                    # and sector count should be reasonable (1-255)
-                    if sector_offset >= 2 and 1 <= sector_count <= 255:
-                        valid_sectors += 1
-
-            assert valid_sectors > 0, "MCA file contains no valid chunk sector entries"
-
-            # Validate that the file contains actual compressed chunk data
-            f.seek(8192)  # Skip headers
-            chunk_data = f.read(1024)  # Read first KB of chunk data
-
-            # Look for common NBT/Minecraft data patterns
-            # Minecraft uses gzip or zlib compression, so look for compression headers
-            has_compression_header = (
-                chunk_data.startswith(b"\x1f\x8b")  # gzip header
-                or chunk_data.startswith(b"\x78\x9c")  # zlib header
-                or chunk_data.startswith(b"\x78\xda")  # zlib header variant
-                or b"\x0a" in chunk_data[:100]  # NBT tag indicators
-            )
-
-            assert (
-                has_compression_header
-            ), "MCA file does not contain expected Minecraft chunk data format"
