@@ -26,6 +26,9 @@ jobs:
           pip install -r requirements.txt
           pip install black flake8 mypy pytest pytest-cov
 
+      - name: Grant execute permissions to CLI tool
+        run: chmod +x tools/voxeltree_cubiomes_cli/voxeltree_cubiomes_cli.exe
+
       - name: Set PYTHONPATH
         run: echo "PYTHONPATH=$PYTHONPATH:$(pwd)/src" >> $GITHUB_ENV
 
