@@ -6,3 +6,4 @@ logs/
 tools/fabric-server/runtime/eula.txt
 data/test_world/region/*
 debug_*
+output.txt
