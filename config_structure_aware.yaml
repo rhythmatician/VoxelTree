@@ -1,0 +1,66 @@
+# Structure-Aware Fine-Tuning Configuration
+
+# Baseline model to load weights from
+baseline:
+  checkpoint_path: "models/terrain_baseline.pth"
+  strict_loading: false
+
+# Structure-aware fine-tuning settings
+fine_tuning:
+  learning_rate: 0.0001 # Lower learning rate for fine-tuning
+  epochs: 50
+  batch_size: 16
+  optimizer: "adam"
+  weight_decay: 0.0001
+  lr_scheduler: "cosine"
+  freeze_encoder: true
+  unfreeze_structure_branches: true
+
+# Structure configuration
+structures:
+  enabled: true
+  mask_resolution: 8 # Resolution of structure masks (8x8)
+  types:
+    - "village"
+    - "fortress"
+    - "monument"
+    - "mansion"
+    - "ruined_portal"
+    - "outpost"
+    - "bastion"
+    - "temple"
+    - "stronghold"
+    - "mineshaft"
+  position_encoding: "normalized_offset"
+
+# Worldgen settings for structure-enabled data
+worldgen:
+  seed: 6901795026152433433
+  structures_enabled: true # Must be true for structure training
+  java_args: "-Xms4G -Xmx4G"
+  chunk_batch_size: 32
+  max_chunks_per_world: 1024
+  java_tools:
+    primary: "tools/fabric-server/fabric-server-mc.1.21.5-loader.0.16.14-launcher.1.0.3.jar"
+    chunky: "tools/fabric-server/runtime/mods/Chunky-Fabric-1.4.36.jar"
+
+# Training data settings
+data:
+  train_dir: "data/structure_train"
+  val_dir: "data/structure_val"
+  temp_dir: "data/temp"
+  processed_dir: "data/structure_processed"
+  max_disk_usage_gb: 10
+  validation_split: 0.1
+  max_examples_in_memory: 1000
+
+# Training validation and metrics
+validation:
+  eval_interval: 500 # Steps between evaluations
+  save_interval: 2000 # Steps between checkpoints
+  metrics:
+    - "air_mask_accuracy"
+    - "block_type_accuracy"
+    - "structure_blending_score" # Custom metric for structure/terrain blending
+  visualize_samples: 8
+  visualization_lods: [1, 2, 3]
