@@ -185,7 +185,7 @@ class SeedInputGenerator:
         import math
 
         # Base height from multiple octaves of noise for terrain-like variation
-        height = 64  # Base sea level height
+        height = 64.0  # Base sea level height (use float for calculations)
 
         # Multiple noise octaves for realistic terrain
         octaves = [
@@ -212,7 +212,6 @@ class SeedInputGenerator:
 
             # Add to height
             height += smooth_noise * amplitude
-
         # Add some coordinate-based height variation without calling get_biome to avoid circular dependency
         # Use a simple hash-based biome simulation for height modifiers
         biome_hash = f"{self.seed}:biome_height:{x}:{z}".encode("utf-8")

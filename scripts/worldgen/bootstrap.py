@@ -11,7 +11,7 @@ import tempfile
 import threading
 import time
 from pathlib import Path
-from typing import Dict, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 import yaml
 
@@ -24,16 +24,15 @@ class FabricWorldGenBootstrap:
 
     Handles:
       1. Starting Fabric
-      2. Running Chunky commands
-      3. Cleaning up / persisting worlds
+      2. Running Chunky commands      3. Cleaning up / persisting worlds
     """
 
     def __init__(
         self,
-        seed: str = None,
-        java_heap: str = None,
-        temp_world_dir: Path = None,
-        config_path: Path = None,
+        seed: Optional[str] = None,
+        java_heap: Optional[str] = None,
+        temp_world_dir: Optional[Path] = None,
+        config_path: Optional[Path] = None,
         *,
         process_runner=subprocess.run,  # injectable for tests
         test_mode: bool = False,  # bypass real server
@@ -59,9 +58,10 @@ class FabricWorldGenBootstrap:
         self.shared_server = shared_server
         self.test_optimized = test_optimized
         self.logger = self._setup_logging()
-        self.server_process = None
+
+        self.server_process: Optional[subprocess.Popen[str]] = None
         self.server_ready = threading.Event()
-        self.server_output_lines = []
+        self.server_output_lines: list[str] = []
         self.output_lock = threading.Lock()
 
         self._validate_tool_paths()
@@ -193,9 +193,15 @@ class FabricWorldGenBootstrap:
                 # Check for OutOfMemoryError in stderr (if process_runner is mocked to provide it)
                 if hasattr(result, "stderr") and result.stderr:
                     stderr_msg = str(result.stderr).lower()
-                    if "outofmemoryerror" in stderr_msg or "java heap" in stderr_msg:
-                        # Re-raise as exception for retry logic to catch
-                        raise RuntimeError(f"Java heap exhaustion: {result.stderr}")
+                    if (
+                        "outofmemoryerror" in stderr_msg or "java heap" in stderr_msg
+                    ):  # Re-raise as exception for retry logic to catch
+                        stderr_str = (
+                            result.stderr
+                            if isinstance(result.stderr, str)
+                            else result.stderr.decode("utf-8", errors="replace")
+                        )
+                        raise RuntimeError(f"Java heap exhaustion: {stderr_str}")
                 # 2) fabricate minimal folder structure the tests will touch
                 region_path = world_path / "region"
                 region_path.mkdir(parents=True, exist_ok=True)
@@ -227,18 +233,21 @@ class FabricWorldGenBootstrap:
                 # Step 4: Wait for generation to complete
                 if not self._wait_for_generation_complete():
                     self.logger.error("Generation did not complete successfully")
-                    return None  # Step 5: Force world save to ensure chunks are written to disk
+                    return None
+
+                # Step 5: Force world save to ensure chunks are written to disk
                 self.logger.info("Forcing world save...")
-                self.server_process.stdin.write("save-all\n")
-                self.server_process.stdin.flush()
+                if self.server_process and self.server_process.stdin:
+                    self.server_process.stdin.write("save-all\n")
+                    self.server_process.stdin.flush()
 
-                # Wait for save to complete
-                time.sleep(15)  # Increased from 10
+                    # Wait for save to complete
+                    time.sleep(15)  # Increased from 10
 
-                # Send save-all again to ensure it's saved
-                self.server_process.stdin.write("save-all flush\n")
-                self.server_process.stdin.flush()
-                time.sleep(10)  # Increased from 5
+                    # Send save-all again to ensure it's saved
+                    self.server_process.stdin.write("save-all flush\n")
+                    self.server_process.stdin.flush()
+                    time.sleep(10)  # Increased from 5
 
                 # Step 6: Verify .mca files were generated
                 region_path = world_path / "region"
@@ -501,8 +510,9 @@ class FabricWorldGenBootstrap:
 
             for cmd in commands:
                 self.logger.info(f"Executing: {cmd}")
-                self.server_process.stdin.write(f"{cmd}\n")
-                self.server_process.stdin.flush()
+                if self.server_process and self.server_process.stdin:
+                    self.server_process.stdin.write(f"{cmd}\n")
+                    self.server_process.stdin.flush()
                 time.sleep(2)  # Give time between commands
 
             return True
@@ -702,7 +712,7 @@ class FabricWorldGenBootstrap:
             self.logger.error(f"Failed to generate region batch: {e}")
             return None
 
-    def validate_mca_output(self, region_dir: Path) -> Dict[str, any]:
+    def validate_mca_output(self, region_dir: Path) -> Dict[str, Any]:
         """Validate that .mca files in region directory are properly formatted.
 
         Args:
@@ -714,7 +724,7 @@ class FabricWorldGenBootstrap:
             - total_size_mb: total size in MB
             - corrupted_files: list of paths to corrupted files
         """
-        result = {"files_found": 0, "total_size_mb": 0.0, "corrupted_files": []}
+        result: Dict[str, Any] = {"files_found": 0, "total_size_mb": 0.0, "corrupted_files": []}
 
         try:
             if not region_dir.exists():
