@@ -1,3 +1,5 @@
+![VoxelTree logo](https://github.com/user-attachments/assets/c323591b-3fb1-48b6-a3c3-4a19cfcbeebf)
+
 # 🌲 VoxelTree
 
 VoxelTree is an experimental terrain refinement model designed to **progressively upscale Minecraft terrain data** using a voxel-based super-resolution architecture inspired by diffusion models.
