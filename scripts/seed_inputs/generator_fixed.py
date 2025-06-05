@@ -1,3 +1,4 @@
+import hashlib
 import logging
 import shutil
 import subprocess
@@ -107,10 +108,7 @@ class SeedInputGenerator:
         # Use the command from _init_biome_generator
         biome_cmd = getattr(self, "_biome_cmd", None) or self._init_biome_generator()
 
-        # Example:  if `biome_cmd` is "C:/…/voxeltree_cubiomes_cli.exe"
-        # we assume the CLI takes flags:   --seed <seed> --x <x> --z <z>  → prints a single integer.
-        #
-        # Adjust these flags to whatever the real CLI expects!
+        # Format for voxeltree_cubiomes_cli.exe: <cmd> biome <seed> <x> <z> <width> <height>
         if isinstance(biome_cmd, str) and " -jar " in biome_cmd:
             # For Java JAR files, the command is already formatted
             cmd = biome_cmd.split() + [
@@ -132,6 +130,7 @@ class SeedInputGenerator:
                 "1",  # Width of the biome query
                 "1",  # Height of the biome query
             ]
+
         try:
             # capture_output=True → grabs stdout/stderr, text=True → returns strings
             proc = subprocess.run(cmd, capture_output=True, text=True, check=True)
@@ -175,65 +174,61 @@ class SeedInputGenerator:
 
     def get_heightmap(self, x: int, z: int) -> int:
         """
-        Generate realistic heightmap data at coordinates (x, z).
+        Run the Cubiomes CLI to fetch heightmap data at coordinates (x, z).
         Returns the terrain height as an integer.
-
-        Since the CLI tool returns constant values, we implement
-        a noise-based terrain generation for realistic variation.
         """
-        import hashlib
-        import math
+        # Use the command from _init_biome_generator
+        biome_cmd = getattr(self, "_biome_cmd", None) or self._init_biome_generator()
 
-        # Base height from multiple octaves of noise for terrain-like variation
-        height = 64  # Base sea level height
-
-        # Multiple noise octaves for realistic terrain
-        octaves = [
-            (0.01, 50),  # Large scale features (mountains/valleys)
-            (0.02, 25),  # Medium scale features (hills)
-            (0.05, 10),  # Small scale features (local variation)
-            (0.1, 5),  # Fine detail
+        # Format for voxeltree_cubiomes_cli.exe: <cmd> height <seed> <x> <z> <width> <height>
+        cmd = [
+            biome_cmd,
+            "height",
+            str(self.seed),
+            str(x),
+            str(z),
+            "1",  # Width of the heightmap query (just one coordinate)
+            "1",  # Height of the heightmap query (just one coordinate)
         ]
 
-        for frequency, amplitude in octaves:
-            # Generate deterministic noise using coordinates and seed
-            noise_x = x * frequency
-            noise_z = z * frequency
+        try:
+            proc = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        except subprocess.CalledProcessError as e:
+            raise RuntimeError(
+                f"Failed to run heightmap generator:\n"
+                f"  cmd = {' '.join(cmd)}\n"
+                f"  exit code = {e.returncode}\n"
+                f"  stderr  = {e.stderr.strip()}"
+            ) from e
 
-            # Create hash-based noise
-            hash_input = f"{self.seed}:height:{noise_x}:{noise_z}".encode("utf-8")
-            hash_value = int(hashlib.md5(hash_input).hexdigest(), 16)
+        # Parse the output
+        out = proc.stdout.strip()
+        if not out:
+            raise RuntimeError(
+                f"Heightmap CLI returned no output (empty stdout) for coordinates ({x},{z})."
+            )
 
-            # Convert to noise value in range [-1, 1]
-            noise_value = (hash_value % 20000) / 10000 - 1.0
+        # The CLI might output a grid of heights or just a single value
+        try:
+            # Try to parse the output - look for the first line with a number
+            for line in out.splitlines():
+                line = line.strip()
+                if line and line[0].isdigit():
+                    height = int(line.split()[0])  # Take first number in the line
+                    break
+            else:
+                # If we didn't find any numeric lines, try the whole output
+                height = int(out)
 
-            # Apply sine function for smoother transitions
-            smooth_noise = math.sin(noise_value * math.pi)
-
-            # Add to height
-            height += smooth_noise * amplitude
-
-        # Add some coordinate-based height variation without calling get_biome to avoid circular dependency
-        # Use a simple hash-based biome simulation for height modifiers
-        biome_hash = f"{self.seed}:biome_height:{x}:{z}".encode("utf-8")
-        biome_modifier_hash = int(hashlib.md5(biome_hash).hexdigest(), 16) % 100
-
-        # Apply height variation based on the hash (simulating different biomes)
-        if biome_modifier_hash < 20:  # Mountains (20% chance)
-            height += 40
-        elif biome_modifier_hash < 30:  # Hills (10% chance)
-            height += 20
-        elif biome_modifier_hash < 40:  # Plains (10% chance)
-            height += 5
-        elif biome_modifier_hash < 50:  # Desert (10% chance)
-            height -= 5
-        elif biome_modifier_hash < 60:  # Forest (10% chance)
-            height += 10
-        # Other biomes keep base height (40% chance)
-
-        # Ensure height is within valid Minecraft range [0, 384]
-        height = max(0, min(int(height), 384))
-        return height
+            # Ensure height is within valid Minecraft range [0, 384]
+            height = max(0, min(height, 384))
+            return height
+        except ValueError:
+            raise RuntimeError(
+                f"Cannot parse heightmap from CLI output:\n"
+                f"  raw stdout = {repr(out)}\n"
+                f"  expected output to contain an integer."
+            )
 
     def get_river_noise(self, x: int, z: int) -> float:
         """
@@ -243,10 +238,6 @@ class SeedInputGenerator:
         Since the cubiomes CLI tool doesn't support river noise generation,
         we implement a simple deterministic noise function here.
         """
-        # Try to use Python's hash function deterministically
-        # Hash the seed and coordinates together
-        import hashlib
-
         # Create a deterministic hash from the seed and coordinates
         hash_input = f"{self.seed}:{x}:{z}".encode("utf-8")
         hash_value = int(hashlib.md5(hash_input).hexdigest(), 16)
@@ -291,10 +282,6 @@ class SeedInputGenerator:
                 - x, z: Starting coordinates
                 - seed: World seed used
         """
-        # Validate inputs
-        if size <= 0:
-            raise ValueError(f"Patch size must be positive, got {size}")
-
         # Initialize arrays for the patch data
         biomes = np.zeros((size, size), dtype=np.uint8)
         heightmap = np.zeros((size, size), dtype=np.uint16)
@@ -325,12 +312,33 @@ class SeedInputGenerator:
         return patch
 
     def save_patch_npz(self, patch: Dict[str, Any], output_path: Path) -> Path:
+        """
+        Save a patch dictionary to a compressed .npz file.
+
+        Args:
+            patch: Patch dictionary to save
+            output_path: Path to save the file to
+
+        Returns:
+            Path to the saved file
+        """
         output_path.parent.mkdir(parents=True, exist_ok=True)
         np.savez_compressed(output_path, **patch)
         logger.debug(f"Saved patch to {output_path}")
         return output_path
 
     def get_patch_filename(self, x: int, z: int, output_dir: Path) -> Path:
+        """
+        Generate a filename for a patch at the given coordinates.
+
+        Args:
+            x: X coordinate of the patch
+            z: Z coordinate of the patch
+            output_dir: Directory to save the file to
+
+        Returns:
+            Path object for the patch file
+        """
         filename = f"patch_x{x}_z{z}.npz"
         return output_dir / filename
 
@@ -355,6 +363,16 @@ class SeedInputGenerator:
         return patches
 
     def save_batch(self, patches: List[Dict[str, Any]], output_dir: Path) -> List[Path]:
+        """
+        Save a batch of patches to compressed .npz files.
+
+        Args:
+            patches: List of patch dictionaries to save
+            output_dir: Directory to save the files to
+
+        Returns:
+            List of paths to the saved files
+        """
         saved_paths = []
         for patch in patches:
             x, z = patch["x"], patch["z"]
