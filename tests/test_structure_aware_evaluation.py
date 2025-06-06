@@ -5,16 +5,12 @@ This test suite validates the enhanced evaluation metrics module with
 mock structure-aware predictions for Phase 2 validation.
 """
 
-import numpy as np
-import pytest
 import torch
 
 from scripts.evaluation.metrics import (
     AccuracyMetrics,
-    BlockTypeAccuracyCalculator,
     DiceCalculator,
     IoUCalculator,
-    MaskAccuracyCalculator,
     StructureAccuracyCalculator,
 )
 
@@ -27,9 +23,7 @@ class TestStructureAwareEvaluationMetrics:
         self.batch_size = 4
         self.spatial_dims = (8, 8, 16)  # H, W, D
         self.num_classes = 10
-        self.num_structure_types = 5
-
-        # Initialize calculators
+        self.num_structure_types = 5  # Initialize calculators
         self.accuracy_metrics = AccuracyMetrics()
         self.structure_calc = StructureAccuracyCalculator()
         self.iou_calc = IoUCalculator()
@@ -37,7 +31,8 @@ class TestStructureAwareEvaluationMetrics:
 
     def _create_mock_predictions(self) -> dict:
         """Create mock model predictions for testing."""
-        B, H, W, D = self.batch_size, *self.spatial_dims
+        B = self.batch_size
+        H, W, D = self.spatial_dims
 
         return {
             "air_mask_logits": torch.randn(B, 1, H, W, D),
@@ -49,7 +44,8 @@ class TestStructureAwareEvaluationMetrics:
 
     def _create_mock_targets(self) -> dict:
         """Create mock ground truth targets for testing."""
-        B, H, W, D = self.batch_size, *self.spatial_dims
+        B = self.batch_size
+        H, W, D = self.spatial_dims
 
         return {
             "air_mask": torch.randint(0, 2, (B, H, W, D)).float(),
@@ -168,7 +164,8 @@ class TestStructureAwareEvaluationMetrics:
 
     def test_iou_calculator_with_structure_masks(self):
         """Test IoU calculator specifically for structure masks."""
-        B, H, W, D = self.batch_size, *self.spatial_dims
+        B = self.batch_size
+        H, W, D = self.spatial_dims  # Already a tuple with the 3 values
 
         # Create binary structure predictions
         predictions = torch.randint(0, 2, (B, H, W, D))
@@ -184,7 +181,8 @@ class TestStructureAwareEvaluationMetrics:
 
     def test_dice_calculator_with_structure_masks(self):
         """Test Dice calculator for binary structure segmentation."""
-        B, H, W, D = self.batch_size, *self.spatial_dims
+        B = self.batch_size
+        H, W, D = self.spatial_dims
 
         # Binary predictions (structure present/absent)
         predictions = torch.rand(B, H, W, D)  # Probabilities
@@ -221,7 +219,8 @@ class TestStructureAwareEvaluationMetrics:
 
     def test_edge_case_empty_structures(self):
         """Test handling of chunks with no structures."""
-        B, H, W, D = self.batch_size, *self.spatial_dims
+        B = self.batch_size
+        H, W, D = self.spatial_dims
 
         predictions = {
             "structure_mask": torch.zeros(B, 1, H, W, D),  # No structures predicted
@@ -240,7 +239,8 @@ class TestStructureAwareEvaluationMetrics:
 
     def test_edge_case_all_structures(self):
         """Test handling of chunks completely filled with structures."""
-        B, H, W, D = self.batch_size, *self.spatial_dims
+        B = self.batch_size
+        H, W, D = self.spatial_dims
 
         predictions = {
             "structure_mask": torch.ones(B, 1, H, W, D),  # All structures predicted
@@ -293,12 +293,14 @@ class TestStructureAwareEvaluationMetrics:
             assert isinstance(before_metrics[metric], float)
             assert isinstance(after_metrics[metric], float)
 
-        print(f"Phase 2 regression test completed:")
+        print("Phase 2 regression test completed:")
         print(
-            f"  Structure IoU: {before_metrics['structure_iou']:.3f} → {after_metrics['structure_iou']:.3f}"
+            f"  Structure IoU: {before_metrics['structure_iou']:.3f} → "
+            f"{after_metrics['structure_iou']:.3f}"
         )
         print(
-            f"  Structure Accuracy: {before_metrics['structure_mask_accuracy']:.3f} → {after_metrics['structure_mask_accuracy']:.3f}"
+            f"  Structure Accuracy: {before_metrics['structure_mask_accuracy']:.3f} → "
+            f"{after_metrics['structure_mask_accuracy']:.3f}"
         )
 
 

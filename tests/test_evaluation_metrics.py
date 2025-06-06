@@ -72,6 +72,7 @@ class TestAccuracyMetrics:
 
     def test_per_class_accuracy_calculation(self):
         """RED: Fails if per-class accuracy calculation is missing."""
+
         calculator = BlockTypeAccuracyCalculator()
 
         per_class_accuracy = calculator.calculate_per_class_accuracy(
@@ -85,6 +86,7 @@ class TestAccuracyMetrics:
 
     def test_confusion_matrix_calculation(self):
         """RED: Fails if confusion matrix calculation is missing."""
+
         calculator = BlockTypeAccuracyCalculator()
 
         confusion_matrix = calculator.calculate_confusion_matrix(
@@ -101,6 +103,7 @@ class TestStructureAccuracy:
 
     def setup_method(self):
         """Set up test environment for structure accuracy tests."""
+
         self.batch_size = 2
         self.spatial_dims = (16, 16, 16)
 
@@ -125,11 +128,13 @@ class TestStructureAccuracy:
 
     def test_structure_accuracy_calculator_instantiation(self):
         """RED: Fails if StructureAccuracyCalculator doesn't exist."""
+
         calculator = StructureAccuracyCalculator()
         assert calculator is not None
 
     def test_structure_mask_accuracy(self):
         """RED: Fails if structure mask accuracy calculation is missing."""
+
         calculator = StructureAccuracyCalculator()
 
         accuracy = calculator.calculate_structure_mask_accuracy(
@@ -141,6 +146,7 @@ class TestStructureAccuracy:
 
     def test_structure_type_accuracy(self):
         """RED: Fails if structure type accuracy calculation is missing."""
+
         calculator = StructureAccuracyCalculator()
 
         accuracy = calculator.calculate_structure_type_accuracy(
@@ -152,6 +158,7 @@ class TestStructureAccuracy:
 
     def test_structure_blending_score(self):
         """RED: Fails if structure-terrain blending score is missing."""
+
         calculator = StructureAccuracyCalculator()
 
         # Mock terrain predictions for blending evaluation
@@ -173,11 +180,14 @@ class TestMetricAggregation:
 
     def setup_method(self):
         """Set up test environment for metric aggregation tests."""
+
         self.metrics = AccuracyMetrics()
 
     def test_batch_metric_aggregation(self):
         """RED: Fails if batch-level metric aggregation is missing."""
+
         # Mock batch of predictions and targets
+
         batch_predictions = {
             "air_mask_logits": torch.randn(4, 1, 16, 16, 16),
             "block_type_logits": torch.randn(4, 10, 16, 16, 16),
@@ -201,6 +211,7 @@ class TestMetricAggregation:
     def test_epoch_metric_aggregation(self):
         """RED: Fails if epoch-level metric aggregation is missing."""
         # Mock list of batch metrics from an epoch
+
         batch_metrics_list = [
             {"air_mask_accuracy": 0.85, "block_type_accuracy": 0.72, "overall_accuracy": 0.78},
             {"air_mask_accuracy": 0.88, "block_type_accuracy": 0.75, "overall_accuracy": 0.81},
@@ -221,7 +232,9 @@ class TestMetricAggregation:
 
     def test_metric_history_tracking(self):
         """RED: Fails if metric history tracking is missing."""
+
         # Should track metrics over multiple epochs
+
         epoch_1_metrics = {"air_mask_accuracy": 0.75, "block_type_accuracy": 0.68}
         epoch_2_metrics = {"air_mask_accuracy": 0.82, "block_type_accuracy": 0.73}
 

@@ -414,36 +414,26 @@ class BlockTypeAccuracyCalculator:
             target_types = targets
 
         if type_logits is None or target_types is None:
-            raise ValueError("Must provide type_logits and target_types")  # Get predicted classes
-        type_preds = torch.argmax(type_logits, dim=1)  # (B, H, W, D)
+            raise ValueError("Must provide type_logits and target_types")
 
-        # Calculate overall accuracy
-        correct = (type_preds == target_types).float()
-        accuracy = correct.mean().item()
-
-        # Calculate per-class accuracy
+        # Get predicted classes
+        type_preds = torch.argmax(
+            type_logits, dim=1
+        )  # (B, H, W, D)        # Calculate per-class accuracy
         num_classes = type_logits.shape[1]
-        per_class_acc = {}
+        per_class_acc = []
 
         for class_idx in range(num_classes):
             class_mask = target_types == class_idx
             if class_mask.sum() > 0:
                 class_correct = (type_preds == target_types)[class_mask]
-                per_class_acc[f"class_{class_idx}_accuracy"] = class_correct.float().mean().item()
-
-        # Calculate top-k accuracy (top-3)
-        top3_preds = torch.topk(type_logits, k=3, dim=1)[1]  # (B, 3, H, W, D)
-        target_expanded = target_types.unsqueeze(1).expand_as(top3_preds)
-        top3_correct = (top3_preds == target_expanded).any(dim=1).float()
-        top3_accuracy = top3_correct.mean().item()
-
-        result = {
-            "block_type_accuracy": accuracy,
-            "block_type_top3_accuracy": top3_accuracy,
-        }
-        result.update(per_class_acc)
-
-        return result
+                accuracy = class_correct.float().mean().item()
+                per_class_acc.append(accuracy)
+            else:
+                # If no examples of this class, append 0.0
+                per_class_acc.append(0.0)
+        # Return only per-class accuracies as expected by the test
+        return per_class_acc
 
     def calculate_confusion_matrix(
         self,
