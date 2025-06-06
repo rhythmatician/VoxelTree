@@ -32,18 +32,22 @@ class AccuracyMetrics:
             predictions: Dictionary containing model predictions
             targets: Dictionary containing ground truth targets
 
-        Returns:
-            Dictionary of computed metrics
+        Returns:        Dictionary of computed metrics
         """
 
         metrics = {}  # Compute mask accuracy if available
         if "air_mask_logits" in predictions and ("air_mask" in targets or "target_mask" in targets):
             mask_calc = MaskAccuracyCalculator()
             target_key = "air_mask" if "air_mask" in targets else "target_mask"
-            mask_accuracy = mask_calc.calculate_accuracy(
+            # Get detailed mask metrics
+            detailed_mask_metrics = mask_calc.calculate_detailed_metrics(
                 predictions["air_mask_logits"], targets[target_key]
             )
-            metrics["air_mask_accuracy"] = mask_accuracy  # Compute block type accuracy if available
+            metrics.update(detailed_mask_metrics)
+            # Also store the simple accuracy for backward compatibility
+            metrics["air_mask_accuracy"] = detailed_mask_metrics["mask_accuracy"]
+
+        # Compute block type accuracy if available
         if "block_type_logits" in predictions and (
             "block_types" in targets or "target_types" in targets
         ):
@@ -211,7 +215,7 @@ class AccuracyMetrics:
             writer.writeheader()
             for row in self.history:
                 writer.writerow(row)
-        
+
         return ""
 
     def format_for_tensorboard(self, metrics: Dict[str, float], step: int) -> Dict[str, float]:
@@ -439,46 +443,6 @@ class BlockTypeAccuracyCalculator:
 
         return result
 
-    def calculate_per_class_accuracy(
-        self,
-        predictions: torch.Tensor = None,
-        targets: torch.Tensor = None,
-        type_logits: torch.Tensor = None,
-        target_types: torch.Tensor = None,
-    ) -> list:
-        """
-
-        Calculate per-class accuracy.
-
-        Returns:
-            List of per-class accuracies
-        """
-
-        # Support both keyword argument styles
-        if predictions is not None:
-            type_logits = predictions
-        if targets is not None:
-            target_types = targets
-
-        if type_logits is None or target_types is None:
-            raise ValueError("Must provide type_logits and target_types")
-
-        # Get predicted classes
-        type_preds = torch.argmax(type_logits, dim=1)  # (B, H, W, D)
-        num_classes = type_logits.shape[1]
-
-        per_class_accuracies = []
-        for class_idx in range(num_classes):
-            class_mask = target_types == class_idx
-            if class_mask.sum() > 0:
-                class_correct = (type_preds == target_types)[class_mask]
-                accuracy = class_correct.float().mean().item()
-            else:
-                accuracy = 0.0  # No samples of this class
-            per_class_accuracies.append(accuracy)
-
-        return per_class_accuracies
-
     def calculate_confusion_matrix(
         self,
         predictions: torch.Tensor = None,
@@ -681,10 +645,11 @@ class StructureAccuracyCalculator:
         # Convert to binary
         struct_pred = (structure_predictions > 0.5).float()
         terrain_pred = terrain_predictions.float()
-        struct_target = structure_targets.float()
+        # Note: structure_targets is provided for potential future use but not needed
+        # for current blending metric
 
-        # Calculate blending quality based on boundary consistency
-        # This is a simplified metric - in practice you'd want more sophisticated boundary analysis
+        # Calculate blending quality based on boundary consistency        # This is a simplified metric - in practice you'd want more sophisticated
+        # boundary analysis
 
         # Calculate boundaries separately for each dimension
         struct_boundaries_h = torch.abs(struct_pred.diff(dim=-2))  # Height boundaries
