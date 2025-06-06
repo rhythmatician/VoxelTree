@@ -231,7 +231,7 @@ def print_key_metrics(metrics: Dict[str, float]):
     # Structure metrics (if available)
     structure_metrics = {k: v for k, v in metrics.items() if "structure" in k}
     if structure_metrics:
-        print(f"\n🏗️ STRUCTURE-AWARE METRICS")
+        print("\n🏗️ STRUCTURE-AWARE METRICS")
         print("-" * 30)
         for metric, value in structure_metrics.items():
             display_name = metric.replace("_", " ").title()
@@ -240,7 +240,7 @@ def print_key_metrics(metrics: Dict[str, float]):
     # IoU/Dice metrics
     iou_dice_metrics = {k: v for k, v in metrics.items() if "iou" in k or "dice" in k}
     if iou_dice_metrics:
-        print(f"\n📐 IoU / DICE METRICS")
+        print("\n📐 IoU / DICE METRICS")
         print("-" * 20)
         for metric, value in iou_dice_metrics.items():
             display_name = metric.replace("_", " ").title()

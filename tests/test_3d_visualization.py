@@ -9,7 +9,6 @@ from unittest.mock import Mock, patch
 
 import matplotlib.pyplot as plt
 import numpy as np
-import pytest
 import torch
 
 from scripts.evaluation.visualization import VoxelRenderer, VoxelVisualizationSuite

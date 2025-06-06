@@ -249,9 +249,7 @@ class TrainingDataCollator:
         batch: Dict[str, Union[torch.Tensor, List[Any]]] = {}
 
         for key in keys:
-            values = [sample[key] for sample in samples]
-
-            # Handle different data types
+            values = [sample[key] for sample in samples]  # Handle different data types
             if key in [
                 "parent_voxel",
                 "target_mask",
@@ -259,6 +257,9 @@ class TrainingDataCollator:
                 "biome_patch",
                 "heightmap_patch",
                 "river_patch",
+                "structure_mask",
+                "structure_types",
+                "structure_positions",
             ]:  # Stack tensor arrays
                 if isinstance(values[0], torch.Tensor):
                     stacked = torch.stack(values)
