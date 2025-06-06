@@ -79,9 +79,7 @@ class VoxelTreeDataset(Dataset):
         for file_path in npz_files:
             try:
                 # Quick validation by attempting to load
-                data = np.load(file_path)
-
-                # Check for required keys
+                data = np.load(file_path)  # Check for required keys
                 required_keys = [
                     "parent_voxel",
                     "target_mask",
@@ -93,6 +91,13 @@ class VoxelTreeDataset(Dataset):
                     "chunk_x",
                     "chunk_z",
                     "lod",
+                ]
+
+                # Structure fields (optional for backwards compatibility)
+                optional_structure_keys = [
+                    "structure_mask",
+                    "structure_types",
+                    "structure_positions",
                 ]
 
                 missing_keys = [key for key in required_keys if key not in data.keys()]
@@ -167,6 +172,15 @@ class VoxelTreeDataset(Dataset):
             return torch.from_numpy(value.astype(np.int16))
         elif key == "river_patch":
             # River noise values
+            return torch.from_numpy(value.astype(np.float32))
+        elif key == "structure_mask":
+            # Structure spatial mask
+            return torch.from_numpy(value.astype(np.float32))
+        elif key == "structure_types":
+            # Structure type one-hot encoding
+            return torch.from_numpy(value.astype(np.float32))
+        elif key == "structure_positions":
+            # Normalized structure positions
             return torch.from_numpy(value.astype(np.float32))
         else:
             # Default conversion
