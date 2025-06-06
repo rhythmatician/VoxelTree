@@ -5,7 +5,7 @@ This module provides comprehensive evaluation tools for the VoxelTree model,
 including accuracy metrics, IoU/Dice scores, and structure-aware evaluation.
 """
 
-from typing import Dict, Optional
+from typing import Dict, Optional, Union
 
 import numpy as np
 import torch
@@ -118,12 +118,14 @@ class AccuracyMetrics:
 
         self.history.append({"epoch": epoch, **metrics})
 
-    def validate_accuracy_thresholds(self, metrics: Dict[str, float]) -> Dict[str, bool]:
+    def validate_accuracy_thresholds(
+        self, metrics: Dict[str, float]
+    ) -> Dict[str, Union[bool, list]]:
         """Validate accuracy against minimum thresholds."""
 
         thresholds = {"air_mask_accuracy": 0.5, "block_type_accuracy": 0.3, "overall_accuracy": 0.4}
 
-        results = {"passed": True, "failed_metrics": []}
+        results: Dict[str, Union[bool, list]] = {"passed": True, "failed_metrics": []}
         for metric, threshold in thresholds.items():
             if metric in metrics:
                 passed = metrics[metric] >= threshold
@@ -189,7 +191,7 @@ class AccuracyMetrics:
 
         return max_improvement < min_delta
 
-    def export_to_csv(self, filepath: str = None) -> str:
+    def export_to_csv(self, filepath: Optional[str] = None) -> str:
         """Export history to CSV."""
 
         if not self.history:
@@ -241,10 +243,10 @@ class MaskAccuracyCalculator:
 
     def calculate_accuracy(
         self,
-        predictions: torch.Tensor = None,
-        targets: torch.Tensor = None,
-        mask_logits: torch.Tensor = None,
-        target_mask: torch.Tensor = None,
+        predictions: Optional[torch.Tensor] = None,
+        targets: Optional[torch.Tensor] = None,
+        mask_logits: Optional[torch.Tensor] = None,
+        target_mask: Optional[torch.Tensor] = None,
     ) -> float:
         """
 
@@ -284,10 +286,10 @@ class MaskAccuracyCalculator:
 
     def calculate_detailed_metrics(
         self,
-        predictions: torch.Tensor = None,
-        targets: torch.Tensor = None,
-        mask_logits: torch.Tensor = None,
-        target_mask: torch.Tensor = None,
+        predictions: Optional[torch.Tensor] = None,
+        targets: Optional[torch.Tensor] = None,
+        mask_logits: Optional[torch.Tensor] = None,
+        target_mask: Optional[torch.Tensor] = None,
     ) -> Dict[str, float]:
         """
 
@@ -351,10 +353,10 @@ class BlockTypeAccuracyCalculator:
 
     def calculate_accuracy(
         self,
-        predictions: torch.Tensor = None,
-        targets: torch.Tensor = None,
-        type_logits: torch.Tensor = None,
-        target_types: torch.Tensor = None,
+        predictions: Optional[torch.Tensor] = None,
+        targets: Optional[torch.Tensor] = None,
+        type_logits: Optional[torch.Tensor] = None,
+        target_types: Optional[torch.Tensor] = None,
     ) -> float:
         """
 
@@ -388,10 +390,10 @@ class BlockTypeAccuracyCalculator:
 
     def calculate_per_class_accuracy(
         self,
-        predictions: torch.Tensor = None,
-        targets: torch.Tensor = None,
-        type_logits: torch.Tensor = None,
-        target_types: torch.Tensor = None,
+        predictions: Optional[torch.Tensor] = None,
+        targets: Optional[torch.Tensor] = None,
+        type_logits: Optional[torch.Tensor] = None,
+        target_types: Optional[torch.Tensor] = None,
     ) -> Dict[str, float]:
         """
 
@@ -445,10 +447,10 @@ class BlockTypeAccuracyCalculator:
 
     def calculate_confusion_matrix(
         self,
-        predictions: torch.Tensor = None,
-        targets: torch.Tensor = None,
-        type_logits: torch.Tensor = None,
-        target_types: torch.Tensor = None,
+        predictions: Optional[torch.Tensor] = None,
+        targets: Optional[torch.Tensor] = None,
+        type_logits: Optional[torch.Tensor] = None,
+        target_types: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """
 
@@ -648,7 +650,8 @@ class StructureAccuracyCalculator:
         # Note: structure_targets is provided for potential future use but not needed
         # for current blending metric
 
-        # Calculate blending quality based on boundary consistency        # This is a simplified metric - in practice you'd want more sophisticated
+        # Calculate blending quality based on boundary consistency
+        # This is a simplified metric - in practice you'd want more sophisticated
         # boundary analysis
 
         # Calculate boundaries separately for each dimension

@@ -12,6 +12,8 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 import numpy as np
+import psutil
+import yaml
 
 from scripts.extraction.chunk_extractor import ChunkExtractor
 from scripts.worldgen.config import load_config
@@ -257,7 +259,6 @@ class TestChunkExtractor:
         large_mca_path.write_bytes(b"big_fake_mca" + b"\x00" * 10000)
 
         # Monitor memory usage during extraction
-        import psutil
 
         process = psutil.Process()
         initial_memory = process.memory_info().rss / 1024 / 1024  # MB
@@ -419,7 +420,6 @@ class TestStructureAwareChunkExtraction:
         self.test_config_path = self.test_temp_dir / "test_config.yaml"
 
         # Write test config to file
-        import yaml
 
         with open(self.test_config_path, "w") as f:
             yaml.safe_dump(self.test_config, f)
@@ -518,7 +518,6 @@ class TestStructureAwareChunkExtraction:
 
         # Write disabled config
         disabled_config_path = self.test_temp_dir / "disabled_config.yaml"
-        import yaml
 
         with open(disabled_config_path, "w") as f:
             yaml.safe_dump(disabled_config, f)
