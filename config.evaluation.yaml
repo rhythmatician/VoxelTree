@@ -1,0 +1,72 @@
+# VoxelTree Model Evaluation Configuration
+# This config is used with scripts/evaluation/evaluate_model.py
+
+# Model architecture configuration
+model:
+  in_channels: 1 # Parent voxel input channels
+  out_channels: 2 # Air mask + block type outputs
+  base_channels: 32 # Base feature channels
+  depth: 4 # U-Net depth
+  structure_aware: true # Enable structure conditioning
+  heightmap_conditioning: true # Enable heightmap conditioning
+  biome_conditioning: true # Enable biome conditioning
+
+# Dataset configuration for evaluation
+dataset:
+  chunk_size: [16, 16, 16] # Target chunk dimensions
+  parent_size: [8, 8, 8] # Parent voxel dimensions
+  normalize_inputs: true # Normalize input values
+  augmentation: false # Disable augmentation for eval
+  structure_aware: true # Include structure data
+
+  # Block type mapping
+  block_mapping:
+    air_blocks: [0]
+    solid_blocks: [1, 2, 3, 4, 5, 6, 7, 8, 9]
+
+  # Structure configuration
+  structures:
+    mask_resolution: 8
+    structure_types:
+      [
+        "village",
+        "fortress",
+        "monument",
+        "mansion",
+        "ruined_portal",
+        "outpost",
+        "bastion",
+        "temple",
+        "stronghold",
+        "mineshaft",
+      ]
+
+# Evaluation settings
+eval_batch_size: 8 # Batch size for evaluation
+num_workers: 4 # Number of data loading workers
+device: "auto" # Device selection (auto/cpu/cuda/mps)
+
+# Metrics configuration
+metrics:
+  compute_per_class: true # Compute per-class metrics
+  compute_iou: true # Compute IoU metrics
+  compute_dice: true # Compute Dice coefficients
+  structure_analysis: true # Enable structure-aware analysis
+
+  # Structure-specific metric settings
+  structure_metrics:
+    presence_threshold: 0.5 # Threshold for structure presence detection
+    mask_threshold: 0.5 # Threshold for structure mask binarization
+    compute_false_rates: true # Compute false positive/negative rates
+
+# Output configuration
+output:
+  save_predictions: false # Save prediction samples (disk intensive)
+  save_metrics: true # Save metrics to JSON
+  verbose: true # Print detailed progress
+
+  # Visualization settings (if implemented)
+  visualization:
+    save_samples: false # Save visualization samples
+    max_samples: 10 # Maximum samples to visualize
+    include_structures: true # Highlight structures in visualizations

@@ -1,0 +1,75 @@
+# Phase 2 Fine-Tuning Configuration — Structure-Aware Model
+
+experiment:
+name: "voxel_unet3d_phase2_structure_aware"
+resume_from_checkpoint: "checkpoints/phase1_final.pth"
+output_dir: "checkpoints/phase2_structure_finetune"
+
+model:
+architecture: "VoxelUNet3D"
+structure_enabled: true
+
+# Match Phase 1 base
+
+input_channels: 1
+base_channels: 32
+depth: 3
+block_type_channels: 10
+air_mask_channels: 1
+
+training:
+batch_size: 8
+epochs: 10
+learning_rate: 0.0001
+optimizer: "adam"
+freeze_encoder: true
+save_every_n_epochs: 1
+
+loss:
+block_logits: "cross_entropy"
+air_mask: "binary"
+
+condition:
+biome: true
+heightmap: true
+river: true
+lod: true
+y_index: true
+structure_mask: true
+structure_types: true
+structure_positions: true
+
+extraction:
+  enabled: true
+  data_root: "data/structure_mca/"
+  generate_structures_required: true
+  chunk_limit: 10000
+
+structures:
+  enabled: true
+  mask_resolution: 8
+  validate_structure_generation: true
+  min_structure_chunks_ratio: 0.1
+  structure_types:
+    - village
+    - fortress
+    - monument
+    - mansion
+    - ruined_portal
+    - outpost
+    - bastion
+    - temple
+    - stronghold
+    - mineshaft
+
+dataset:
+  type: "StructureAwarePatchDataset"
+  patch_size: 16
+  num_workers: 4
+  shuffle: true
+  preload: false
+
+logging:
+  level: "info"
+  save_logs: true
+  tensorboard: true

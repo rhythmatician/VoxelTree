@@ -13,6 +13,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import anvil  # type: ignore
 import numpy as np
 
+from scripts.extraction.structure_extractor import StructureExtractor
 from scripts.worldgen.config import load_config
 
 logger = logging.getLogger(__name__)
@@ -64,11 +65,13 @@ class ChunkExtractor:
         self.surface_blocks = set(heightmap_config.get("surface_blocks", [2, 3, 4]))
         self.min_height = heightmap_config.get("min_height", -64)
         self.max_height = heightmap_config.get("max_height", 320)
-
         # Validation settings
         validation_config = extraction_config.get("validation", {})
         self.verify_checksums = validation_config.get("verify_checksums", True)
         self.detect_corruption = validation_config.get("detect_corruption", True)
+
+        # Initialize structure extractor for Phase 2 support
+        self.structure_extractor = StructureExtractor(config_path)
 
         logger.info(f"ChunkExtractor initialized with output_dir={self.output_dir}")
 
@@ -111,7 +114,7 @@ class ChunkExtractor:
                 if "Chunk does not exist" in str(chunk_error):
                     logger.warning(f"Chunk ({chunk_x}, {chunk_z}) not found in {region_file.name}")
                     # Create empty chunk data instead of returning None
-                    return {
+                    empty_chunk_data = {
                         "block_types": np.zeros((16, 16, 384), dtype=np.uint8),
                         "air_mask": np.ones((16, 16, 384), dtype=bool),  # All air
                         "biomes": np.zeros((16, 16), dtype=np.uint8),
@@ -121,6 +124,28 @@ class ChunkExtractor:
                         "region_file": str(region_file.name),
                         "is_empty": True,  # Mark as empty chunk
                     }
+
+                    # Add empty structure data if structure extraction is enabled
+                    if self.structure_extractor.enabled:
+                        empty_chunk_data.update(
+                            {
+                                "structure_mask": np.zeros(
+                                    (
+                                        self.structure_extractor.mask_resolution,
+                                        self.structure_extractor.mask_resolution,
+                                        1,
+                                    ),
+                                    dtype=np.float32,
+                                ),
+                                "structure_types": np.zeros(
+                                    (len(self.structure_extractor.structure_types),),
+                                    dtype=np.float32,
+                                ),
+                                "structure_positions": np.zeros((2,), dtype=np.float32),
+                            }
+                        )
+
+                    return empty_chunk_data
 
             # For production code, we would get the actual chunk data:
             # chunk = region.get_chunk(chunk_x, chunk_z)
@@ -133,9 +158,9 @@ class ChunkExtractor:
             air_mask = np.zeros_like(block_types, dtype=bool)
             air_mask[block_types == 0] = True  # Mark air blocks
             biomes = np.random.randint(0, 50, size=(16, 16), dtype=np.uint8)
-            heightmap = np.random.randint(0, 320, size=(16, 16), dtype=np.uint16)
-
-            # Pack data into dictionary for .npz storage
+            heightmap = np.random.randint(
+                0, 320, size=(16, 16), dtype=np.uint16
+            )  # Pack data into dictionary for .npz storage
             chunk_data = {
                 "block_types": block_types,
                 "air_mask": air_mask,
@@ -145,6 +170,36 @@ class ChunkExtractor:
                 "chunk_z": chunk_z,
                 "region_file": str(region_file.name),
             }
+
+            # Extract structure data if enabled
+            if self.structure_extractor.enabled:
+                try:
+                    structure_data = self.structure_extractor.extract_structure_data(
+                        region_file, chunk_x, chunk_z
+                    )
+                    # Add structure data to chunk data
+                    chunk_data.update(structure_data)
+                except Exception as e:
+                    logger.warning(
+                        f"Failed to extract structure data for chunk ({chunk_x}, {chunk_z}): {e}"
+                    )
+                    # Add empty structure data on failure
+                    chunk_data.update(
+                        {
+                            "structure_mask": np.zeros(
+                                (
+                                    self.structure_extractor.mask_resolution,
+                                    self.structure_extractor.mask_resolution,
+                                    1,
+                                ),
+                                dtype=np.float32,
+                            ),
+                            "structure_types": np.zeros(
+                                (len(self.structure_extractor.structure_types),), dtype=np.float32
+                            ),
+                            "structure_positions": np.zeros((2,), dtype=np.float32),
+                        }
+                    )
 
             logger.debug(
                 f"Successfully extracted chunk ({chunk_x}, {chunk_z}) from {region_file.name}"  # noqa: E501

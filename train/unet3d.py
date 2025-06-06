@@ -15,7 +15,7 @@ Key Features:
 
 import math
 from dataclasses import dataclass
-from typing import Dict, Literal, Union
+from typing import Dict, Literal, Optional, Union
 
 import torch
 import torch.nn as nn
@@ -110,6 +110,13 @@ class UNet3DConfig:
     river_channels: int = 1
     y_embed_dim: int = 8
     lod_embed_dim: int = 32  # Increased for more expressive LOD conditioning
+
+    # Structure-aware inputs (for fine-tuning)
+    structure_enabled: bool = False  # Whether to use structure inputs
+    structure_mask_channels: int = 1  # Structure presence mask
+    structure_type_count: int = 10  # Number of structure types to encode
+    structure_embed_dim: int = 16  # Embedding dimension for structure types
+    structure_pos_channels: int = 2  # Structure position encoding (x, z)
 
     # Training hyperparameters
     dropout_rate: float = 0.1
@@ -321,10 +328,16 @@ class ConditioningFusion(nn.Module):
         lod_embed_dim: int,
         spatial_size: int = 16,  # Target spatial resolution
         output_channels: int = 32,
+        structure_enabled: bool = False,
+        structure_mask_channels: int = 1,
+        structure_type_count: int = 10,
+        structure_embed_dim: int = 16,
+        structure_pos_channels: int = 2,
     ):
         super().__init__()
 
         self.spatial_size = spatial_size
+        self.structure_enabled = structure_enabled
 
         # Embedding layers for discrete inputs
         self.biome_embedding = nn.Embedding(biome_vocab_size, biome_embed_dim)
@@ -335,14 +348,40 @@ class ConditioningFusion(nn.Module):
         self.heightmap_conv = nn.Conv2d(heightmap_channels, 8, kernel_size=3, padding=1)
         self.river_conv = nn.Conv2d(river_channels, 8, kernel_size=3, padding=1)
 
-        # Compute total conditioning channels
-        total_channels = (
+        # Compute base conditioning channels (without structure)
+        self.base_channels = (
             biome_embed_dim  # Biome embeddings
             + 8  # Processed heightmap
             + 8  # Processed river
             + y_embed_dim  # Y-level embedding
             + lod_embed_dim  # LOD embedding
         )
+
+        # Structure-aware components (if enabled)
+        if self.structure_enabled:
+            # Process structure mask
+            self.structure_mask_conv = nn.Conv2d(
+                structure_mask_channels, 8, kernel_size=3, padding=1
+            )
+
+            # Linear layer for structure types embedding
+            self.structure_type_projection = nn.Sequential(
+                nn.Linear(structure_type_count, structure_embed_dim),
+                nn.ReLU(),
+                nn.Linear(structure_embed_dim, structure_embed_dim),
+            )
+
+            # Linear layer for structure positions
+            self.structure_pos_projection = nn.Sequential(
+                nn.Linear(structure_pos_channels, structure_embed_dim // 2),
+                nn.ReLU(),
+                nn.Linear(structure_embed_dim // 2, structure_embed_dim),
+            )
+
+            # Add structure channels to total
+            total_channels = self.base_channels + 8 + structure_embed_dim * 2
+        else:
+            total_channels = self.base_channels
 
         # Final fusion layer
         self.fusion_conv = nn.Conv2d(total_channels, output_channels, kernel_size=1)
@@ -354,8 +393,10 @@ class ConditioningFusion(nn.Module):
         river_patch: torch.Tensor,
         y_index: torch.Tensor,
         lod: torch.Tensor,
-    ) -> torch.Tensor:
-        # Process biome embeddings
+        structure_mask: Optional[torch.Tensor] = None,
+        structure_types: Optional[torch.Tensor] = None,
+        structure_positions: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:  # Process biome embeddings
         biome_embeds = self.biome_embedding(biome_patch)  # (B, 16, 16, E)
         biome_embeds = biome_embeds.permute(0, 3, 1, 2)  # (B, E, 16, 16)
 
@@ -371,10 +412,46 @@ class ConditioningFusion(nn.Module):
         y_spatial = y_embeds.unsqueeze(-1).unsqueeze(-1).expand(-1, -1, 16, 16)
         lod_spatial = lod_embeds.unsqueeze(-1).unsqueeze(-1).expand(-1, -1, 16, 16)
 
+        # Start with basic conditioning features
+        feature_list = [
+            biome_embeds,
+            heightmap_features,
+            river_features,
+            y_spatial,
+            lod_spatial,
+        ]  # Add structure features if enabled
+        if self.structure_enabled and structure_mask is not None:
+            # Upsample structure mask from 8x8 to 16x16 to match other features
+            structure_mask_upsampled = F.interpolate(structure_mask, size=(16, 16), mode="nearest")
+
+            # Process structure mask
+            structure_features = F.relu(self.structure_mask_conv(structure_mask_upsampled))
+
+            # Process structure types
+            if structure_types is not None:
+                type_embeds = self.structure_type_projection(structure_types)  # (B, embed_dim)
+                type_spatial = type_embeds.unsqueeze(-1).unsqueeze(-1).expand(-1, -1, 16, 16)
+            else:
+                batch_size = biome_patch.size(0)
+                type_spatial = torch.zeros(
+                    batch_size, self.structure_embed_dim, 16, 16, device=biome_patch.device
+                )
+
+            # Process structure positions
+            if structure_positions is not None:
+                pos_embeds = self.structure_pos_projection(structure_positions)  # (B, embed_dim)
+                pos_spatial = pos_embeds.unsqueeze(-1).unsqueeze(-1).expand(-1, -1, 16, 16)
+            else:
+                batch_size = biome_patch.size(0)
+                pos_spatial = torch.zeros(
+                    batch_size, self.structure_embed_dim, 16, 16, device=biome_patch.device
+                )
+
+            # Add structure features to list
+            feature_list.extend([structure_features, type_spatial, pos_spatial])
+
         # Concatenate all conditioning features
-        conditioning = torch.cat(
-            [biome_embeds, heightmap_features, river_features, y_spatial, lod_spatial], dim=1
-        )
+        conditioning = torch.cat(feature_list, dim=1)
 
         # Fuse into final conditioning representation
         conditioning = self.fusion_conv(conditioning)
@@ -398,6 +475,7 @@ class VoxelUNet3D(nn.Module):
         super().__init__()
 
         self.config = config
+        self.structure_enabled = config.structure_enabled
 
         # Enhanced LOD timestep embedding with sinusoidal encoding
         self.lod_embed_dim = config.lod_embed_dim
@@ -407,7 +485,7 @@ class VoxelUNet3D(nn.Module):
             nn.Linear(config.lod_embed_dim, config.lod_embed_dim),
         )
 
-        # Conditioning fusion module
+        # Conditioning fusion module with structure-aware inputs if enabled
         self.conditioning_fusion = ConditioningFusion(
             biome_vocab_size=config.biome_vocab_size,
             biome_embed_dim=config.biome_embed_dim,
@@ -416,6 +494,11 @@ class VoxelUNet3D(nn.Module):
             y_embed_dim=config.y_embed_dim,
             lod_embed_dim=config.lod_embed_dim,
             output_channels=config.base_channels,
+            structure_enabled=config.structure_enabled,
+            structure_mask_channels=config.structure_mask_channels,
+            structure_type_count=config.structure_type_count,
+            structure_embed_dim=config.structure_embed_dim,
+            structure_pos_channels=config.structure_pos_channels,
         )
 
         # FiLM conditioning layers for LOD awareness at multiple levels
@@ -536,9 +619,17 @@ class VoxelUNet3D(nn.Module):
         river_patch: torch.Tensor,
         y_index: torch.Tensor,
         lod: torch.Tensor,
+        structure_mask: Optional[torch.Tensor] = None,
+        structure_types: Optional[torch.Tensor] = None,
+        structure_positions: Optional[torch.Tensor] = None,
     ) -> Dict[str, torch.Tensor]:
         """
-        Forward pass with enhanced LOD timestep conditioning.
+        Forward pass with enhanced LOD timestep conditioning and optional structure inputs.
+
+        Structure-aware inputs (if enabled):
+        - structure_mask: Spatial binary mask (B, 1, 8, 8) showing structure presence
+        - structure_types: One-hot structure type encoding (B, n_types)
+        - structure_positions: Normalized position offsets (B, 2) for [x, z]
 
         LOD conditioning is applied at multiple levels:
         1. Sinusoidal timestep embedding generation
@@ -554,7 +645,14 @@ class VoxelUNet3D(nn.Module):
 
         # Get spatial conditioning features (B, C, 16, 16)
         conditioning = self.conditioning_fusion(
-            biome_patch, heightmap_patch, river_patch, y_index, lod
+            biome_patch,
+            heightmap_patch,
+            river_patch,
+            y_index,
+            lod,
+            structure_mask if self.structure_enabled else None,
+            structure_types if self.structure_enabled else None,
+            structure_positions if self.structure_enabled else None,
         )
 
         # Initial convolution on parent voxel
