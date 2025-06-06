@@ -50,13 +50,27 @@ Each feature is implemented in a **micro-commit cycle**:
 
 ## 📁 Key Directories
 
-| Path         | Purpose                          |
-|--------------|----------------------------------|
-| `train/`     | Model, dataset, training loop    |
-| `scripts/`   | Evaluation, ONNX export          |
-| `tests/`     | Unit tests (PyTest)              |
-| `models/`    | Saved checkpoints + ONNX         |
-| `docs/`      | Architecture, project outline    |
+| Path         | Purpose                                        |
+|--------------|------------------------------------------------|
+| `train/`     | Model, dataset, training loop, metrics         |
+| `scripts/`   | Data processing, ONNX export, benchmarking     |
+| `tests/`     | Unit tests (PyTest)                            |
+| `models/`    | Saved checkpoints + ONNX exports               |
+| `data/`      | Training data, intermediate files              |
+| `docs/`      | Architecture, project outline, reflections     |
+
+---
+
+## 🧰 Available Scripts
+
+| Script                        | Purpose                                             |
+|-------------------------------|----------------------------------------------------|
+| `train.py`                    | Main training pipeline CLI                          |
+| `scripts/generate_corpus.py`  | Generate full training corpus with multiple seeds   |
+| `scripts/benchmark.py`        | Benchmark model performance and batch size          |
+| `scripts/verify_onnx.py`      | Export and verify ONNX model compatibility          |
+| `scripts/disk_monitor.py`     | Monitor disk usage during large dataset generation  |
+| `scripts/hyperparameter_tune.py` | Find optimal model hyperparameters               |
 
 ---
 
@@ -72,6 +86,15 @@ Each feature is implemented in a **micro-commit cycle**:
 ## 🛠 Status
 
 VoxelTree is **in active development** — contributors welcome, but please read the CI and TDD guidelines first.
+
+### Recent Progress:
+- ✅ Completed Phase 5.1: One-epoch dry run
+- ✅ Added comprehensive training CLI
+- ✅ Implemented data quality auditor
+- ✅ Added metrics for model evaluation
+- ✅ Added visualization for model predictions
+- ⏳ Phase 5.2: Full training run with optimal hyperparameters
+- ⏳ Phase 6.0: ONNX export and Minecraft integration
 
 ---
 

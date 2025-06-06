@@ -5,13 +5,14 @@ VoxelTree training orchestration and checkpoint management.
 import logging
 import time
 from pathlib import Path
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 import torch
 import torch.optim as optim
 
 from .losses import voxel_loss_fn
 from .unet3d import UNet3DConfig, VoxelUNet3D
+from .visualizer import TensorBoardLogger, VoxelVisualizer
 
 
 class VoxelTrainer:
@@ -32,12 +33,30 @@ class VoxelTrainer:
             self.model.parameters(),
             lr=training_config.get("learning_rate", 1e-4),
             weight_decay=training_config.get("weight_decay", 1e-5),
-        )
-
-        # Training state
+        )  # Training state
         self.current_epoch = 0
         self.global_step = 0
         self.best_loss = float("inf")
+
+        # Initialize TensorBoard logger
+        tensorboard_config = training_config.get("tensorboard", {})
+        if tensorboard_config.get("enabled", False):
+            log_dir = tensorboard_config.get("log_dir", "runs/tensorboard")
+            self.tb_logger = TensorBoardLogger(log_dir, enabled=True)
+
+            # Log model graph if enabled
+            if tensorboard_config.get("log_model_graph", False):
+                try:
+                    # Create a dummy input to trace the model
+                    model_cfg = config.get("model", {})
+                    dummy_input = torch.zeros(
+                        1, 1, 16, 16, 16, device=self.device  # Batch, channels, D, H, W
+                    )
+                    self.tb_logger.log_model_graph(self.model, dummy_input.shape)
+                except Exception as e:
+                    logging.warning(f"Failed to log model graph: {e}")
+        else:
+            self.tb_logger = None
 
         # Loss configuration
         loss_config = config.get("loss", {})
@@ -71,14 +90,34 @@ class VoxelTrainer:
             target_types=batch["target_types"],
             mask_weight=self.mask_weight,
             type_weight=self.type_weight,
-        )
-
-        # Backward pass
+        )  # Backward pass
         self.optimizer.zero_grad()
         loss.backward()
         self.optimizer.step()
 
         self.global_step += 1
+
+        # Log to TensorBoard
+        if self.tb_logger and self.global_step % 10 == 0:  # Log every 10 steps
+            self.tb_logger.log_metrics(
+                {"train/loss": loss.item()}, step=self.global_step, prefix=""
+            )
+
+            # Log visualizations occasionally
+            if self.global_step % 100 == 0:
+                tensorboard_config = self.config.get("training", {}).get("tensorboard", {})
+                if tensorboard_config.get("log_visualizations", False):
+                    try:
+                        self.tb_logger.log_voxel_batch(
+                            inputs=batch["parent_voxel"],
+                            predictions=air_mask_logits,
+                            targets=batch["target_mask"],
+                            step=self.global_step,
+                            max_samples=tensorboard_config.get("visualization_samples", 2),
+                        )
+                    except Exception as e:
+                        logging.warning(f"Failed to log visualizations: {e}")
+
         return loss
 
     def train_one_epoch(self, dataloader=None) -> Dict[str, float]:
@@ -115,6 +154,79 @@ class VoxelTrainer:
             "epoch": self.current_epoch - 1,
             "epoch_time": epoch_time,
             "lr": self.optimizer.param_groups[0]["lr"],
+        }
+
+    def validate_one_epoch(self, dataloader=None) -> Dict[str, float]:
+        """Validate for one epoch."""
+        if dataloader is None:
+            # Dummy validation for testing
+            dummy_batch = self._create_dummy_batch()
+            with torch.no_grad():
+                self.model.eval()
+                batch = {
+                    k: v.to(self.device) if isinstance(v, torch.Tensor) else v
+                    for k, v in dummy_batch.items()
+                }
+
+                outputs = self.model(
+                    parent_voxel=batch["parent_voxel"],
+                    biome_patch=batch["biome_patch"],
+                    heightmap_patch=batch["heightmap_patch"],
+                    river_patch=batch["river_patch"],
+                    y_index=batch["y_index"],
+                    lod=batch["lod"],
+                )
+
+                val_loss = voxel_loss_fn(
+                    air_mask_logits=outputs["air_mask_logits"],
+                    block_type_logits=outputs["block_type_logits"],
+                    target_mask=batch["target_mask"],
+                    target_types=batch["target_types"],
+                    mask_weight=self.mask_weight,
+                    type_weight=self.type_weight,
+                )
+
+                return {"loss": val_loss.item()}
+
+        total_loss = 0.0
+        num_batches = 0
+        start_time = time.time()
+
+        with torch.no_grad():
+            for batch in dataloader:
+                self.model.eval()
+                batch = {
+                    k: v.to(self.device) if isinstance(v, torch.Tensor) else v
+                    for k, v in batch.items()
+                }
+
+                outputs = self.model(
+                    parent_voxel=batch["parent_voxel"],
+                    biome_patch=batch["biome_patch"],
+                    heightmap_patch=batch["heightmap_patch"],
+                    river_patch=batch["river_patch"],
+                    y_index=batch["y_index"],
+                    lod=batch["lod"],
+                )
+
+                val_loss = voxel_loss_fn(
+                    air_mask_logits=outputs["air_mask_logits"],
+                    block_type_logits=outputs["block_type_logits"],
+                    target_mask=batch["target_mask"],
+                    target_types=batch["target_types"],
+                    mask_weight=self.mask_weight,
+                    type_weight=self.type_weight,
+                )
+
+                total_loss += val_loss.item()
+                num_batches += 1
+
+        avg_loss = total_loss / max(num_batches, 1)
+        epoch_time = time.time() - start_time
+
+        return {
+            "loss": avg_loss,
+            "epoch_time": epoch_time,
         }
 
     def save_checkpoint(self, checkpoint_path: Path, epoch: int, loss: float, **kwargs) -> None:

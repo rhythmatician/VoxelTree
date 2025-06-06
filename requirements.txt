@@ -34,3 +34,5 @@ noise                 # Perlin/Simplex for river/biome simulation (Python)
 
 # === Optional: Additional Tools ===
 types-psutil          # type stubs for psutil
+onnx
+onnxruntime

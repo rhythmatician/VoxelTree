@@ -1,28 +1,44 @@
-# VoxelTree Configuration - Phase 0B World Generation Bootstrap
+# VoxelTree Configuration - Production Training Configuration
 # This file defines parameters for Minecraft world generation and training
 
 worldgen:
-  seed: 6901795026152433433
-  java_heap: "4G"
-  batch_size: 16 # Chunks per .mca generation batch
-  max_temp_disk_gb: 5
+  # Training uses multiple seeds via generate_corpus.py
+  # Default seed is just for single-world testing
+  seed: "VoxelTree"
+  java_heap: "6G"
+  batch_size: 32 # Chunks per .mca generation batch
+  max_temp_disk_gb: 15
   chunk_region_bounds:
     x_min: 0
-    x_max: 128 # 2048 chunks = 128 regions
+    x_max: 256 # 4096 chunks = 256 regions
     z_min: 0
-    z_max: 128
+    z_max: 256
   java_tools:
     primary: "tools/fabric-server/fabric-server-mc.1.21.5-loader.0.16.14-launcher.1.0.3.jar"
     chunky: "tools/fabric-server/runtime/mods/Chunky-Fabric-1.4.36.jar"
     cubiomes: "tools/voxeltree_cubiomes_cli/voxeltree_cubiomes_cli.exe"
 
-# Extraction configuration (Phase 0C)
+# Corpus generation (for generate_corpus.py)
+corpus:
+  seed_ranges: "1000-2000,5000-6000,10000-11000" # Multiple seed ranges for diversity
+  world_radius: 16 # Radius in regions (16 regions = 256x256 chunks)
+  output_dir: "data/corpus"
+  splits:
+    train: 0.8
+    val: 0.1
+    test: 0.1
+  cleanup:
+    delete_temp_worlds: true
+    delete_raw_chunks: true
+    max_disk_usage_gb: 100
+
+# Extraction configuration
 extraction:
   output_dir: "data/chunks"
   temp_dir: "temp_extraction"
-  max_disk_usage_gb: 10
+  max_disk_usage_gb: 15
   batch_size: 64 # chunks per batch before disk write
-  num_workers: 4 # multiprocessing workers
+  num_workers: 8 # multiprocessing workers
   compression_level: 6 # npz compression (1-9)
   validation:
     verify_checksums: true
@@ -35,21 +51,43 @@ extraction:
     min_height: -64 # world bottom (Y coordinate)
     max_height: 320 # world top (Y coordinate)
 
-# Training configuration (for later phases)
+# Training configuration
 training:
-  batch_size: 32
-  learning_rate: 0.001
-  epochs: 100
+  batch_size: 64
+  learning_rate: 0.0005
+  epochs: 200
   device: "cuda" # or "cpu"
+  save_every: 10
+  checkpoint_dir: "runs"
+  # Multi-GPU support
+  distributed:
+    enabled: true
+    backend: "nccl" # Use "gloo" for CPU-only training
+    num_gpus: "auto" # Uses all available GPUs  scheduler:
+    type: "cosine" # "step", "cosine", or "none"
+    warmup_epochs: 5
+    min_lr: 0.00001
+  # TensorBoard logging
+  tensorboard:
+    enabled: true
+    log_dir: "runs/tensorboard"
+    log_model_graph: true
+    log_embeddings: true
+    log_visualizations: true
+    visualization_samples: 4
 
 # Data configuration
 data:
   chunk_format: "npz" # Compressed numpy format
-  max_chunks_in_memory: 1000
+  max_chunks_in_memory: 2000
   temp_data_dir: "data/temp"
   processed_data_dir: "data/processed"
+  # For the full training run
+  train_split: 0.8
+  val_split: 0.1
+  test_split: 0.1
 
-# Seed-based input generation configuration (Phase 1B)
+# Seed-based input generation configuration
 seed_inputs:
   output_dir: "data/seed_inputs"
   default_patch_size: 16
@@ -71,7 +109,7 @@ seed_inputs:
     cache_dir: "data/biome_cache" # Cache generated biome maps
     chunk_batch_size: 64 # Chunks to generate per batch
 
-# Pairing configuration (Phase 2)
+# Pairing configuration
 pairing:
   extracted_data_dir: "data/chunks" # Input: extracted chunk data
   seed_inputs_dir: "data/seed_inputs" # Input: seed-derived inputs
@@ -86,5 +124,51 @@ pairing:
     detect_corruption: true # Detect corrupted pairs
   batch_processing:
     chunk_batch_size: 32 # Chunks per batch
-    num_workers: 4 # Multiprocessing workers
-    max_memory_gb: 8 # Memory limit during processing
+    num_workers: 8 # Multiprocessing workers
+    max_memory_gb: 12 # Memory limit during processing
+
+# Model configuration
+model:
+  base_channels: 64
+  depth: 4
+  dropout_rate: 0.1
+  use_batch_norm: true
+  activation: "gelu"
+  lod_embedding_dim: 16
+  biome_embedding_dim: 32
+  conditioning:
+    use_heightmap: true
+    use_biomes: true
+    conditioning_channels: 16
+  block_types: 256
+
+# Loss configuration
+loss:
+  mask_weight: 1.0
+  type_weight: 0.5
+  auxiliary_losses:
+    perceptual_weight: 0.1
+    smoothness_weight: 0.05
+
+# ONNX Export configuration
+export:
+  opset_version: 17
+  dynamic_axes: true
+  optimize: true
+  quantization:
+    enabled: false
+    mode: "dynamic" # static or dynamic
+
+# Hyperparameter tuning configuration
+tuning:
+  enabled: false
+  study_name: "voxeltree_optimization"
+  n_trials: 100
+  epochs_per_trial: 5
+  validation_samples: 500
+  objective_direction: "minimize" # minimize validation loss
+  sampler: "tpe" # Tree-structured Parzen Estimator
+  pruner: "median" # Median stopping rule
+  # TODO: Add hook for external objective function customization
+  # custom_objective_module: null
+  # custom_objective_function: null
