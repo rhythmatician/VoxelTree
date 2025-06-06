@@ -158,8 +158,9 @@ class ChunkExtractor:
             air_mask = np.zeros_like(block_types, dtype=bool)
             air_mask[block_types == 0] = True  # Mark air blocks
             biomes = np.random.randint(0, 50, size=(16, 16), dtype=np.uint8)
-            heightmap = np.random.randint(0, 320, size=(16, 16), dtype=np.uint16)
-            # Pack data into dictionary for .npz storage
+            heightmap = np.random.randint(
+                0, 320, size=(16, 16), dtype=np.uint16
+            )  # Pack data into dictionary for .npz storage
             chunk_data = {
                 "block_types": block_types,
                 "air_mask": air_mask,
