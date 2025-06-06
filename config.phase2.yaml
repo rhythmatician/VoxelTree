@@ -40,10 +40,10 @@ structure_types: true
 structure_positions: true
 
 extraction:
-enabled: true
-data_root: "data/structure_mca/"
-generate_structures_required: true
-chunk_limit: 10000
+  enabled: true
+  data_root: "data/structure_mca/"
+  generate_structures_required: true
+  chunk_limit: 10000
 
 structures:
   enabled: true
