@@ -14,10 +14,7 @@ import torch
 import torch.nn as nn
 from torch.optim import Optimizer
 
-from scripts.extraction.structure_extractor import (
-    StructureExtractor,
-    StructureValidationError,
-)
+from scripts.extraction.structure_extractor import StructureExtractor, StructureValidationError
 from train.unet3d import UNet3DConfig, VoxelUNet3D
 
 logger = logging.getLogger(__name__)

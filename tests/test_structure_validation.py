@@ -13,10 +13,7 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 import pytest
 
-from scripts.extraction.structure_extractor import (
-    StructureExtractor,
-    StructureValidationError,
-)
+from scripts.extraction.structure_extractor import StructureExtractor, StructureValidationError
 from train.fine_tuning import validate_structure_data_for_training
 
 
