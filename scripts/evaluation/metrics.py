@@ -50,10 +50,12 @@ class AccuracyMetrics:
             block_metrics = block_calc.calculate_accuracy(
                 predictions["block_type_logits"], targets["block_types"]
             )
-            metrics.update(block_metrics)        # Compute structure accuracy if any structure data is available
+            metrics.update(
+                block_metrics
+            )  # Compute structure accuracy if any structure data is available
         has_structure_mask = "structure_mask" in predictions and "structure_mask" in targets
         has_structure_types = "structure_types" in predictions and "structure_types" in targets
-        
+
         if has_structure_mask or has_structure_types:
             struct_calc = StructureAccuracyCalculator()
             struct_metrics = struct_calc.calculate_accuracy(predictions, targets)
@@ -268,13 +270,17 @@ class StructureAccuracyCalculator:
             true_negatives = ((pred_present == 0) & (target_present == 0)).float().sum().item()
 
             total_samples = len(pred_present)
-            
-            metrics.update({
-                "structure_presence_false_positive_rate": false_positives / max(total_samples, 1),
-                "structure_presence_false_negative_rate": false_negatives / max(total_samples, 1),
-                "structure_presence_true_positive_rate": true_positives / max(total_samples, 1),
-                "structure_presence_true_negative_rate": true_negatives / max(total_samples, 1),
-            })
+
+            metrics.update(
+                {
+                    "structure_presence_false_positive_rate": false_positives
+                    / max(total_samples, 1),
+                    "structure_presence_false_negative_rate": false_negatives
+                    / max(total_samples, 1),
+                    "structure_presence_true_positive_rate": true_positives / max(total_samples, 1),
+                    "structure_presence_true_negative_rate": true_negatives / max(total_samples, 1),
+                }
+            )
 
         return metrics
 

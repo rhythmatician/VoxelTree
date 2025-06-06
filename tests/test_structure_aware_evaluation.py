@@ -38,7 +38,7 @@ class TestStructureAwareEvaluationMetrics:
     def _create_mock_predictions(self) -> dict:
         """Create mock model predictions for testing."""
         B, H, W, D = self.batch_size, *self.spatial_dims
-        
+
         return {
             "air_mask_logits": torch.randn(B, 1, H, W, D),
             "block_type_logits": torch.randn(B, self.num_classes, H, W, D),
@@ -50,7 +50,7 @@ class TestStructureAwareEvaluationMetrics:
     def _create_mock_targets(self) -> dict:
         """Create mock ground truth targets for testing."""
         B, H, W, D = self.batch_size, *self.spatial_dims
-        
+
         return {
             "air_mask": torch.randint(0, 2, (B, H, W, D)).float(),
             "block_types": torch.randint(0, self.num_classes, (B, H, W, D)),
@@ -88,18 +88,24 @@ class TestStructureAwareEvaluationMetrics:
         targets = self._create_mock_targets()
 
         # Create specific test case: some with structures, some without
-        predictions["structure_mask"][0] = torch.ones_like(predictions["structure_mask"][0]) * 0.8  # Present
-        predictions["structure_mask"][1] = torch.zeros_like(predictions["structure_mask"][1])  # Absent
-        
+        predictions["structure_mask"][0] = (
+            torch.ones_like(predictions["structure_mask"][0]) * 0.8
+        )  # Present
+        predictions["structure_mask"][1] = torch.zeros_like(
+            predictions["structure_mask"][1]
+        )  # Absent
+
         targets["structure_mask"][0] = torch.ones_like(targets["structure_mask"][0])  # True present
-        targets["structure_mask"][1] = torch.ones_like(targets["structure_mask"][1])  # True present (FN case)
+        targets["structure_mask"][1] = torch.ones_like(
+            targets["structure_mask"][1]
+        )  # True present (FN case)
 
         metrics = self.structure_calc.calculate_accuracy(predictions, targets)
 
         # Check FP/FN metrics
         fp_fn_keys = [
             "structure_presence_false_positive_rate",
-            "structure_presence_false_negative_rate", 
+            "structure_presence_false_negative_rate",
             "structure_presence_true_positive_rate",
             "structure_presence_true_negative_rate",
         ]
@@ -111,21 +117,21 @@ class TestStructureAwareEvaluationMetrics:
 
         # Rates should sum to 1.0 (accounting for floating point precision)
         total_rate = (
-            metrics["structure_presence_false_positive_rate"] +
-            metrics["structure_presence_false_negative_rate"] +
-            metrics["structure_presence_true_positive_rate"] +
-            metrics["structure_presence_true_negative_rate"]
+            metrics["structure_presence_false_positive_rate"]
+            + metrics["structure_presence_false_negative_rate"]
+            + metrics["structure_presence_true_positive_rate"]
+            + metrics["structure_presence_true_negative_rate"]
         )
         assert abs(total_rate - 1.0) < 1e-6, f"Rates should sum to 1.0, got {total_rate}"
 
     def test_structure_top_k_accuracy(self):
         """Test top-k accuracy for structure types."""
         B = self.batch_size
-        
+
         # Create logits where correct class is in top-3
         structure_logits = torch.randn(B, self.num_structure_types)
         target_classes = torch.randint(0, self.num_structure_types, (B,))
-        
+
         # Ensure correct class has high probability for at least some samples
         for i in range(B // 2):
             structure_logits[i, target_classes[i]] = 10.0  # High score for correct class
@@ -163,7 +169,7 @@ class TestStructureAwareEvaluationMetrics:
     def test_iou_calculator_with_structure_masks(self):
         """Test IoU calculator specifically for structure masks."""
         B, H, W, D = self.batch_size, *self.spatial_dims
-        
+
         # Create binary structure predictions
         predictions = torch.randint(0, 2, (B, H, W, D))
         targets = torch.randint(0, 2, (B, H, W, D))
@@ -179,7 +185,7 @@ class TestStructureAwareEvaluationMetrics:
     def test_dice_calculator_with_structure_masks(self):
         """Test Dice calculator for binary structure segmentation."""
         B, H, W, D = self.batch_size, *self.spatial_dims
-        
+
         # Binary predictions (structure present/absent)
         predictions = torch.rand(B, H, W, D)  # Probabilities
         targets = torch.randint(0, 2, (B, H, W, D)).float()
@@ -197,7 +203,7 @@ class TestStructureAwareEvaluationMetrics:
             "structure_mask": torch.sigmoid(torch.randn(self.batch_size, 1, *self.spatial_dims)),
             # Missing structure_types, air_mask_logits, block_type_logits
         }
-        
+
         partial_targets = {
             "structure_mask": torch.randint(0, 2, (self.batch_size, 1, *self.spatial_dims)).float(),
             "air_mask": torch.randint(0, 2, (self.batch_size, *self.spatial_dims)).float(),
@@ -216,7 +222,7 @@ class TestStructureAwareEvaluationMetrics:
     def test_edge_case_empty_structures(self):
         """Test handling of chunks with no structures."""
         B, H, W, D = self.batch_size, *self.spatial_dims
-        
+
         predictions = {
             "structure_mask": torch.zeros(B, 1, H, W, D),  # No structures predicted
         }
@@ -235,7 +241,7 @@ class TestStructureAwareEvaluationMetrics:
     def test_edge_case_all_structures(self):
         """Test handling of chunks completely filled with structures."""
         B, H, W, D = self.batch_size, *self.spatial_dims
-        
+
         predictions = {
             "structure_mask": torch.ones(B, 1, H, W, D),  # All structures predicted
         }
@@ -254,17 +260,21 @@ class TestStructureAwareEvaluationMetrics:
     def test_regression_validation_workflow(self):
         """Test complete workflow for Phase 2 regression validation."""
         # Simulate before/after fine-tuning comparison
-        
+
         # "Before" structure-aware fine-tuning (poor structure prediction)
         before_predictions = self._create_mock_predictions()
-        before_predictions["structure_mask"] = torch.rand_like(before_predictions["structure_mask"]) * 0.3  # Low confidence
-        
-        # "After" structure-aware fine-tuning (better structure prediction)  
+        before_predictions["structure_mask"] = (
+            torch.rand_like(before_predictions["structure_mask"]) * 0.3
+        )  # Low confidence
+
+        # "After" structure-aware fine-tuning (better structure prediction)
         after_predictions = self._create_mock_predictions()
         targets = self._create_mock_targets()
 
         # Make "after" predictions more aligned with targets
-        after_predictions["structure_mask"] = targets["structure_mask"] + torch.randn_like(targets["structure_mask"]) * 0.1
+        after_predictions["structure_mask"] = (
+            targets["structure_mask"] + torch.randn_like(targets["structure_mask"]) * 0.1
+        )
 
         before_metrics = self.accuracy_metrics.compute_metrics(before_predictions, targets)
         after_metrics = self.accuracy_metrics.compute_metrics(after_predictions, targets)
@@ -273,8 +283,8 @@ class TestStructureAwareEvaluationMetrics:
         # (This is a mock test, so we'll just verify the metrics exist)
         structure_metrics = [
             "structure_mask_accuracy",
-            "structure_iou", 
-            "structure_presence_accuracy"
+            "structure_iou",
+            "structure_presence_accuracy",
         ]
 
         for metric in structure_metrics:
@@ -284,8 +294,12 @@ class TestStructureAwareEvaluationMetrics:
             assert isinstance(after_metrics[metric], float)
 
         print(f"Phase 2 regression test completed:")
-        print(f"  Structure IoU: {before_metrics['structure_iou']:.3f} → {after_metrics['structure_iou']:.3f}")
-        print(f"  Structure Accuracy: {before_metrics['structure_mask_accuracy']:.3f} → {after_metrics['structure_mask_accuracy']:.3f}")
+        print(
+            f"  Structure IoU: {before_metrics['structure_iou']:.3f} → {after_metrics['structure_iou']:.3f}"
+        )
+        print(
+            f"  Structure Accuracy: {before_metrics['structure_mask_accuracy']:.3f} → {after_metrics['structure_mask_accuracy']:.3f}"
+        )
 
 
 if __name__ == "__main__":

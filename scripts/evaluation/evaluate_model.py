@@ -22,7 +22,7 @@ project_root = Path(__file__).parent.parent.parent
 sys.path.append(str(project_root))
 
 from scripts.evaluation.metrics import AccuracyMetrics, DiceCalculator, IoUCalculator
-from train.dataset import VoxelDataset
+from train.dataset import VoxelTreeDataset
 from train.unet3d import VoxelUNet3D
 
 
@@ -47,7 +47,7 @@ class ModelEvaluator:
 
     def _load_config(self, config_path: str) -> Dict:
         """Load evaluation configuration."""
-        with open(config_path, 'r') as f:
+        with open(config_path, "r") as f:
             return yaml.safe_load(f)
 
     def _setup_device(self, device: str) -> torch.device:
@@ -55,7 +55,7 @@ class ModelEvaluator:
         if device == "auto":
             if torch.cuda.is_available():
                 device = "cuda"
-            elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+            elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
                 device = "mps"
             else:
                 device = "cpu"
@@ -97,10 +97,8 @@ class ModelEvaluator:
             Dictionary of evaluation metrics
         """
         # Create dataset and dataloader
-        dataset = VoxelDataset(
-            data_dir=dataset_path,
-            config=self.config.get("dataset", {}),
-            mode="eval"
+        dataset = VoxelTreeDataset(
+            data_dir=dataset_path, config=self.config.get("dataset", {}), mode="eval"
         )
 
         dataloader = DataLoader(
@@ -140,7 +138,7 @@ class ModelEvaluator:
 
         # Aggregate metrics
         aggregated_metrics = self._aggregate_metrics(all_metrics)
-        
+
         print(f"\nEvaluation complete. Processed {total_samples} samples.")
         return aggregated_metrics
 
@@ -148,7 +146,7 @@ class ModelEvaluator:
         """Run model forward pass."""
         # Prepare inputs
         parent_voxel = batch["parent_voxel"]
-        
+
         # Optional conditioning inputs
         biome_patch = batch.get("biome_patch")
         heightmap = batch.get("heightmap")
@@ -171,19 +169,19 @@ class ModelEvaluator:
     def _extract_targets(self, batch: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
         """Extract target tensors from batch."""
         targets = {}
-        
+
         # Standard targets
         if "air_mask" in batch:
             targets["air_mask"] = batch["air_mask"]
         if "block_types" in batch:
             targets["block_types"] = batch["block_types"]
-            
+
         # Structure targets
         if "structure_mask" in batch:
             targets["structure_mask"] = batch["structure_mask"]
         if "structure_types" in batch:
             targets["structure_types"] = batch["structure_types"]
-            
+
         return targets
 
     def _compute_batch_metrics(
@@ -225,7 +223,7 @@ class ModelEvaluator:
             if "per_class" in key:
                 # Handle per-class metrics separately
                 continue
-                
+
             values = [m[key] for m in all_metrics if key in m]
             if values:
                 aggregated[key] = sum(values) / len(values)
@@ -234,9 +232,9 @@ class ModelEvaluator:
 
     def print_metrics(self, metrics: Dict[str, float]) -> None:
         """Print metrics in a formatted way."""
-        print("\n" + "="*60)
+        print("\n" + "=" * 60)
         print("🧠 VOXELTREE MODEL EVALUATION RESULTS")
-        print("="*60)
+        print("=" * 60)
 
         # Core metrics
         print("\n📊 CORE METRICS:")
@@ -252,17 +250,19 @@ class ModelEvaluator:
                 print(f"  {key:<30}: {value:.4f}")
 
         # Advanced metrics
-        advanced_metrics = {k: v for k, v in metrics.items() if any(x in k for x in ["top3", "iou", "dice"])}
+        advanced_metrics = {
+            k: v for k, v in metrics.items() if any(x in k for x in ["top3", "iou", "dice"])
+        }
         if advanced_metrics:
             print("\n🎯 ADVANCED METRICS:")
             for key, value in advanced_metrics.items():
                 print(f"  {key:<30}: {value:.4f}")
 
-        print("="*60)
+        print("=" * 60)
 
     def save_metrics(self, metrics: Dict[str, float], output_path: str) -> None:
         """Save metrics to JSON file."""
-        with open(output_path, 'w') as f:
+        with open(output_path, "w") as f:
             json.dump(metrics, f, indent=2)
         print(f"\n💾 Metrics saved to: {output_path}")
 
