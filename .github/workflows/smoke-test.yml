@@ -118,7 +118,7 @@ jobs:
         run: python scripts/verify_onnx.py --config ci.yaml --checkpoint runs/run_*/final_checkpoint.pt
         
       - name: Archive artifacts
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: model-artifacts
           path: |
