@@ -1,0 +1,127 @@
+name: CI-Smoke-Test
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  smoke-test:
+    name: Pipeline Smoke Test
+    runs-on: ubuntu-latest
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          cache: 'pip'
+          
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          # Check if onnxruntime is properly installed
+          python -c "import onnxruntime; print(f'ONNXRuntime version: {onnxruntime.__version__}')"
+      
+      - name: Create minimal test config
+        run: |
+          cat > ci.yaml << EOF
+          worldgen:
+            seed: "SmokeTest"
+            java_heap: "2G"
+            batch_size: 4
+            max_temp_disk_gb: 1
+            chunk_region_bounds:
+              x_min: 0
+              x_max: 1
+              z_min: 0
+              z_max: 1
+            java_tools:
+              primary: "tools/fabric-server/fabric-server-mc.1.21.5-loader.0.16.14-launcher.1.0.3.jar"
+              chunky: "tools/fabric-server/runtime/mods/Chunky-Fabric-1.4.36.jar"
+              cubiomes: "tools/voxeltree_cubiomes_cli/voxeltree_cubiomes_cli.exe"
+          
+          extraction:
+            output_dir: "data/ci_test/chunks"
+            temp_dir: "data/ci_test/temp_extraction"
+            max_disk_usage_gb: 1
+            batch_size: 4
+            num_workers: 2
+            compression_level: 6
+            validation:
+              verify_checksums: true
+              detect_corruption: true
+            block_mapping:
+              air_blocks: [0]
+              solid_blocks: [1, 2, 3]
+            heightmap:
+              surface_blocks: [2, 3, 4]
+              min_height: -64
+              max_height: 320
+          
+          training:
+            batch_size: 2
+            learning_rate: 0.001
+            epochs: 1
+            device: "cpu"
+            save_every: 1
+          
+          data:
+            chunk_format: "npz"
+            max_chunks_in_memory: 50
+            temp_data_dir: "data/ci_test/temp"
+            processed_data_dir: "data/ci_test/processed"
+            train_split: 0.6
+            val_split: 0.2
+            test_split: 0.2
+          
+          pairing:
+            extracted_data_dir: "data/ci_test/chunks"
+            seed_inputs_dir: "data/seed_inputs"
+            output_dir: "data/ci_test/pairs"
+            lod_levels: 2
+            pair_format:
+              parent_shape: [8, 8, 8]
+              target_shape: [16, 16, 16]
+              compression_level: 6
+            validation:
+              validate_alignment: true
+              detect_corruption: true
+            batch_processing:
+              chunk_batch_size: 4
+              num_workers: 2
+              max_memory_gb: 1
+          
+          model:
+            base_channels: 16
+            depth: 2
+            dropout_rate: 0.1
+            use_batch_norm: true
+            activation: "relu"
+          
+          loss:
+            mask_weight: 1.0
+            type_weight: 1.0
+          EOF
+
+      - name: Run small corpus generation
+        run: python scripts/generate_corpus.py --config ci.yaml --seed-range 1000-1001 --world-radius 1 --log-level INFO
+        
+      - name: Run single epoch training
+        run: python train.py --config ci.yaml --action train --log-level INFO
+        
+      - name: Export model to ONNX
+        run: python scripts/verify_onnx.py --config ci.yaml --checkpoint runs/run_*/final_checkpoint.pt
+        
+      - name: Archive artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: model-artifacts
+          path: |
+            runs/run_*
+            training.log
+            onnx_verify.log

@@ -348,3 +348,18 @@ class PatchValidator:
             "invalid": invalid,
             "success_rate": valid / max(1, total),
         }
+
+    @classmethod
+    def create_auditor(cls, config_path: Optional[Path] = None):
+        """
+        Factory method to create a PatchQualityAuditor instance.
+
+        Args:
+            config_path: Optional path to config file
+
+        Returns:
+            PatchQualityAuditor instance
+        """
+        from scripts.pairing.patch_auditor import PatchQualityAuditor
+
+        return PatchQualityAuditor(config_path=config_path)
