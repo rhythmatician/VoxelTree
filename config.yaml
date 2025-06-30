@@ -63,7 +63,8 @@ training:
   distributed:
     enabled: true
     backend: "nccl" # Use "gloo" for CPU-only training
-    num_gpus: "auto" # Uses all available GPUs  scheduler:
+    num_gpus: "auto" # Uses all available GPUs
+  scheduler:
     type: "cosine" # "step", "cosine", or "none"
     warmup_epochs: 5
     min_lr: 0.00001

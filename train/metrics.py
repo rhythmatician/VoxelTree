@@ -163,8 +163,9 @@ class VoxelMetrics:
         # Dice = (2 * intersection) / sum of areas
         dice = intersection / (sum_areas + eps)
 
-        return dice @ staticmethod
+        return dice
 
+    @staticmethod
     def per_class_accuracy(
         pred_input: Union[np.ndarray, Tensor, Dict[str, Any]],
         target_classes: Optional[Union[np.ndarray, Tensor]] = None,
@@ -220,9 +221,9 @@ class VoxelMetrics:
             mask = torch.from_numpy(mask)
 
         # Get predicted classes
-        if len(pred_logits.shape) == 5:  # Batch mode
+        if len(pred_logits.shape) >= 4:  # Batch mode (4D or 5D)
             pred_classes = torch.argmax(pred_logits, dim=1)
-        else:  # Single example mode
+        else:  # Single example mode (3D)
             pred_classes = torch.argmax(pred_logits, dim=0)
 
         # Initialize result
@@ -230,10 +231,12 @@ class VoxelMetrics:
 
         # Apply mask if provided
         if mask is not None:
-            if len(mask.shape) == 5:  # Batch mode with mask (B, 1, D, H, W)
+            if len(mask.shape) >= 4 and mask.shape[1] == 1:  # Batch mode with mask (B, 1, ...)
                 mask = mask.squeeze(1).bool()
-            else:  # Single example mode with mask (1, D, H, W)
+            elif len(mask.shape) >= 3:  # Single example mode with mask (1, ...)
                 mask = mask.squeeze(0).bool()
+            else:
+                mask = mask.bool()
 
         # Calculate accuracy for each class
         for c in range(n_classes):
@@ -391,9 +394,6 @@ class VoxelMetrics:
             pred_mask_probs, target_mask, mask_threshold
         )
 
-        # Convert mask to binary
-        pred_binary_mask = (pred_mask_probs > mask_threshold).float()
-
         # Calculate class accuracy and confusion matrix
         class_acc = VoxelMetrics.per_class_accuracy(
             pred_type_logits, target_types, n_classes, target_mask
@@ -407,15 +407,18 @@ class VoxelMetrics:
         valid_accs = [acc for acc in class_acc.values() if not np.isnan(acc)]
         mean_class_acc = np.mean(valid_accs) if valid_accs else 0.0
 
-        metrics = {
-            "iou_score": mean_iou,
-            "dice_score": mean_dice,
-            "mean_class_accuracy": mean_class_acc,
-        }
-
-        # Add per-class metrics
+        # Convert class accuracies to tensor for per-class output
+        per_class_tensor = torch.zeros(n_classes)
         for class_idx, acc in class_acc.items():
             if not np.isnan(acc):
-                metrics[f"class_{class_idx}_accuracy"] = acc
+                per_class_tensor[class_idx] = acc
+
+        metrics = {
+            "mask_iou": mean_iou,
+            "mask_dice": mean_dice,
+            "type_accuracy": mean_class_acc,
+            "type_accuracy_per_class": per_class_tensor,
+            "combined_score": (mean_iou + mean_dice + mean_class_acc) / 3,
+        }
 
         return metrics

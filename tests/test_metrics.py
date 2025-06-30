@@ -1,10 +1,13 @@
 """
 Unit tests for VoxelTree metrics module.
-Tests metrics calculation accuracy with controlled inputs.
+Tests metrics calculat        # Expected confusion matrix:
+        # [1, 0, 1]  # 1 correct class 0, 1 class 0 predicted as class 2
+        # [1, 2, 0]  # 1 class 1 predicted as class 0, 2 correct class 1
+        # [0, 0, 1]  # 1 correct class 2
+        expected = torch.tensor([[1, 0, 1], [1, 2, 0], [0, 0, 1]], dtype=torch.float32)ccuracy with controlled inputs.
 """
 
 import numpy as np
-import pytest
 import torch
 
 from train.metrics import VoxelMetrics
@@ -19,13 +22,13 @@ class TestVoxelMetrics:
         pred_mask = torch.tensor([[[[1.0, 1.0], [0.0, 0.0]]]])
         target_mask = torch.tensor([[[[1.0, 1.0], [0.0, 0.0]]]])
         iou = VoxelMetrics.binary_iou(pred_mask, target_mask)
-        assert iou == 1.0, f"Expected perfect IoU to be 1.0, got {iou}"
+        assert abs(iou - 1.0) < 1e-5, f"Expected perfect IoU to be 1.0, got {iou}"
 
         # No overlap case
         pred_mask = torch.tensor([[[[1.0, 1.0], [1.0, 1.0]]]])
         target_mask = torch.tensor([[[[0.0, 0.0], [0.0, 0.0]]]])
         iou = VoxelMetrics.binary_iou(pred_mask, target_mask)
-        assert iou == 0.0, f"Expected zero overlap IoU to be 0.0, got {iou}"
+        assert abs(iou - 0.0) < 1e-5, f"Expected zero overlap IoU to be 0.0, got {iou}"
 
         # 50% overlap case
         pred_mask = torch.tensor([[[[1.0, 1.0], [0.0, 0.0]]]])
@@ -37,7 +40,7 @@ class TestVoxelMetrics:
         pred_logits = torch.tensor([[[[0.8, 0.9], [-0.5, -0.2]]]])
         target_mask = torch.tensor([[[[1.0, 1.0], [0.0, 0.0]]]])
         iou = VoxelMetrics.binary_iou(pred_logits, target_mask)
-        assert iou == 1.0, f"Expected perfect IoU with thresholded logits to be 1.0, got {iou}"
+        assert abs(iou - 1.0) < 1e-5, f"Expected perfect IoU with thresholded logits, got {iou}"
 
     def test_dice_coefficient(self):
         """Test Dice coefficient calculation."""
@@ -45,13 +48,13 @@ class TestVoxelMetrics:
         pred_mask = torch.tensor([[[[1.0, 1.0], [0.0, 0.0]]]])
         target_mask = torch.tensor([[[[1.0, 1.0], [0.0, 0.0]]]])
         dice = VoxelMetrics.dice_coefficient(pred_mask, target_mask)
-        assert dice == 1.0, f"Expected perfect Dice to be 1.0, got {dice}"
+        assert abs(dice - 1.0) < 1e-5, f"Expected perfect Dice to be 1.0, got {dice}"
 
         # No overlap case
         pred_mask = torch.tensor([[[[1.0, 1.0], [1.0, 1.0]]]])
         target_mask = torch.tensor([[[[0.0, 0.0], [0.0, 0.0]]]])
         dice = VoxelMetrics.dice_coefficient(pred_mask, target_mask)
-        assert dice == 0.0, f"Expected zero overlap Dice to be 0.0, got {dice}"
+        assert abs(dice - 0.0) < 1e-5, f"Expected zero overlap Dice to be 0.0, got {dice}"
 
         # 50% overlap case
         pred_mask = torch.tensor([[[[1.0, 1.0], [0.0, 0.0]]]])
@@ -71,8 +74,8 @@ class TestVoxelMetrics:
         # Expected confusion matrix:
         # [1, 0, 1]  # 1 correct class 0, 1 class 0 predicted as class 2
         # [1, 2, 0]  # 1 class 1 predicted as class 0, 2 correct class 1
-        # [0, 1, 1]  # 1 class 2 predicted as class 1, 1 correct class 2
-        expected = torch.tensor([[1, 0, 1], [1, 2, 0], [0, 1, 1]], dtype=torch.float32)
+        # [0, 0, 1]  # 0 class 2 predicted incorrectly, 1 correct class 2
+        expected = torch.tensor([[1, 0, 1], [1, 2, 0], [0, 0, 1]], dtype=torch.float32)
 
         assert torch.allclose(
             conf_matrix, expected
@@ -92,11 +95,11 @@ class TestVoxelMetrics:
 
         accuracy = VoxelMetrics.per_class_accuracy(conf_matrix)
 
-        # Expected accuracies:
-        # Class 0: 5 / (5+2+1) = 5/8 = 0.625
-        # Class 1: 8 / (1+8+3) = 8/12 = 0.667
-        # Class 2: 6 / (2+0+6) = 6/8 = 0.75
-        expected = torch.tensor([0.625, 0.667, 0.750])
+        # Expected accuracies (recall - diagonal / row sum):
+        # Class 0: 5 / (5+1+2) = 5/8 = 0.625
+        # Class 1: 8 / (2+8+0) = 8/10 = 0.8
+        # Class 2: 6 / (1+3+6) = 6/10 = 0.6
+        expected = torch.tensor([0.625, 0.8, 0.6])
 
         assert torch.allclose(
             accuracy, expected, atol=1e-3

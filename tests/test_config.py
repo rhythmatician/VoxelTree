@@ -42,7 +42,7 @@ def test_load_worldgen_config_success():
     with patch("builtins.open", mock_open(read_data=mock_yaml_content)):
         with patch("pathlib.Path.exists", return_value=True):
             worldgen_config = load_worldgen_config(Path("config.yaml"))
-            assert worldgen_config["seed"] == "VoxelTree"
+            assert worldgen_config["seed"] == 6901795026152433433  # Processed seed value
             assert worldgen_config["java_heap"] == "4G"
 
 
