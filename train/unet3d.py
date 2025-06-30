@@ -67,10 +67,11 @@ class FiLMLayer(nn.Module):
         self.scale_net = nn.Linear(conditioning_dim, feature_dim)
         self.shift_net = nn.Linear(conditioning_dim, feature_dim)
 
-        # Initialize to identity transformation
-        nn.init.zeros_(self.scale_net.weight)
+        # Initialize with small random weights instead of zeros for better testability
+        # This allows conditioning to have an immediate effect even before training
+        nn.init.normal_(self.scale_net.weight, mean=0.0, std=0.01)
         nn.init.ones_(self.scale_net.bias)
-        nn.init.zeros_(self.shift_net.weight)
+        nn.init.normal_(self.shift_net.weight, mean=0.0, std=0.01)
         nn.init.zeros_(self.shift_net.bias)
 
     def forward(self, features: torch.Tensor, conditioning: torch.Tensor) -> torch.Tensor:
