@@ -13,15 +13,13 @@ import argparse
 import logging
 import sys
 import time
-from collections import defaultdict
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 
 import numpy as np
 import psutil
 import torch
 import yaml
-from tqdm import tqdm
 
 # Append project root to path to ensure modules can be imported
 sys.path.append(str(Path(__file__).resolve().parent.parent))
@@ -175,6 +173,8 @@ def benchmark_batch_sizes(
     # Get baseline memory usage
     baseline_memory = get_memory_usage()
     baseline_gpu = get_gpu_memory_usage() if torch.cuda.is_available() else None
+    logger.debug(f"Baseline memory usage: {baseline_memory}")
+    logger.debug(f"Baseline GPU memory usage: {baseline_gpu}")
 
     for batch_size in batch_sizes:
         logger.info(f"Testing batch size {batch_size}")
@@ -200,6 +200,8 @@ def benchmark_batch_sizes(
             # Memory usage before training
             before_memory = get_memory_usage()
             before_gpu = get_gpu_memory_usage() if torch.cuda.is_available() else None
+            logger.debug(f"Memory before training: {before_memory}")
+            logger.debug(f"GPU memory before training: {before_gpu}")
 
             # Warmup
             logger.info(f"Performing {warmup} warmup iterations")
