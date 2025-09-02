@@ -314,9 +314,8 @@ class WorldGenBootstrap:
                 for mca_file in found_region_path.glob("*.mca"):
                     shutil.copy2(mca_file, permanent_region / mca_file.name)
 
-                self.logger.info(
-                    f"Copied {len(list(permanent_region.glob('*.mca')))} .mca files to {permanent_world}"
-                )
+                mca_file_count = len(list(permanent_region.glob("*.mca")))
+                self.logger.info(f"Copied {mca_file_count} .mca files to {permanent_world}")
 
                 return permanent_world
 
