@@ -34,8 +34,8 @@ except ImportError:
 # Append project root to path to ensure modules can be imported
 sys.path.append(str(Path(__file__).resolve().parent.parent))
 
-from train.trainer import VoxelTrainer
-from train.visualizer import VoxelVisualizer
+from train.trainer import VoxelTrainer  # nowa: E402
+from train.visualizer import VoxelVisualizer  # nowa: E402
 
 
 def setup_logging(log_level: str = "INFO") -> None:
