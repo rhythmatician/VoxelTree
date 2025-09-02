@@ -8,6 +8,7 @@ worldgen:
   java_heap: "6G"
   batch_size: 32 # Chunks per .mca generation batch
   max_temp_disk_gb: 15
+  generate_structures: false # Phase-1: terrain-only training
   chunk_region_bounds:
     x_min: 0
     x_max: 256 # 4096 chunks = 256 regions
@@ -130,18 +131,28 @@ pairing:
 
 # Model configuration
 model:
+  # Core architecture
+  input_channels: 1
+  output_channels: 2
   base_channels: 64
-  depth: 4
+  depth: 2 # Reduced from 4 to work with 8x8x8 inputs (8→4→2, then upsample back)
+
+  # Conditioning inputs
+  biome_vocab_size: 80 # Increased to handle all Minecraft biomes (1.21 has ~70 biomes)
+  biome_embed_dim: 32
+  heightmap_channels: 1
+  river_channels: 1
+  y_embed_dim: 8
+  lod_embed_dim: 16
+
+  # Training hyperparameters
   dropout_rate: 0.1
   use_batch_norm: true
   activation: "gelu"
-  lod_embedding_dim: 16
-  biome_embedding_dim: 32
-  conditioning:
-    use_heightmap: true
-    use_biomes: true
-    conditioning_channels: 16
-  block_types: 256
+
+  # Output configuration
+  air_mask_channels: 1
+  block_type_channels: 16 # Phase-1: simplified block vocabulary (air, stone, dirt, grass, water, etc.)
 
 # Loss configuration
 loss:
