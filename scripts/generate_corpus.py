@@ -23,7 +23,6 @@ import time
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Union
 
-import numpy as np
 import psutil
 import yaml
 from tqdm import tqdm
@@ -110,8 +109,16 @@ def generate_world_batch(
     }
 
     # Create bootstrap and generate world
-    bootstrap = FabricWorldGenBootstrap(worldgen_config)
-    world_dir = bootstrap.generate_world_regions()
+    bootstrap = FabricWorldGenBootstrap(
+        seed=worldgen_config.get("seed"), java_heap=worldgen_config.get("java_heap")
+    )
+
+    # Extract region bounds from config
+    bounds = worldgen_config["chunk_region_bounds"]
+    x_range = (bounds["x_min"], bounds["x_max"])
+    z_range = (bounds["z_min"], bounds["z_max"])
+
+    world_dir = bootstrap.generate_region_batch(x_range, z_range)
 
     # Create a uniquely named output directory for this seed
     seed_output_dir = output_dir / f"seed_{seed}"
