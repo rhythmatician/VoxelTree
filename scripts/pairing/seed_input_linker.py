@@ -167,7 +167,8 @@ class SeedInputLinker:
         """
         # For now, just return the biome IDs directly
         # In the future, this could include y-level specific biome effects
-        return biomes.astype(np.uint8)
+        # Convert to int64 for PyTorch embedding compatibility
+        return biomes.astype(np.int64)
 
     def extract_height_conditioning(self, heightmap: np.ndarray, y_index: int) -> np.ndarray:
         """

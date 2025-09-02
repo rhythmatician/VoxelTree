@@ -38,6 +38,7 @@ class WorldGenBootstrap:
         test_mode: bool = False,  # bypass real server
         shared_server: bool = False,  # reuse server across multiple operations
         test_optimized: bool = False,  # use minimal settings for fast testing
+        defer_cleanup: bool = False,  # don't delete temp dir immediately
     ):
         # 0. config
         if config_path is None:
@@ -52,9 +53,12 @@ class WorldGenBootstrap:
         # 2. dirs
         self.base_dir = Path(__file__).parent.parent.parent
         self.temp_world_dir = Path(temp_world_dir or self.base_dir / "temp_worlds")
-        self.temp_world_dir.mkdir(exist_ok=True)  # 3. misc
+        self.temp_world_dir.mkdir(exist_ok=True)
+
+        # 3. misc
         self._run = process_runner
         self.test_mode = test_mode
+        self.defer_cleanup = defer_cleanup
         self.shared_server = shared_server
         self.test_optimized = test_optimized
         self.logger = self._setup_logging()
@@ -325,14 +329,21 @@ class WorldGenBootstrap:
             self.logger.error(f"World generation failed: {e}")
             return None
         finally:
-            # only nuke temp dir in real mode
-            if not self.test_mode and temp_dir and Path(temp_dir).exists():
+            # Only delete temp dir if not in test mode and cleanup not deferred
+            if (
+                not self.test_mode
+                and not self.defer_cleanup
+                and temp_dir
+                and Path(temp_dir).exists()
+            ):
                 import shutil
 
                 try:
                     shutil.rmtree(temp_dir)
                 except Exception as e:
                     self.logger.warning(f"Failed to clean up temp directory: {e}")
+            elif self.defer_cleanup and temp_dir:
+                self.logger.info(f"Preserving temp world for later cleanup: {temp_dir}")
 
     def _start_fabric_server(self, world_path: Path) -> bool:
         """Start Fabric server in the specified world directory."""
@@ -352,6 +363,11 @@ class WorldGenBootstrap:
             view_distance = "2" if self.test_mode else "6"
             simulation_distance = "2" if self.test_mode else "4"
 
+            # Structure generation is always disabled for consistent training
+            structures_setting = "false"
+
+            self.logger.info(f"Structure generation: {structures_setting} (terrain-only training)")
+
             properties = [
                 "level-type=normal",
                 f"level-seed={self.config['worldgen'].get('seed', 'VoxelTree')}",
@@ -369,7 +385,7 @@ class WorldGenBootstrap:
                 "hardcore=false",
                 "white-list=false",
                 "pvp=false",
-                "generate-structures=true",
+                f"generate-structures={structures_setting}",
                 "op-permission-level=4",
                 "allow-flight=true",
                 "resource-pack=",

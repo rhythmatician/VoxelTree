@@ -153,21 +153,41 @@ class VoxelTreeDataset(Dataset):
         Returns:
             PyTorch tensor with appropriate dtype
         """
-        if key in ["parent_voxel", "target_mask"]:
-            # Boolean masks
-            return torch.from_numpy(value.astype(bool))
+        if key == "parent_voxel":
+            # Parent voxel - convert to float and add channel dimension
+            tensor = torch.from_numpy(value.astype(np.float32))
+            # Add channel dimension if missing: (D, H, W) -> (1, D, H, W)
+            if tensor.dim() == 3:
+                tensor = tensor.unsqueeze(0)
+            return tensor
+        elif key in ["target_mask"]:
+            # Target mask - convert to float and add channel dimension
+            tensor = torch.from_numpy(value.astype(np.float32))
+            # Add channel dimension if missing: (D, H, W) -> (1, D, H, W)
+            if tensor.dim() == 3:
+                tensor = tensor.unsqueeze(0)
+            return tensor
         elif key == "target_types":
-            # Block type IDs
-            return torch.from_numpy(value.astype(np.uint8))
+            # Block type IDs - add channel dimension for loss computation
+            tensor = torch.from_numpy(value.astype(np.int64))  # Changed to int64 for CrossEntropy
+            return tensor
         elif key == "biome_patch":
-            # Biome IDs
-            return torch.from_numpy(value.astype(np.uint8))
+            # Biome IDs - must be long for embedding layers
+            return torch.from_numpy(value.astype(np.int64))
         elif key == "heightmap_patch":
-            # Height values (promote uint16 to int16 for PyTorch compatibility)
-            return torch.from_numpy(value.astype(np.int16))
+            # Height values - convert to float and add channel dimension
+            tensor = torch.from_numpy(value.astype(np.float32))
+            # Add channel dimension if missing: (H, W) -> (1, H, W)
+            if tensor.dim() == 2:
+                tensor = tensor.unsqueeze(0)
+            return tensor
         elif key == "river_patch":
-            # River noise values
-            return torch.from_numpy(value.astype(np.float32))
+            # River noise values - convert to float and add channel dimension
+            tensor = torch.from_numpy(value.astype(np.float32))
+            # Add channel dimension if missing: (H, W) -> (1, H, W)
+            if tensor.dim() == 2:
+                tensor = tensor.unsqueeze(0)
+            return tensor
         else:
             # Default conversion
             return torch.from_numpy(value)
