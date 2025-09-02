@@ -59,28 +59,28 @@ def load_config(config_path: Path) -> Dict:
 
 
 def export_model_to_onnx(model: torch.nn.Module, output_path: Path) -> Path:
-    """Export PyTorch model to ONNX format."""
+    """Export PyTorch model to ONNX format with DJL-compatible settings."""
     logger = logging.getLogger(__name__)
     logger.info(f"Exporting model to ONNX: {output_path}")
 
-    # Create dummy input for export
+    # Create dummy input for export (fixed batch=1 for static shapes)
     batch_size = 1
-    dummy_input = {
-        "parent_voxel": torch.randn(batch_size, 1, 8, 8, 8),
-        "biome_patch": torch.randint(0, 50, (batch_size, 16, 16)),
-        "heightmap_patch": torch.randn(batch_size, 1, 16, 16),
-        "river_patch": torch.randn(batch_size, 1, 16, 16),
-        "y_index": torch.randint(0, 24, (batch_size,)),
-        "lod": torch.randint(1, 5, (batch_size,)),
-    }
+    dummy_input = (
+        torch.randn(batch_size, 1, 8, 8, 8),  # parent_voxel
+        torch.randint(0, 80, (batch_size, 16, 16)),  # biome_patch (updated vocab size)
+        torch.randn(batch_size, 1, 16, 16),  # heightmap_patch
+        torch.randn(batch_size, 1, 16, 16),  # river_patch
+        torch.randint(0, 24, (batch_size,)),  # y_index
+        torch.randint(1, 5, (batch_size,)),  # lod
+    )
 
-    # Export to ONNX
+    # Export to ONNX with DJL-compatible settings
     torch.onnx.export(
         model,
-        tuple(dummy_input.values()),  # Convert dict to tuple
+        dummy_input,
         output_path,
         export_params=True,
-        opset_version=11,
+        opset_version=17,  # Use newer opset for better DJL compatibility
         do_constant_folding=True,
         input_names=[
             "parent_voxel",
@@ -90,21 +90,68 @@ def export_model_to_onnx(model: torch.nn.Module, output_path: Path) -> Path:
             "y_index",
             "lod",
         ],
-        output_names=["air_mask_logits", "block_type_logits"],
-        dynamic_axes={
-            "parent_voxel": {0: "batch_size"},
-            "biome_patch": {0: "batch_size"},
-            "heightmap_patch": {0: "batch_size"},
-            "river_patch": {0: "batch_size"},
-            "y_index": {0: "batch_size"},
-            "lod": {0: "batch_size"},
-            "air_mask_logits": {0: "batch_size"},
-            "block_type_logits": {0: "batch_size"},
-        },
+        output_names=["block_logits", "air_mask"],  # LODiffusion contract names
+        # Remove dynamic_axes for static shapes (DJL-compatible)
+        verbose=False,
     )
 
     logger.info(f"Model exported successfully to {output_path}")
     return output_path
+
+
+def create_model_config(model: torch.nn.Module, config: Dict, output_path: Path) -> Path:
+    """Create model_config.json sidecar file for LODiffusion integration."""
+    import json
+
+    logger = logging.getLogger(__name__)
+    config_path = output_path.parent / "model_config.json"
+
+    # Get model config
+    model_config = config.get("model", {})
+    block_channels = model_config.get("block_type_channels", 1024)
+
+    model_info = {
+        "version": "1.0.0",
+        "model_type": "voxel_unet_3d",
+        "phase": "1",
+        "description": "Phase-1 VoxelTree model - full vanilla terrain blocks, no structures",
+        "input_shapes": {
+            "parent_voxel": [1, 1, 8, 8, 8],
+            "biome_patch": [1, 16, 16],
+            "heightmap_patch": [1, 1, 16, 16],
+            "river_patch": [1, 1, 16, 16],
+            "y_index": [1],
+            "lod": [1],
+        },
+        "output_shapes": {
+            "block_logits": [1, block_channels, 16, 16, 16],  # [batch, blocks, x, y, z]
+            "air_mask": [1, 1, 16, 16, 16],  # [batch, 1, x, y, z]
+        },
+        "normalization": {
+            "parent_voxel": "boolean_to_float32",
+            "heightmap_patch": "normalized_0_to_1",
+            "river_patch": "normalized_0_to_1",
+        },
+        "lod_range": [1, 4],
+        "y_range": [0, 23],
+        "block_vocabulary": "full_minecraft_1.21",
+        "block_vocabulary_size": block_channels,
+        "biome_vocab_size": model_config.get("biome_vocab_size", 80),
+        "structure_generation": config.get("worldgen", {}).get("generate_structures", False),
+        "phase_1_goal": "99% vanilla terrain accuracy with generate_structures=false",
+        "phase_2_goal": "Add structures by continuing training with generate_structures=true",
+        "training_info": {
+            "block_type_channels": block_channels,
+            "biome_embed_dim": model_config.get("biome_embed_dim", 32),
+            "depth": model_config.get("depth", 2),
+        },
+    }
+
+    with open(config_path, "w") as f:
+        json.dump(model_info, f, indent=2)
+
+    logger.info(f"Model config exported to: {config_path}")
+    return config_path
 
 
 def verify_onnx_model(onnx_path: Path) -> bool:
@@ -116,7 +163,7 @@ def verify_onnx_model(onnx_path: Path) -> bool:
         logger.info("Verifying ONNX model structure...")
         onnx_model = onnx.load(onnx_path)
         onnx.checker.check_model(onnx_model)
-        logger.info("✅ ONNX model structure verified successfully")
+        logger.info("ONNX model structure verified successfully")
         return True
     except Exception as e:
         logger.error(f"❌ ONNX verification failed: {e}")
@@ -226,7 +273,7 @@ def compare_outputs(
         }
 
     except Exception as e:
-        logger.error(f"❌ Output comparison failed: {e}")
+        logger.error(f"Output comparison failed: {e}")
         return {"success": False, "error": str(e)}
 
 
@@ -333,7 +380,7 @@ def benchmark_inference(
         }
 
     except Exception as e:
-        logger.error(f"❌ Benchmark failed: {e}")
+        logger.error(f"Benchmark failed: {e}")
         return {"success": False, "error": str(e)}
 
 
@@ -453,7 +500,7 @@ def visualize_sample_outputs(
         }
 
     except Exception as e:
-        logger.error(f"❌ Visualization failed: {e}")
+        logger.error(f"Visualization failed: {e}")
         return {"success": False, "error": str(e)}
 
 
@@ -492,6 +539,13 @@ def verify_full_model(
     except Exception as e:
         logger.error(f"Failed to export model: {e}")
         return {"success": False, "error": f"Failed to export model: {str(e)}"}
+
+    # Create model configuration file
+    try:
+        config_path = create_model_config(trainer.model, config, output_dir)
+        logger.info(f"Model configuration saved to: {config_path}")
+    except Exception as e:
+        logger.warning(f"Failed to create model config: {e}")
 
     # Verify ONNX model structure
     if not verify_onnx_model(onnx_path):
@@ -537,7 +591,7 @@ def verify_full_model(
     # Log summary
     logger.info("\n----- VERIFICATION SUMMARY -----")
     logger.info(f"Model exported to: {onnx_path}")
-    logger.info(f"Overall verification: {'✅ PASSED' if overall_success else '❌ FAILED'}")
+    logger.info(f"Overall verification: {'PASSED' if overall_success else 'FAILED'}")
 
     if ONNX_RUNTIME_AVAILABLE and "benchmark" in results and results["benchmark"].get("success"):
         speedup = results["benchmark"]["speedup"]

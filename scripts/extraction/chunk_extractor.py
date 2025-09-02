@@ -238,44 +238,38 @@ class ChunkExtractor:
 
     def _block_to_id(self, block) -> int:
         """
-        Convert anvil block object to simplified block ID.
+        Convert anvil block object to full Minecraft block ID.
 
         Args:
             block: Block object from anvil-parser2
 
         Returns:
-            Simplified block ID (0-15 for Phase-1 training)
+            Full Minecraft block ID (preserves all vanilla terrain blocks)
         """
         if block is None:
             return 0  # Air
 
-        # Convert block to string and map to simplified IDs
-        block_str = str(block).lower()
-
-        if "air" in block_str:
-            return 0
-        elif "stone" in block_str:
-            return 1
-        elif "dirt" in block_str:
-            return 2
-        elif "grass" in block_str:
-            return 3
-        elif "water" in block_str:
-            return 4
-        elif "sand" in block_str:
-            return 5
-        elif "gravel" in block_str:
-            return 6
-        elif "wood" in block_str or "log" in block_str:
-            return 7
-        elif "leaves" in block_str:
-            return 8
-        elif "ore" in block_str:
-            return 9
-        elif "deepslate" in block_str:
-            return 10
+        # Extract the actual numeric block ID from anvil-parser2
+        # anvil-parser2 should provide the raw block ID
+        if hasattr(block, "id"):
+            return int(block.id)
+        elif hasattr(block, "block_id"):
+            return int(block.block_id)
+        elif hasattr(block, "numeric_id"):
+            return int(block.numeric_id)
         else:
-            return 15  # Other/unknown blocks
+            # Fallback: try to parse from string representation
+            block_str = str(block)
+            # Look for numeric ID in the string representation
+            import re
+
+            id_match = re.search(r"id[:\s]*(\d+)", block_str)
+            if id_match:
+                return int(id_match.group(1))
+
+            # Final fallback: return 0 (air) for unknown blocks
+            logger.warning(f"Could not extract block ID from {block}, defaulting to air")
+            return 0
 
     def compute_heightmap(self, block_types: np.ndarray) -> np.ndarray:
         """
