@@ -18,7 +18,7 @@ import yaml
 logger = logging.getLogger(__name__)
 
 
-class FabricWorldGenBootstrap:
+class WorldGenBootstrap:
     """
     Bootstrap class for generating Minecraft world chunks using Fabric server + Chunky mod.
 
@@ -865,7 +865,3 @@ class FabricWorldGenBootstrap:
                 self.logger.info("Cleaned up shared server directory")
             except Exception as e:
                 self.logger.warning(f"Failed to clean up shared server directory: {e}")
-
-
-# For backward compatibility, alias the new class as the old name
-WorldGenBootstrap = FabricWorldGenBootstrap
