@@ -152,7 +152,7 @@ model:
 
   # Output configuration
   air_mask_channels: 1
-  block_type_channels: 16 # Phase-1: simplified block vocabulary (air, stone, dirt, grass, water, etc.)
+  block_type_channels: 1024 # Full Minecraft block vocabulary (1.21 has ~800+ blocks, rounded up for safety)
 
 # Loss configuration
 loss:
