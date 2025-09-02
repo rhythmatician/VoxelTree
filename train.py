@@ -60,14 +60,14 @@ def generate_dataset(config: Dict[str, Any]) -> None:
     from scripts.extraction.chunk_extractor import ChunkExtractor
     from scripts.pairing.patch_pairer import PatchPairer
     from scripts.pairing.seed_input_linker import SeedInputLinker
-    from scripts.worldgen.bootstrap import FabricWorldGenBootstrap
+    from scripts.worldgen.bootstrap import WorldGenBootstrap
 
     logger = logging.getLogger(__name__)
     logger.info("Starting dataset generation pipeline...")
 
     # Step 1: Generate world chunks
     logger.info("Step 1: Generating world chunks...")
-    bootstrap = FabricWorldGenBootstrap(config["worldgen"])
+    bootstrap = WorldGenBootstrap(config["worldgen"])
     world_dir = bootstrap.generate_world_regions()
 
     # Step 2: Extract chunks to NPZ format

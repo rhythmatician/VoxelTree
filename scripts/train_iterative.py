@@ -33,7 +33,7 @@ sys.path.append(str(Path(__file__).resolve().parent.parent))
 from scripts.extraction.chunk_extractor import ChunkExtractor  # noqa: E402
 from scripts.pairing.patch_pairer import PatchPairer  # noqa: E402
 from scripts.pairing.seed_input_linker import SeedInputLinker  # noqa: E402
-from scripts.worldgen.bootstrap import FabricWorldGenBootstrap  # noqa: E402
+from scripts.worldgen.bootstrap import WorldGenBootstrap  # noqa: E402
 from train.dataset import VoxelTreeDataset  # noqa: E402
 from train.logger import TrainingLogger  # noqa: E402
 from train.trainer import VoxelTrainer  # noqa: E402
@@ -132,7 +132,7 @@ def generate_single_region_batch(
         )
 
         # Create bootstrap and generate world
-        bootstrap = FabricWorldGenBootstrap(
+        bootstrap = WorldGenBootstrap(
             seed=str(seed), java_heap=config["worldgen"].get("java_heap", "4G")
         )
 
