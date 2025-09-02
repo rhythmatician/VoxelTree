@@ -142,20 +142,55 @@ def generate_single_region_batch(
         world_dir = bootstrap.generate_region_batch(x_range, z_range)
 
         # Extract chunks from this region
-        extractor = ChunkExtractor(config["extraction"])
-        chunk_output_dir = extractor.extract_all_chunks(world_dir)
+        if world_dir is None:
+            raise RuntimeError("World generation failed - no world directory returned")
 
-        # Copy chunk files to batch directory
+        # Extract chunks to batch directory
+        chunk_output_dir = batch_dir / "chunks"
+        chunk_output_dir.mkdir(exist_ok=True)
+
+        # Create extraction config with our specific output directory
+        temp_config_path = batch_dir / "temp_config.yaml"
+        extraction_config = {
+            "extraction": {"output_dir": str(chunk_output_dir), "num_workers": 4, "batch_size": 64}
+        }
+
+        # Write temporary config
+        import yaml
+
+        with open(temp_config_path, "w") as f:
+            yaml.dump(extraction_config, f)
+
+        extractor = ChunkExtractor(temp_config_path)
+        region_dir = world_dir / "region"
+        if not region_dir.exists():
+            raise RuntimeError(f"Region directory not found: {region_dir}")
+
+        # Get all .mca files from the region directory
+        mca_files = list(region_dir.glob("*.mca"))
+        if not mca_files:
+            raise RuntimeError(f"No .mca files found in {region_dir}")
+
+        extractor.extract_regions_parallel(mca_files)
+
+        # Collect all extracted .npz files
         for chunk_file in chunk_output_dir.glob("*.npz"):
-            dest_file = batch_dir / f"r{region_x}_{region_z}_{chunk_file.name}"
-            shutil.copy2(chunk_file, dest_file)
-            all_chunk_files.append(dest_file)
+            all_chunk_files.append(chunk_file)
+
+        logger.info(f"Found {len(all_chunk_files)} chunk files in {chunk_output_dir}")
+        if len(all_chunk_files) == 0:
+            logger.warning("No chunk files found - this will cause training to fail")
+            # List all files in the directory for debugging
+            all_files = list(chunk_output_dir.glob("*"))
+            logger.warning(f"All files in chunk_output_dir: {all_files}")
+
+        # Clean up temp config
+        if temp_config_path.exists():
+            temp_config_path.unlink()
 
         # Clean up temporary world files immediately
-        if world_dir.exists():
+        if world_dir and world_dir.exists():
             shutil.rmtree(world_dir)
-        if chunk_output_dir.exists():
-            shutil.rmtree(chunk_output_dir)
 
     except Exception as e:
         logger.error(f"Failed to generate region ({region_x}, {region_z}) for seed {seed}: {e}")
@@ -176,14 +211,34 @@ def create_training_pairs(
     logger = logging.getLogger(__name__)
 
     # Create patch pairs
-    pairer = PatchPairer(config["pairing"])
-    pairs_dir = pairer.create_patch_pairs(chunk_dir)
+    pairer = PatchPairer()  # Use default config.yaml
+    pairs_dir = temp_dir / "pairs"
+    pairs_dir.mkdir(exist_ok=True)
 
-    # Link with seed inputs
-    linker = SeedInputLinker(config["pairing"])
-    linked_dir = linker.link_pairs_with_seed_inputs(pairs_dir)
+    # Debug: Check input files
+    chunk_files = list(chunk_dir.glob("*.npz"))
+    logger.info(f"PatchPairer input: {len(chunk_files)} chunk files from {chunk_dir}")
+    if len(chunk_files) == 0:
+        logger.warning("No chunk files found for PatchPairer - listing all files")
+        all_files = list(chunk_dir.glob("*"))
+        logger.warning(f"All files in chunk_dir: {all_files}")
 
-    logger.info(f"Created {len(list(linked_dir.glob('*.npz')))} training pairs")
+    num_pairs = pairer.process_batch(chunk_dir, pairs_dir)
+    logger.info(f"Created {num_pairs} training pairs")  # Link with seed inputs
+    linker = SeedInputLinker()  # Use default config.yaml
+    linked_dir = temp_dir / "linked"
+    linked_dir.mkdir(exist_ok=True)
+
+    # Use default seed inputs directory from config
+    seed_inputs_dir = Path("data/seed_inputs")  # TODO: Get from config
+    if not seed_inputs_dir.exists():
+        logger.warning(f"Seed inputs directory not found: {seed_inputs_dir}")
+        # Create empty seed inputs for now
+        seed_inputs_dir.mkdir(parents=True, exist_ok=True)
+
+    num_linked = linker.process_batch_linking(pairs_dir, seed_inputs_dir, linked_dir)
+    logger.info(f"Created {num_linked} linked training examples")
+
     return linked_dir
 
 
@@ -379,7 +434,8 @@ def run_iterative_training(
             )
 
             # Step 3: Create training pairs
-            pairs_dir = create_training_pairs(config, chunk_batch_dir, temp_dir)
+            chunks_dir = chunk_batch_dir / "chunks"  # Point to the actual chunks directory
+            pairs_dir = create_training_pairs(config, chunks_dir, temp_dir)
 
             # Step 4: Train on this batch
             batch_loss, batch_metrics = train_on_batch(
@@ -428,12 +484,13 @@ def run_iterative_training(
 
         except Exception as e:
             logger.error(f"Iteration {iteration + 1} failed: {e}")
-            # Clean up any partial files
-            try:
-                cleanup_batch(chunk_batch_dir)
-                cleanup_batch(pairs_dir)
-            except Exception:
-                pass
+            # Clean up any partial files - TEMPORARILY DISABLED for debugging
+            # try:
+            #     cleanup_batch(chunk_batch_dir)
+            #     cleanup_batch(pairs_dir)
+            # except Exception:
+            #     pass
+            logger.info(f"DEBUG: Preserving files for investigation in {chunk_batch_dir}")
             continue
 
     # Final cleanup and summary

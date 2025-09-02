@@ -225,7 +225,9 @@ class ChunkExtractor:
 
         return heightmap.astype(np.uint16)
 
-    def save_chunk_npz(self, chunk_data: Dict[str, Any], chunk_x: int, chunk_z: int) -> Path:
+    def save_chunk_npz(
+        self, chunk_data: Dict[str, Any], chunk_x: int, chunk_z: int, region_id: str = ""
+    ) -> Path:
         """
         Save chunk data as compressed .npz file.
 
@@ -233,11 +235,17 @@ class ChunkExtractor:
             chunk_data: Dictionary containing chunk arrays
             chunk_x: Chunk X coordinate
             chunk_z: Chunk Z coordinate
+            region_id: Optional region identifier to make filename unique
 
         Returns:
             Path to saved .npz file
         """
-        output_path = self.output_dir / f"chunk_{chunk_x}_{chunk_z}.npz"
+        # Include region_id in filename to avoid conflicts when processing multiple
+        # regions in parallel
+        if region_id:
+            output_path = self.output_dir / f"chunk_{region_id}_{chunk_x}_{chunk_z}.npz"
+        else:
+            output_path = self.output_dir / f"chunk_{chunk_x}_{chunk_z}.npz"
 
         # Save with compression
         np.savez_compressed(output_path, **chunk_data)
@@ -260,11 +268,14 @@ class ChunkExtractor:
         try:
             # For mock implementation, create a few chunks per region
             # In real implementation, would iterate through all chunks in region
+            # Use region filename (without extension) as unique identifier
+            region_id = region_file.stem
+
             for chunk_x in range(2):  # Mock: 2x2 chunks per region
                 for chunk_z in range(2):
                     try:
                         chunk_data = self.extract_chunk_data(region_file, chunk_x, chunk_z)
-                        output_path = self.save_chunk_npz(chunk_data, chunk_x, chunk_z)
+                        output_path = self.save_chunk_npz(chunk_data, chunk_x, chunk_z, region_id)
                         output_files.append(output_path)
                     except Exception as e:
                         logger.warning(f"Failed to extract chunk {chunk_x},{chunk_z}: {e}")
