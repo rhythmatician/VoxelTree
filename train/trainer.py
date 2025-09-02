@@ -5,14 +5,14 @@ VoxelTree training orchestration and checkpoint management.
 import logging
 import time
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Tuple
 
 import torch
 import torch.optim as optim
 
 from .losses import voxel_loss_fn
 from .unet3d import UNet3DConfig, VoxelUNet3D
-from .visualizer import TensorBoardLogger, VoxelVisualizer
+from .visualizer import TensorBoardLogger
 
 
 class VoxelTrainer:
