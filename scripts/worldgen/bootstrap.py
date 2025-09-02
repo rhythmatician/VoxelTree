@@ -91,7 +91,9 @@ class FabricWorldGenBootstrap:
         logger = logging.getLogger(__name__)
         logger.setLevel(logging.INFO)
 
-        if not logger.handlers:
+        # Don't add handlers if root logger is already configured
+        # This prevents duplicate logging when used with train_iterative.py
+        if not logger.handlers and not logging.getLogger().handlers:
             handler = logging.StreamHandler()
             formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
             handler.setFormatter(formatter)
