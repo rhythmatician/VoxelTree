@@ -36,3 +36,7 @@ noise                 # Perlin/Simplex for river/biome simulation (Python)
 types-psutil          # type stubs for psutil
 onnx
 onnxruntime
+
+# Not sure what these are for, but they were missing, so here they are:
+TensorBoard
+optuna
