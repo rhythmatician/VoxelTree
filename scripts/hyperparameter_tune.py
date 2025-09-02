@@ -14,15 +14,13 @@ Usage:
 import argparse
 import json
 import logging
-import os
 import sys
 import time
 from copy import deepcopy
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, Optional, Tuple
 
 import numpy as np
-import torch
 import yaml
 from torch.utils.data import DataLoader, SubsetRandomSampler
 
@@ -30,7 +28,11 @@ from torch.utils.data import DataLoader, SubsetRandomSampler
 try:
     import optuna
     from optuna.trial import Trial
-    from optuna.visualization import plot_contour, plot_optimization_history, plot_param_importances
+    from optuna.visualization import (
+        plot_contour,
+        plot_optimization_history,
+        plot_param_importances,
+    )
 
     OPTUNA_AVAILABLE = True
 except ImportError:
