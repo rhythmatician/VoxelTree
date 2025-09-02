@@ -30,6 +30,7 @@ from tqdm import tqdm
 # Add project root to path for imports
 sys.path.append(str(Path(__file__).resolve().parent.parent))
 
+from scripts.disk_monitor import DiskMonitor  # noqa: E402
 from scripts.extraction.chunk_extractor import ChunkExtractor  # noqa: E402
 from scripts.pairing.patch_pairer import PatchPairer  # noqa: E402
 from scripts.pairing.seed_input_linker import SeedInputLinker  # noqa: E402
@@ -369,6 +370,9 @@ def run_iterative_training(
     with open(runs_dir / "config.yaml", "w") as f:
         yaml.dump(config, f, default_flow_style=False)
 
+    # Initialize disk monitoring
+    disk_monitor = DiskMonitor()
+
     # Initialize trainer
     trainer = VoxelTrainer(config)
 
@@ -397,6 +401,15 @@ def run_iterative_training(
     for iteration in range(start_iteration, max_iterations):
         logger.info(f"=== Iteration {iteration + 1}/{max_iterations} ===")
 
+        # Check disk space before generating data
+        available_gb, warning, critical = disk_monitor.check_disk_space(".")
+        logger.info(f"Before data generation - Available disk space: {available_gb:.2f}GB")
+        if warning:
+            logger.warning("Low disk space warning triggered")
+        if critical:
+            logger.error("Critical disk space - consider stopping")
+            break
+
         try:
             # Step 1: Get current seed and region with stronghold awareness
             seed, region_x, region_z = get_current_seed_and_region(
@@ -416,14 +429,26 @@ def run_iterative_training(
                 config, seed, region_x, region_z, temp_dir
             )
 
+            # Check disk usage after data generation
+            available_gb, _, _ = disk_monitor.check_disk_space(".")
+            logger.info(f"After data generation - Available disk space: {available_gb:.2f}GB")
+
             # Step 3: Create training pairs
             chunks_dir = chunk_batch_dir / "chunks"  # Point to the actual chunks directory
             pairs_dir = create_training_pairs(config, chunks_dir, temp_dir)
+
+            # Check disk usage after pairing
+            available_gb, _, _ = disk_monitor.check_disk_space(".")
+            logger.info(f"After pair creation - Available disk space: {available_gb:.2f}GB")
 
             # Step 4: Train on this batch
             batch_loss, batch_metrics = train_on_batch(
                 trainer, training_logger, pairs_dir, config, iteration
             )
+
+            # Check disk usage after training
+            available_gb, _, _ = disk_monitor.check_disk_space(".")
+            logger.info(f"After training - Available disk space: {available_gb:.2f}GB")
 
             # Step 5: Track progress
             loss_history.append(batch_loss)
