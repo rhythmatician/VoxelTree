@@ -34,8 +34,8 @@ except ImportError:
 # Append project root to path to ensure modules can be imported
 sys.path.append(str(Path(__file__).resolve().parent.parent))
 
-from train.trainer import VoxelTrainer  # nowa: E402
-from train.visualizer import VoxelVisualizer  # nowa: E402
+from train.trainer import VoxelTrainer  # noqa: E402
+from train.visualizer import VoxelVisualizer  # noqa: E402
 
 
 def setup_logging(log_level: str = "INFO") -> None:
@@ -77,7 +77,7 @@ def export_model_to_onnx(model: torch.nn.Module, output_path: Path) -> Path:
     # Export to ONNX
     torch.onnx.export(
         model,
-        dummy_input,
+        tuple(dummy_input.values()),  # Convert dict to tuple
         output_path,
         export_params=True,
         opset_version=11,
@@ -401,6 +401,7 @@ def visualize_sample_outputs(
 
             # Create visualization comparing outputs
             viz_path = output_dir / f"compare_sample_{i+1}.png"
+            logging.debug(f"Creating visualization: {viz_path}")
 
             # Visualize PyTorch output
             torch_viz_path = output_dir / f"pytorch_sample_{i+1}.png"
