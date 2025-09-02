@@ -41,8 +41,8 @@ except ImportError:
 # Append project root to path to ensure modules can be imported
 sys.path.append(str(Path(__file__).resolve().parent.parent))
 
-from train.dataset import VoxelTreeDataset
-from train.trainer import VoxelTrainer
+from train.dataset import VoxelTreeDataset  # nowa: E402
+from train.trainer import VoxelTrainer  # nowa: E402
 
 
 def setup_logging(log_level: str = "INFO") -> None:
