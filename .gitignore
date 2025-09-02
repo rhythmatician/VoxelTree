@@ -10,3 +10,4 @@ debug_*
 output.txt
 runs/
 *.npz
+check_*.py
