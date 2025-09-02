@@ -275,8 +275,8 @@ def train_on_batch(
     for batch_idx, batch in enumerate(tqdm(dataloader, desc="Training")):
         try:
             # Forward pass and compute loss
-            loss, metrics = trainer.train_step(batch)
-            total_loss += loss
+            loss = trainer.training_step(batch)
+            total_loss += loss.item()
             num_batches += 1
 
             # Log batch metrics if needed
@@ -284,10 +284,9 @@ def train_on_batch(
                 step = iteration * len(dataloader) + batch_idx
                 training_logger.log_metrics(
                     {
-                        "batch_loss": loss,
+                        "batch_loss": loss.item(),
                         "iteration": iteration,
                         "step": step,
-                        **metrics,
                     }
                 )
 
