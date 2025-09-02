@@ -69,27 +69,51 @@ def load_config(config_path: Path) -> Dict:
 
 
 def get_current_seed_and_region(
-    base_seed: int, iteration: int, regions_per_seed: int = 16
+    base_seed: int, iteration: int, regions_per_seed: int = 16, config: Dict = None
 ) -> Tuple[int, int, int]:
     """
     Get the current seed and region coordinates for this iteration.
+
+    Supports both regular training and expanded stronghold training modes.
 
     Args:
         base_seed: Starting seed value
         iteration: Current iteration number
         regions_per_seed: How many regions to process per seed before moving to next seed
+        config: Configuration dict for stronghold training settings
 
     Returns:
         Tuple of (seed, region_x, region_z)
     """
+    # Check if stronghold training is enabled
+    stronghold_config = config.get("stronghold_training", {}) if config else {}
+    stronghold_enabled = stronghold_config.get("enabled", False)
+
+    if stronghold_enabled:
+        # Use expanded grid for stronghold training
+        coverage_mode = stronghold_config.get("coverage_mode", "rings_1_3")
+
+        if coverage_mode == "rings_1_3":
+            # 37x37 grid for rings 1-3 coverage
+            regions_per_seed = stronghold_config.get("regions_per_seed", 1369)
+            grid_size = int(regions_per_seed**0.5)  # Should be 37
+        elif coverage_mode == "targeted":
+            # Use targeted seed approach with smaller regions around strongholds
+            # For now, fall back to regular approach
+            grid_size = int(regions_per_seed**0.5)
+        else:
+            # Regular grid
+            grid_size = int(regions_per_seed**0.5)
+    else:
+        # Regular training mode
+        grid_size = int(regions_per_seed**0.5)
+
     seed_index = iteration // regions_per_seed
     region_index = iteration % regions_per_seed
 
     seed = base_seed + seed_index
 
-    # Generate region coordinates in a 4x4 grid around spawn for 16 regions
-    grid_size = int(regions_per_seed**0.5)  # 4 for 16 regions
-
+    # Generate region coordinates in grid around spawn
     x = region_index % grid_size - grid_size // 2
     z = region_index // grid_size - grid_size // 2
 
@@ -338,9 +362,27 @@ def run_iterative_training(
         logger.info(f"=== Iteration {iteration + 1}/{max_iterations} ===")
 
         try:
-            # Step 1: Get current seed and region
-            seed, region_x, region_z = get_current_seed_and_region(base_seed, iteration)
+            # Step 1: Get current seed and region with stronghold awareness
+            seed, region_x, region_z = get_current_seed_and_region(
+                base_seed, iteration, regions_per_seed, config
+            )
+
+            # Calculate distance from spawn for stronghold validation
+            region_distance = int(
+                ((region_x**2 + region_z**2) ** 0.5) * 512
+            )  # 512 blocks per region
+
             logger.info(f"Processing seed {seed}, region ({region_x}, {region_z})")
+            logger.info(f"Distance from spawn: {region_distance:,} blocks")
+
+            # Check if this region might contain strongholds
+            stronghold_config = config.get("stronghold_training", {})
+            if stronghold_config.get("enabled", False):
+                max_distance = stronghold_config.get("max_distance_blocks", 8960)
+                if region_distance <= max_distance:
+                    logger.info("Region within stronghold training coverage")
+                else:
+                    logger.info("Region beyond stronghold coverage - terrain only")
 
             # Step 2: Generate chunk batch from single region
             chunk_batch_dir = generate_single_region_batch(
@@ -434,7 +476,12 @@ def main():
         "--regions-per-seed",
         type=int,
         default=16,
-        help="Number of regions to process per seed (default 16 = 4x4 grid)",
+        help="Number of regions per seed (16=4x4 grid, 1369=37x37 for strongholds)",
+    )
+    parser.add_argument(
+        "--stronghold-training",
+        action="store_true",
+        help="Enable stronghold training mode (expands coverage to rings 1-3)",
     )
     parser.add_argument("--resume", type=Path, help="Path to checkpoint to resume training from")
     parser.add_argument(
@@ -454,6 +501,19 @@ def main():
     try:
         config = load_config(args.config)
         logger.info(f"Loaded configuration from {args.config}")
+
+        # Override stronghold training if specified via CLI
+        if args.stronghold_training:
+            if "stronghold_training" not in config:
+                config["stronghold_training"] = {}
+            config["stronghold_training"]["enabled"] = True
+            logger.info("Stronghold training enabled via CLI argument")
+
+            # Adjust regions per seed if not explicitly set
+            if args.regions_per_seed == 16:  # Default value
+                args.regions_per_seed = config["stronghold_training"].get("regions_per_seed", 1369)
+                logger.info(f"Using stronghold training regions per seed: {args.regions_per_seed}")
+
     except Exception as e:
         logger.error(f"Failed to load configuration: {e}")
         return 1
