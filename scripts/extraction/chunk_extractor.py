@@ -72,7 +72,9 @@ class ChunkExtractor:
 
         logger.info(f"ChunkExtractor initialized with output_dir={self.output_dir}")
 
-    def extract_chunk_data(self, region_file: Path, chunk_x: int, chunk_z: int) -> Dict[str, Any]:
+    def extract_chunk_data(
+        self, region_file: Path, chunk_x: int, chunk_z: int
+    ) -> Optional[Dict[str, Any]]:
         """
         Extract single chunk data from .mca file.
 
