@@ -91,19 +91,8 @@ def get_current_seed_and_region(
 
     if stronghold_enabled:
         # Use expanded grid for stronghold training
-        coverage_mode = stronghold_config.get("coverage_mode", "rings_1_3")
-
-        if coverage_mode == "rings_1_3":
-            # 37x37 grid for rings 1-3 coverage
-            regions_per_seed = stronghold_config.get("regions_per_seed", 1369)
-            grid_size = int(regions_per_seed**0.5)  # Should be 37
-        elif coverage_mode == "targeted":
-            # Use targeted seed approach with smaller regions around strongholds
-            # For now, fall back to regular approach
-            grid_size = int(regions_per_seed**0.5)
-        else:
-            # Regular grid
-            grid_size = int(regions_per_seed**0.5)
+        regions_per_seed = stronghold_config.get("regions_per_seed", 1369)
+        grid_size = int(regions_per_seed**0.5)  # Should be 37 for stronghold training
     else:
         # Regular training mode
         grid_size = int(regions_per_seed**0.5)
