@@ -369,7 +369,7 @@ class WorldGenBootstrap:
 
             properties = [
                 "level-type=normal",
-                f"level-seed={self.config['worldgen'].get('seed', 'VoxelTree')}",
+                f"level-seed={self.seed}",  # Use numeric seed, not string
                 "gamemode=creative",
                 "difficulty=peaceful",
                 "spawn-protection=0",
