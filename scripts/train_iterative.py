@@ -30,13 +30,13 @@ from tqdm import tqdm
 # Add project root to path for imports
 sys.path.append(str(Path(__file__).resolve().parent.parent))
 
-from scripts.extraction.chunk_extractor import ChunkExtractor
-from scripts.pairing.patch_pairer import PatchPairer
-from scripts.pairing.seed_input_linker import SeedInputLinker
-from scripts.worldgen.bootstrap import FabricWorldGenBootstrap
-from train.dataset import VoxelTreeDataset
-from train.logger import TrainingLogger
-from train.trainer import VoxelTrainer
+from scripts.extraction.chunk_extractor import ChunkExtractor  # noqa: E402
+from scripts.pairing.patch_pairer import PatchPairer  # noqa: E402
+from scripts.pairing.seed_input_linker import SeedInputLinker  # noqa: E402
+from scripts.worldgen.bootstrap import FabricWorldGenBootstrap  # noqa: E402
+from train.dataset import VoxelTreeDataset  # noqa: E402
+from train.logger import TrainingLogger  # noqa: E402
+from train.trainer import VoxelTrainer  # noqa: E402
 
 
 def setup_logging(log_level: str = "INFO") -> None:
