@@ -234,7 +234,7 @@ class VoxelTrainer:
             "epoch_time": epoch_time,
         }
 
-    def analyze_confusion_matrix(self, dataloader, epoch: int) -> Dict[str, float]:
+    def analyze_confusion_matrix(self, dataloader, epoch: int) -> Dict[str, Any]:
         """
         Run comprehensive confusion matrix analysis on validation data.
 
