@@ -40,3 +40,5 @@ onnxruntime
 # Not sure what these are for, but they were missing, so here they are:
 TensorBoard
 optuna
+threadpoolctl
+scikit-learn
