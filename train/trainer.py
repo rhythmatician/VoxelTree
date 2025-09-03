@@ -7,9 +7,11 @@ import time
 from pathlib import Path
 from typing import Any, Dict, Tuple
 
+import numpy as np
 import torch
 import torch.optim as optim
 
+from .confusion_analyzer import create_confusion_analyzer
 from .losses import voxel_loss_fn
 from .unet3d import UNet3DConfig, VoxelUNet3D
 from .visualizer import TensorBoardLogger
@@ -57,6 +59,9 @@ class VoxelTrainer:
                     logging.warning(f"Failed to log model graph: {e}")
         else:
             self.tb_logger = None
+
+        # Initialize confusion matrix analyzer for 99% accuracy tracking
+        self.confusion_analyzer = create_confusion_analyzer(config)
 
         # Loss configuration
         loss_config = config.get("loss", {})
@@ -227,6 +232,99 @@ class VoxelTrainer:
         return {
             "loss": avg_loss,
             "epoch_time": epoch_time,
+        }
+
+    def analyze_confusion_matrix(self, dataloader, epoch: int) -> Dict[str, float]:
+        """
+        Run comprehensive confusion matrix analysis on validation data.
+
+        Args:
+            dataloader: Validation dataloader
+            epoch: Current epoch number
+
+        Returns:
+            Dictionary with confusion matrix metrics
+        """
+        if dataloader is None:
+            return {"overall_accuracy": 0.0, "goal_achieved": False}
+
+        # Reset accumulated confusion matrix
+        self.confusion_analyzer.reset()
+
+        logger = logging.getLogger(__name__)
+        logger.info(f"Running confusion matrix analysis for epoch {epoch}...")
+
+        with torch.no_grad():
+            self.model.eval()
+
+            for batch_idx, batch in enumerate(dataloader):
+                # Move batch to device
+                batch = {
+                    k: v.to(self.device) if isinstance(v, torch.Tensor) else v
+                    for k, v in batch.items()
+                }
+
+                # Forward pass
+                outputs = self.model(
+                    parent_voxel=batch["parent_voxel"],
+                    biome_patch=batch["biome_patch"],
+                    heightmap_patch=batch["heightmap_patch"],
+                    river_patch=batch["river_patch"],
+                    y_index=batch["y_index"],
+                    lod=batch["lod"],
+                )
+
+                # Update confusion matrix (only for solid blocks)
+                self.confusion_analyzer.update(
+                    predictions=outputs["block_type_logits"],
+                    targets=batch["target_types"],
+                    mask=batch["target_mask"],  # Only analyze solid blocks
+                )
+
+                if batch_idx % 50 == 0:
+                    logger.info(f"Processed {batch_idx + 1} validation batches...")
+
+        # Generate analysis
+        overall_accuracy = self.confusion_analyzer.compute_overall_accuracy()
+        goal_achieved, _ = self.confusion_analyzer.is_99_percent_achieved()
+
+        # Save detailed analysis every few epochs
+        if epoch % 5 == 0 or goal_achieved:
+            self.confusion_analyzer.save_analysis(epoch)
+
+        # Log summary to TensorBoard
+        if self.tb_logger:
+            per_class_acc = self.confusion_analyzer.compute_per_class_accuracy()
+            valid_accuracies = [acc for acc in per_class_acc.values() if not np.isnan(acc)]
+
+            self.tb_logger.log_metrics(
+                {
+                    "val/overall_accuracy": overall_accuracy,
+                    "val/mean_class_accuracy": (
+                        np.mean(valid_accuracies) if valid_accuracies else 0.0
+                    ),
+                    "val/min_class_accuracy": np.min(valid_accuracies) if valid_accuracies else 0.0,
+                    "val/blocks_above_99pct": sum(1 for acc in valid_accuracies if acc >= 0.99),
+                    "val/goal_progress": overall_accuracy / 0.99,  # Progress toward 99% goal
+                },
+                step=self.global_step,
+            )
+
+        logger.info(
+            f"Confusion analysis complete - Overall accuracy: {overall_accuracy:.4f} "
+            f"({overall_accuracy*100:.2f}%)"
+        )
+        if goal_achieved:
+            logger.info("🎉 99% accuracy goal ACHIEVED! 🎉")
+        else:
+            gap = 99.0 - overall_accuracy * 100
+            logger.info(f"Gap to 99% goal: {gap:.2f} percentage points")
+
+        return {
+            "overall_accuracy": overall_accuracy,
+            "goal_achieved": goal_achieved,
+            "mean_class_accuracy": np.mean(valid_accuracies) if valid_accuracies else 0.0,
+            "blocks_evaluated": len(valid_accuracies),
         }
 
     def save_checkpoint(self, checkpoint_path: Path, epoch: int, loss: float, **kwargs) -> None:
