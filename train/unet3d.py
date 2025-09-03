@@ -119,7 +119,7 @@ class UNet3DConfig:
 
     # Output configuration
     air_mask_channels: int = 1
-    block_type_channels: int = 10  # Number of different block types
+    block_type_channels: int = 1104  # Full Minecraft 1.21.5 block vocabulary
 
     def __post_init__(self):
         """Validate configuration parameters."""

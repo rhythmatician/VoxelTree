@@ -13,6 +13,10 @@ from typing import Any, Dict, List, Optional, Tuple
 import anvil  # type: ignore
 import numpy as np
 
+from scripts.extraction.palette_decode import (
+    decode_palette_indices,
+    map_palette_to_block_ids,
+)
 from scripts.worldgen.config import load_config
 
 logger = logging.getLogger(__name__)
@@ -25,6 +29,14 @@ class ChunkExtractor:
     This class handles the conversion pipeline from raw Minecraft region files
     to compressed numpy arrays suitable for machine learning training.
     """
+
+    # Load complete block vocabulary mapping
+    import json
+
+    # Load complete block mapping we just created
+    complete_mapping_path = "scripts/extraction/complete_block_mapping.json"
+    with open(complete_mapping_path) as f:
+        VANILLA_BLOCK_MAPPING = json.load(f)
 
     def __init__(self, config_path: Optional[Path] = None):
         """
@@ -178,27 +190,108 @@ class ChunkExtractor:
                     if y_start >= 384 or y_end <= 0:
                         continue
 
-                    # For now, fill with basic terrain pattern as fallback
-                    # Real implementation would parse section block states
-                    for x in range(16):
-                        for z in range(16):
-                            for y in range(max(0, y_start), min(384, y_end)):
-                                # Simple terrain generation as fallback
-                                if y < 60:  # Below sea level
-                                    block_types[x, z, y] = 1  # Stone
-                                    air_mask[x, z, y] = False
-                                elif y < 62:  # Surface
-                                    block_types[x, z, y] = 2  # Dirt
-                                    air_mask[x, z, y] = False
-                                elif y == 62:  # Top
-                                    block_types[x, z, y] = 3  # Grass
-                                    air_mask[x, z, y] = False
-                                # else: leave as air (0)
+                    # Real block extraction using palette decoding
+                    try:
+                        # Get section block states - this varies by anvil-parser2 API
+                        section_blocks = None
+                        if hasattr(section, "block_states"):
+                            section_blocks = section.block_states
+                        elif hasattr(section, "blocks"):
+                            section_blocks = section.blocks
+                        elif isinstance(section, dict):
+                            section_blocks = section.get("block_states") or section.get("blocks")
+
+                        if section_blocks and hasattr(section_blocks, "palette"):
+                            # Use palette decoder for real block extraction
+                            palette = section_blocks.palette
+                            data = getattr(section_blocks, "data", None)
+
+                            if data is not None:
+                                # Decode using our palette decoder
+                                decoded_indices = decode_palette_indices(data, len(palette))
+                                block_ids = map_palette_to_block_ids(
+                                    palette, decoded_indices, self.VANILLA_BLOCK_MAPPING
+                                )
+
+                                # block_ids is now (16,16,16) array in (x,z,y) order
+                                # Copy to our global arrays
+                                for x in range(16):
+                                    for z in range(16):
+                                        for y_local in range(16):
+                                            y_global = y_start + y_local
+                                            if 0 <= y_global < 384:
+                                                block_id = block_ids[x, z, y_local]
+                                                block_types[x, z, y_global] = block_id
+                                                air_mask[x, z, y_global] = block_id == 0
+                                continue
+
+                        # Fallback: Try direct block access if palette approach fails
+                        logger.warning(
+                            f"Palette extraction failed for section Y={section_y}, using fallback"
+                        )
+                        for x in range(16):
+                            for z in range(16):
+                                for y_local in range(16):
+                                    y_global = y_start + y_local
+                                    if 0 <= y_global < 384:
+                                        try:
+                                            # Try to get block directly
+                                            block = chunk.get_block(x, y_global, z)
+                                            if block:
+                                                block_name = str(block)
+                                                block_id = self.get_block_id(block_name)
+                                                block_types[x, z, y_global] = block_id
+                                                air_mask[x, z, y_global] = block_id == 0
+                                        except Exception:
+                                            # If all else fails, default to air
+                                            block_types[x, z, y_global] = 0
+                                            air_mask[x, z, y_global] = True
+
+                    except Exception as e:
+                        logger.warning(
+                            f"Real block extraction failed for section Y={section_y}: {e}"
+                        )
+                        # Fallback to simple terrain for this section only
+                        for x in range(16):
+                            for z in range(16):
+                                for y in range(max(0, y_start), min(384, y_end)):
+                                    if y < 60:  # Below sea level
+                                        block_types[x, z, y] = self.get_block_id("minecraft:stone")
+                                        air_mask[x, z, y] = False
+                                    elif y < 62:  # Surface
+                                        block_types[x, z, y] = self.get_block_id("minecraft:dirt")
+                                        air_mask[x, z, y] = False
+                                    elif y == 62:  # Top
+                                        grass_id = self.get_block_id("minecraft:grass_block")
+                                        block_types[x, z, y] = grass_id
+                                        air_mask[x, z, y] = False
         except Exception as e:
             logger.warning(f"Failed to process chunk sections: {e}")
             # Keep default air-filled arrays
 
         return block_types, air_mask
+
+    def get_block_id(self, block_name: str) -> int:
+        """
+        Maps Minecraft block names to integer IDs for neural network training.
+
+        Args:
+            block_name: Minecraft block identifier (e.g., "minecraft:stone")
+
+        Returns:
+            Integer block ID for training (0-1023 range)
+        """
+        # Handle None or empty block names
+        if not block_name:
+            return 0  # Air
+
+        # Direct mapping from our comprehensive vanilla block mapping
+        if block_name in self.VANILLA_BLOCK_MAPPING:
+            return self.VANILLA_BLOCK_MAPPING[block_name]
+
+        # For completely unknown blocks, log and use air as fallback
+        logger.warning(f"Unknown block type encountered: {block_name}, mapping to air")
+        return 0  # Air is always safe fallback
 
     def extract_biome_data(self, chunk) -> np.ndarray:
         """
