@@ -1,140 +1,270 @@
-# 🤖 Copilot Instructions — VoxelTree
+# 🤖 Copilot Instructions — VoxelTree (Expanded)
 
-This file guides GitHub Copilot (and contributors) in writing code for the `VoxelTree` project. It ensures consistency, avoids architectural pitfalls, and enforces our test-driven development (TDD) cycle.
+> **Purpose:** This file guides GitHub Copilot (and human contributors) to build VoxelTree
+> consistently. It encodes our LOD-first design, data pipeline rules, training strategy,
+> acceptance criteria, and CI checks.
+>
+> **Terminal quirk workaround:** Whenever you run a command in the terminal, pipe the output to
+> `output.txt` and **overwrite** each time (not append). Copilot reads from that file.
+>
+> ```bash
+> <your command> > output.txt 2>&1
+> ```
 
-Whenever you run a command in the terminal, pipe the output to a file, output.txt, that you can read from. Make sure to overwrite each time so that it doesn't grow too big. There is a bug in the current version of Copilot that causes it to not read the output of commands correctly. This workaround allows you to read the output from the temporary file instead.
 ---
 
 ## 🌲 Project Purpose
 
-VoxelTree implements and trains a **LOD-aware, voxel super-resolution model** for Minecraft terrain. It progressively refines terrain data from coarser representations (e.g., 8×8×192) to higher fidelity forms (e.g., 16×16×384), conditioned on biome and heightmap data.
-
-The trained model is exported to ONNX and used inside the LODiffusion Minecraft mod for **real-time, just-in-time terrain generation**.
+VoxelTree trains a **LOD-aware voxel super‑resolution model** for **vanilla terrain** (no structures in Phase‑1). The model runs in the **LODiffusion** mod to render huge distances **just‑in‑time**: only compute what the player can notice **right now**.
 
 ---
 
-## ✅ Core Constraints
+## ✅ Non‑Negotiables (Phase‑1)
 
-- ⚙️ Use Python 3.10+
-- 📦 Store extracted chunk data as `.npz` (use `np.savez_compressed`)
-- 📁 Use `pathlib.Path` over `os.path`
-- 🧵 Use `multiprocessing` (not threading) for batch `.mca` extraction
-- 🚮 Never exceed 10–20 GB of disk usage during training
-- 🧠 No deep learning during extraction — keep it fast and CPU-only
-- 🔁 Only train on a **subset of chunks at a time**, then delete
-- 🧰 Use `anvil-parser2` for MCA reading
-- 🌍 Use `Chunky + Fabric` as headless vanilla-compatible world generator
+* **Terrain‑only data**: `generate-structures=false` during worldgen.
+* **Deterministic inference**: same inputs ⇒ same outputs (CPU).
+* **Static ONNX**: opset ≥ 17, **no dynamic axes**, outputs named `block_logits`, `air_mask`.
+* **Disk hygiene**: batch data is deleted after each train iteration; obey high‑watermark.
+* **Truthful labels**: parse `.mca` **palette + bitpacked states**; **no synthetic fallbacks**.
+* **Just‑in‑time**: far LODs avoid the heavy 16³ head; refine only when entering near bands.
 
 ---
 
-## 🧪 Test-Driven Development (TDD)
+## 🧭 Acceptance Criteria (excerpt)
 
-Each feature is developed in a 3-phase cycle:
+* **LOD1→LOD0 (8³→16³)**: Air/solid IoU ≥ 0.99, frequent‑set block top‑1 ≥ 0.99, overall ≥ 0.98.
+* **Coarser starts (4³/2³/1³ parents, simulated)**: frequent‑set ≥ 0.985/0.98/0.975.
+* **Full rollout LOD5→…→LOD0** (self‑fed): frequent‑set at final LOD0 ≥ 0.985.
+* **Runtime**: ≤ 100 ms median per 16³; ≤ 150 ms p95; ≤ 2 MB incremental mem.
+* **Integration**: DJL harness loads ONNX; `max_abs_diff ≤ 1e‑4` vs PyTorch on test vectors.
 
-1. **RED** — Write a failing test
-2. **GREEN** — Write just enough code to pass the test
-3. **REFACTOR** — Reflect on structure, log insights, and update docs
-
-### Commit Rules
-
-- Every phase (`RED`, `GREEN`, `REFACTOR`) must be a separate commit
-- Each TDD cycle must occur in a **feature branch** (e.g. `feat/mca-loader`)
-- Only merge to `main` after REFACTOR is complete and documented
+> Full AC lives in `docs/AC.md`. Keep this file in sync.
 
 ---
 
-## 🗂️ Directory Overview
+## 🗂 Directory & Files (authoritative)
 
+```
 VoxelTree/
-├── train/
-│ ├── train.py
-│ ├── dataset.py
-│ ├── unet3d.py
-│ ├── loss.py
-│ └── config.yaml
-├── scripts/
-│ ├── export_onnx.py
-│ ├── run_eval.py
-│ └── generate_samples.py
-├── models/ # Trained checkpoints and ONNX exports
-├── tests/ # PyTest test suite
-├── data/ # Temporary patch/chunk files
-├── tools/ # Worldgen JARs and CLI tools (e.g., Chunky, cubiomes)
-├── PROJECT-OUTLINE.md
-├── ENVIRONMENT.md
-└── .gitignore
+├─ train/
+│  ├─ train.py            # CLI: train, eval, export
+│  ├─ dataset.py          # Loads NPZ patches; builds multi‑LOD inputs
+│  ├─ unet3d.py           # 8→16 SR UNet (+ heads if enabled)
+│  ├─ exporter.py         # Static ONNX export (opset ≥17)
+│  ├─ loss.py             # CE + air losses
+│  └─ config.yaml         # Model + data config
+├─ scripts/
+│  ├─ worldgen/bootstrap.py     # Fabric + Chunky; structures=false
+│  ├─ extraction/chunk_extractor.py
+│  ├─ extraction/palette_decode.py
+│  ├─ extraction/block_vocab.py  # auto‑discover mapping
+│  ├─ verify_onnx.py             # export + test_vectors + model_config
+│  ├─ run_eval.py                # per‑step + rollout metrics
+│  └─ generate_corpus.py         # iter: worldgen→extract→pair→split
+├─ docs/AC.md
+├─ tests/                        # PyTest (unit + mini E2E)
+├─ models/                       # checkpoints/onnx (ignored in git)
+├─ data/                         # temp batch data (ignored)
+└─ tools/                        # JARs, CLI (Chunky, Fabric, cubiomes)
+```
 
 ---
 
-## 🧠 Model Design Guidelines
+## 🧠 Model I/O Contract (Phase‑1)
 
-- Input: `(parent_voxel, biome_patch, heightmap, lod_embedding)`
-- Output: `(air_mask_logits, block_type_logits)`
-- Architecture: 3D U-Net with skip connections
-- Loss: BCE for mask + CE for block types
-- Timestep embedding: sinusoidal or learned
+**Inputs**
+
+* `parent_voxel`: **\[1,1,8,8,8] float32** — binary occupancy (3D OR‑pool from child or prev pred)
+* `biome_patch`: **\[1,16,16] int64** — vanilla biome index per (x,z)
+* `heightmap_patch`: **\[1,1,16,16] float32** — normalized \[0,1] motion‑blocking height
+* `river_patch` *(opt)*: **\[1,1,16,16] float32** — river prior
+* `multinoise_*` *(opt, 6 maps)*: **\[1,1,16,16] float32** — continentalness, erosion, ridge/peaks, weirdness, temperature, humidity (seed‑derived)
+* `y_index`: **\[1] int64** — vertical 16‑slab index
+* `lod`: **\[1] int64** — coarseness token (1 for native 8→16; >1 when parent was coarsened in train)
+
+**Outputs**
+
+* `block_logits`: **\[1, N\_blocks, 16,16,16] float32** — full vocab
+* `air_mask`: **\[1,1,16,16,16] float32** — P(air)
+
+> ONNX: **static shapes only**. No dict inputs/outputs.
 
 ---
 
-## 🧱 Chunk Format
+## 📦 Data Extraction Rules
 
-Extracted `.npz` chunk files must contain:
+* **Parse truth from MCA**: use `anvil-parser2` to read each section’s `palette` and bitpacked `block_states.data`.
+* **Block IDs**: resolve `Name` → integer via **auto‑discovered `block_vocab.json`** (ID 0 reserved for `minecraft:air`). Never hardcode giant enums.
+* **Biomes**: use the chunk’s vanilla biomes; collapse to 2D **16×16** surface grid for `biome_patch`.
+* **Heightmap**: motion‑blocking height per (x,z); normalize to `[0,1]` by world max Y.
+* **Seed‑derived maps**: produce 2D **16×16** multinoise fields (optional in v1; recommended later).
+* **Full region sweep**: iterate **32×32 chunks** per region; skip missing/corrupt chunks (don’t synthesize air).
+* **Save as NPZ**: `np.savez_compressed` with typed arrays; keep keys stable.
+
+**Required NPZ keys per patch** (minimum):
+
+```
+labels16:  int (HWC=[16,16,16])  # block IDs
+occ16:     bool/uint8            # (non‑air)
+biome16:   int16/int32  (16,16)
+height16:  float32      (1,16,16) normalized
+river16:   float32      (1,16,16) [optional]
+```
+
+---
+
+## 🔁 Building the LOD Pyramid (Targets)
+
+From `labels16` build coarser labels purely for **metrics** and optional heads:
+
+* **Occupancy**: `occ8 = OR_pool(occ16, 2×2×2)`; repeat to get 4³, 2³, 1³.
+* **Blocks**: probability pooling preferred (smoother):
+
+  1. one‑hot `labels16` → `[N_blocks,16,16,16]`
+  2. `avg_2x2x2` → `[N_blocks,8,8,8]` (and further)
+  3. `argmax` per voxel → integer IDs at coarse scale.
+
+**Invariant tests** (unit):
+
+* OR‑pooled occupancy monotonicity
+* Pooled class probs sum ≈ 1.0
+
+---
+
+## 🧪 Training Strategy (single static model)
+
+* Always predict **16³** from an **8³** parent.
+* Randomly draw **coarsening factor** `f ∈ {1,2,4,8,16}` per sample:
+
+  * `parent_f = OR_pool(occ16, window=f)`  → nearest‑upsample back to **8³**
+  * `lod = log2(f)+1`
+* **Scheduled sampling** (anti‑drift): with p≈0.1→0.3, derive `occ16` (and `parent_f`) from the model’s **previous** pred (downsampled) instead of truth.
+* **Loss**: `CE(block_logits, labels16) + λ_air * BCEWithLogits(air_mask, air_target)`; start `λ_air=0.25`.
+* **Metrics**: per‑step (by f) and **full rollout** LOD5→…→LOD0 (self‑fed).
+
+---
+
+## 🧱 Worldgen Rules
+
+* Always write `server.properties` before first boot:
+
+  ```
+  level-seed=<numeric>
+  generate-structures=false
+  ```
+* Launch Fabric server headless (`nogui`) with `-Xmx` from config; never hardcode Java path—use `JAVA_HOME` or `which java`.
+* Use **Chunky** commands (`center`, `radius`, `start`) and wait for region files to complete before shutdown.
+* Generate into a **temp directory**; on success, copy `.mca` into the batch dir; then delete the temp world.
+
+---
+
+## 🧰 Implementation Guardrails
+
+* Python **3.11+**; use `pathlib.Path`; avoid global state when possible.
+* Multiprocessing for extraction; never block on per‑chunk logging.
+* Keep tensors typed/sized exactly as the contract; validate in `dataset.__getitem__`.
+* Limit batch RAM; stream from NPZ; pin shapes in `collate_fn`.
+* Respect disk cap (10–20 GB); delete batch outputs after training unless `--keep`.
+
+---
+
+## 🧪 Tests (what to write first)
+
+* **Palette decode**: synthetic bitpacked arrays round‑trip to indices.
+* **Downsample invariants**: OR‑pool correctness; prob‑pool vs mode sanity.
+* **Dataset contract**: shapes/dtypes are exact; raise if not.
+* **Mini E2E**: worldgen(1 region) → extract(≥ 64 chunks) → pair → 1 epoch → export ONNX → onnxruntime forward.
+
+---
+
+## 🚀 Export & Model Config
+
+* Use `train/exporter.py` to export **static** ONNX (opset ≥ 17): ordered inputs/outputs only.
+* `scripts/verify_onnx.py` also writes `model_config.json` with:
+
+  * Inputs/outputs (name, dtype, shape, normalization)
+  * `block_id↔name` mapping (frozen for this dataset)
+  * MC version, git SHA, dataset ID
+* Ship `test_vectors.npz` (inputs + outputs) for DJL verification.
+
+---
+
+## 🧱 CI Expectations
+
+Your existing Windows CI runs **lint/typecheck/tests**. Add two jobs (or steps) after tests:
+
+1. **Export ONNX + vectors** (CPU Torch + onnxruntime)
+2. **DJL verify**: Java loads ONNX; forward pass OK; (optional) compare to vectors with `max_abs_diff ≤ 1e‑4`.
+
+See `docs/AC.md` for a ready workflow. Keep the Windows runner for parity with your dev environment.
+
+---
+
+## 🔁 TDD Cycle & Commit Rules
+
+* **RED → GREEN → REFACTOR** as three commits per feature.
+* Work in `feat/*` branches; merge to `main` only after REFACTOR with docs updated.
+* Record assumptions & decisions in commit messages and link to `docs/AC.md` sections when relevant.
+
+---
+
+## 🧼 Do / Don’t
+
+**Do**
+
+* Validate shapes/dtypes aggressively at boundaries.
+* Log per‑step metrics (f=1,2,4,8,16) and **rollout** results.
+* Delete temp worlds & batches after use.
+
+**Don’t**
+
+* Don’t synthesize air/stone when chunk read fails—**skip** chunk.
+* Don’t export ONNX with dynamic axes or dict I/O.
+* Don’t hardcode Java paths or OS‑specific separators.
+
+---
+
+## 📎 Snippets Copilot Can Reuse
+
+**3D OR‑pool (2×2×2):**
 
 ```python
-{
-  "block_types": uint8, shape=(16, 16, 384)
-  "air_mask": bool,     shape=(16, 16, 384)
-  "biomes": uint8 or int32, shape=(16, 16) or (16, 16, 384)
-  "heightmap": uint8,   shape=(16, 16)
-}
+occ8 = (
+  occ16[0::2,0::2,0::2] | occ16[1::2,0::2,0::2] | occ16[0::2,1::2,0::2] | occ16[1::2,1::2,0::2] |
+  occ16[0::2,0::2,1::2] | occ16[1::2,0::2,1::2] | occ16[0::2,1::2,1::2] | occ16[1::2,1::2,1::2]
+)
+```
+
+**Probability pooling (class‑wise avg):**
+
+```python
+# logits_onehot: [C,16,16,16] one‑hot from labels
+pooled = (
+  logits_onehot[:,0::2,0::2,0::2] + logits_onehot[:,1::2,0::2,0::2] +
+  logits_onehot[:,0::2,1::2,0::2] + logits_onehot[:,1::2,1::2,0::2] +
+  logits_onehot[:,0::2,0::2,1::2] + logits_onehot[:,1::2,0::2,1::2] +
+  logits_onehot[:,0::2,1::2,1::2] + logits_onehot[:,1::2,1::2,1::2]
+) / 8.0
+ids8 = pooled.argmax(0)
+```
+
+**Coarsen‑factor sampling in dataset:**
+
+```python
+f = random.choice([1,2,4,8,16])
+parent_f = or_pool(occ16, f)      # shape: (8//f, 8//f, 8//f)
+parent_8 = nearest_upsample(parent_f, out_shape=(8,8,8))
+lod = int(math.log2(f)) + 1
 ```
 
 ---
 
-## 🧩 Training Data Preparation
-Downsampled parent-child patch pairs should have:
+## 🧩 Stretch (post‑Phase‑1)
 
-- Parent voxel: (e.g. 8×8×8)
-- Target mask: (e.g. 16×16×16)
-- Target types: (same shape)
-
----
-
-## 📦 Worldgen Tools
-
-- **Primary**: Chunky (Fabric) + `fabric-server-*.jar` for `.mca` generation
-- **Biome/Heightmap Source**: `voxeltree_cubiomes_cli.exe`
-- **Parser**: `anvil-parser2` for reading `.mca`
-
-All worldgen is CLI-invoked and fully headless.
+* Add tiny **surface (2D)** and/or **coarse 8³** heads to color far LODs without 16³.
+* Add multinoise inputs (if not already) to tighten long‑range fidelity.
+* Explore INT8/FP16 quantization (verify opset + accuracy).
 
 ---
 
-## 🔁 Legacy Tooling Cleanup
-
-Do not reference or use:
-- `minecraft-worldgen.jar` (deprecated)
-- `hephaistos.jar` (replaced by `anvil-parser2`)
-- `opensimplex`, `noise`, or other procedural terrain gen tools
-
----
-
-## 🔧 Configuration Changes
-
-```yaml
-# config.yaml:
-worldgen:
-  seed: "VoxelTree"
-  java_heap: "4G"
-  chunk_batch_size: 32  # Number of chunks to process per batch during world generation and extraction (16-64 typical range)
-  java_tools:
-    primary: "tools/fabric-server/fabric-server-mc.1.21.5-loader.0.16.14-launcher.1.0.3.jar"
-    chunky: "tools/fabric-server/runtime/mods/Chunky-Fabric-1.4.36.jar"
-    cubiomes: "tools/voxeltree_cubiomes_cli/voxeltree_cubiomes_cli.exe"
-```
-
----
-
-## 📝 Development Guidelines
-
-This document serves as the foundation for consistent, test-driven development in the VoxelTree project. Follow these instructions to ensure code quality and architectural coherence throughout the machine learning pipeline and world generation systems.
+**Keep this file aligned with `docs/AC.md`. If they diverge, update both in the same PR.**
