@@ -24,8 +24,8 @@ import yaml
 # Append project root to path to ensure modules can be imported
 sys.path.append(str(Path(__file__).resolve().parent.parent))
 
-from train.dataset import VoxelTreeDataset
-from train.trainer import VoxelTrainer
+from train.dataset import VoxelTreeDataset  # noqa
+from train.trainer import VoxelTrainer  # noqa
 
 
 def setup_logging(log_level: str = "INFO") -> None:
@@ -226,7 +226,7 @@ def benchmark_batch_sizes(
 
                 # Time iteration
                 start_time = time.time()
-                metrics = trainer.train_one_epoch(dataloader)
+                metrics = trainer.train_one_epoch(dataloader)  # noqa
                 end_time = time.time()
 
                 times.append(end_time - start_time)
@@ -287,13 +287,13 @@ def benchmark_batch_sizes(
             # Catch CUDA out of memory errors
             if "CUDA out of memory" in str(e):
                 logger.warning(f"CUDA out of memory for batch size {batch_size}")
-                results[batch_size] = {"error": "CUDA out of memory", "message": str(e)}
+                results[batch_size] = {"error": "CUDA out of memory", "message": str(e)}  # noqa
             else:
                 logger.error(f"Error for batch size {batch_size}: {e}")
-                results[batch_size] = {"error": "Runtime error", "message": str(e)}
+                results[batch_size] = {"error": "Runtime error", "message": str(e)}  # noqa
         except Exception as e:
             logger.error(f"Error for batch size {batch_size}: {e}")
-            results[batch_size] = {"error": type(e).__name__, "message": str(e)}
+            results[batch_size] = {"error": type(e).__name__, "message": str(e)}  # noqa
 
     # Determine optimal batch size based on examples/second and memory
     valid_batch_sizes = {bs: info for bs, info in results.items() if "error" not in info}
@@ -301,7 +301,7 @@ def benchmark_batch_sizes(
     if valid_batch_sizes:
         # Find batch size with highest examples/second
         optimal_throughput = max(
-            valid_batch_sizes.items(), key=lambda x: x[1]["examples_per_second"]
+            valid_batch_sizes.items(), key=lambda x: x[1]["examples_per_second"]  # noqa
         )[0]
 
         # Find batch size with best balance of throughput vs memory
