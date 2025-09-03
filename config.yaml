@@ -60,6 +60,8 @@ training:
   device: "cuda" # or "cpu"
   save_every: 10
   checkpoint_dir: "runs"
+  cleanup:
+    enable: true # Controls temporary data cleanup in iterative training
   # Multi-GPU support
   distributed:
     enabled: true

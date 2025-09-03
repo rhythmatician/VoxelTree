@@ -469,10 +469,17 @@ def run_iterative_training(
                 )
                 logger.info(f"Checkpoint saved: {checkpoint_path}")
 
-            # Step 6: Cleanup - TEMPORARILY DISABLED FOR DEBUGGING
-            # cleanup_batch(chunk_batch_dir)
-            # cleanup_batch(pairs_dir)
-            logger.info(f"DEBUG: Preserving training data in {chunk_batch_dir} and {pairs_dir}")
+            # Step 6: Cleanup (controlled by config flag training.cleanup.enable)
+            cleanup_cfg = config.get("training", {}).get("cleanup", {})
+            if cleanup_cfg.get("enable", True):
+                cleanup_batch(chunk_batch_dir)
+                cleanup_batch(pairs_dir)
+            else:
+                logger.info(
+                    "Cleanup disabled; preserving data in %s and %s",
+                    chunk_batch_dir,
+                    pairs_dir,
+                )
 
             # Log iteration metrics
             iteration_metrics = {
@@ -493,20 +500,32 @@ def run_iterative_training(
 
         except Exception as e:
             logger.error(f"Iteration {iteration + 1} failed: {e}")
-            # Clean up any partial files - TEMPORARILY DISABLED for debugging
-            # try:
-            #     cleanup_batch(chunk_batch_dir)
-            #     cleanup_batch(pairs_dir)
-            # except Exception:
-            #     pass
-            logger.info(f"DEBUG: Preserving files for investigation in {chunk_batch_dir}")
+            # Attempt cleanup of partial data unless disabled
+            cleanup_cfg = config.get("training", {}).get("cleanup", {})
+            if cleanup_cfg.get("enable", True):
+                try:
+                    cleanup_batch(chunk_batch_dir)
+                    cleanup_batch(pairs_dir)
+                except Exception:
+                    pass
+            else:
+                logger.info(
+                    f"Preserving failed iteration data for investigation in {chunk_batch_dir}"
+                )
             continue
 
-    # Final cleanup and summary - TEMPORARILY DISABLED FOR DEBUGGING
-    # if temp_dir.exists():
-    #     shutil.rmtree(temp_dir)
-    if temp_dir.exists():
-        logger.info(f"DEBUG: Preserving temp directory for investigation: {temp_dir}")
+    # Final temp directory cleanup based on config flag
+    cleanup_cfg = config.get("training", {}).get("cleanup", {})
+    if cleanup_cfg.get("enable", True):
+        if temp_dir.exists():
+            try:
+                shutil.rmtree(temp_dir)
+                logger.info("Removed temp directory")
+            except Exception as e:
+                logger.warning(f"Failed to remove temp directory: {e}")
+    else:
+        if temp_dir.exists():
+            logger.info(f"Preserving temp directory (cleanup disabled): {temp_dir}")
 
     # Clean up temporary world directories from bootstrap
     try:

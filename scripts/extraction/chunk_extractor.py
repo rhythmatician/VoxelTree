@@ -433,25 +433,36 @@ class ChunkExtractor:
         output_files = []
 
         try:
-            # For mock implementation, create a few chunks per region
-            # In real implementation, would iterate through all chunks in region
-            # Use region filename (without extension) as unique identifier
+            # Iterate over full 32x32 region coordinate space
             region_id = region_file.stem
-
-            for chunk_x in range(2):  # Mock: 2x2 chunks per region
-                for chunk_z in range(2):
+            attempted = 0
+            for chunk_x in range(32):
+                for chunk_z in range(32):
+                    attempted += 1
                     try:
                         chunk_data = self.extract_chunk_data(region_file, chunk_x, chunk_z)
-                        if chunk_data is not None:  # Skip None (missing/corrupted chunks)
+                        if chunk_data is not None:  # Skip missing/corrupted chunks
                             output_path = self.save_chunk_npz(
                                 chunk_data, chunk_x, chunk_z, region_id
                             )
                             output_files.append(output_path)
                     except Exception as e:
-                        logger.warning(f"Failed to extract chunk {chunk_x},{chunk_z}: {e}")
+                        # Individual chunk failures shouldn't abort region processing
+                        logger.debug(
+                            "Chunk extract failed in region %s at %d,%d: %s",
+                            region_file.name,
+                            chunk_x,
+                            chunk_z,
+                            e,
+                        )
                         continue
 
-            logger.info(f"Extracted {len(output_files)} chunks from {region_file.name}")
+            logger.info(
+                "Region %s: extracted %d / %d chunk slots (skipped missing/corrupted)",
+                region_file.name,
+                len(output_files),
+                attempted,
+            )
             return output_files
 
         except Exception as e:

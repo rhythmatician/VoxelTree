@@ -422,8 +422,27 @@ class WorldGenBootstrap:
             eula_file = world_path / "eula.txt"
             eula_file.write_text("eula=true\n")
             self.logger.info("Created EULA acceptance")
-            # Start server
-            java_exe = r"C:/Program Files/Eclipse Adoptium/jdk-21.0.7.6-hotspot/bin/java.exe"
+            # Start server - resolve java executable portably
+            java_exe = os.environ.get("JAVA_HOME")
+            if java_exe:
+                candidate = Path(java_exe) / "bin" / ("java.exe" if os.name == "nt" else "java")
+                if candidate.exists():
+                    java_exe = str(candidate)
+                else:
+                    self.logger.warning(
+                        "JAVA_HOME set but java binary not found at %s; falling back to PATH",
+                        candidate,
+                    )
+                    java_exe = None
+            if not java_exe:
+                from shutil import which
+
+                java_exe = which("java")
+            if not java_exe:
+                raise FileNotFoundError(
+                    "Java executable not found. Install JDK 21+ or set JAVA_HOME/PATH."
+                )
+
             cmd = [
                 java_exe,
                 f"-Xmx{java_heap}",

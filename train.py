@@ -131,7 +131,7 @@ def split_dataset(dataset_dir: Path, data_config: Dict[str, Any]) -> None:
     # Split ratios (default: 70% train, 20% val, 10% test)
     train_ratio = data_config.get("train_split", 0.7)
     val_ratio = data_config.get("val_split", 0.2)
-    test_ratio = data_config.get("test_split", 0.1)
+    # test_ratio not needed explicitly; derived as remainder
 
     # Calculate splits
     train_count = int(total_files * train_ratio)
@@ -306,25 +306,49 @@ def export_model(config: Dict[str, Any], checkpoint_path: Path) -> None:
     trainer.load_checkpoint(checkpoint_path)
     trainer.model.eval()
 
-    # Create dummy input for export
-    batch_size = 1
-    dummy_input = {
-        "parent_voxel": torch.randn(batch_size, 1, 8, 8, 8),
-        "biome_patch": torch.randint(0, 50, (batch_size, 16, 16)),
-        "heightmap_patch": torch.randn(batch_size, 1, 16, 16),
-        "river_patch": torch.randn(batch_size, 1, 16, 16),
-        "y_index": torch.randint(0, 24, (batch_size,)),
-        "lod": torch.randint(1, 5, (batch_size,)),
-    }
+    # Create dummy input for export (static batch=1 for deployment simplicity)
+    dummy_input = (
+        torch.randn(1, 1, 8, 8, 8),  # parent_voxel
+        torch.randint(0, config["model"].get("biome_vocab_size", 256), (1, 16, 16)),  # biome_patch
+        torch.randn(1, 1, 16, 16),  # heightmap_patch
+        torch.randn(1, 1, 16, 16),  # river_patch
+        torch.randint(0, 24, (1,)),  # y_index
+        torch.randint(1, 5, (1,)),  # lod
+    )
 
-    # Export to ONNX
+    export_cfg = config.get("export", {})
+    opset = export_cfg.get("opset_version", 17)
     onnx_path = checkpoint_path.parent / "model.onnx"
+
+    # Wrap model forward if needed to ensure ordered outputs (block_logits, air_mask)
+    class ExportWrapper(torch.nn.Module):
+        def __init__(self, model):
+            super().__init__()
+            self.model = model
+
+        def forward(self, parent_voxel, biome_patch, heightmap_patch, river_patch, y_index, lod):
+            air_mask_logits, block_type_logits = self.model(
+                {
+                    "parent_voxel": parent_voxel,
+                    "biome_patch": biome_patch,
+                    "heightmap_patch": heightmap_patch,
+                    "river_patch": river_patch,
+                    "y_index": y_index,
+                    "lod": lod,
+                }
+            )
+            # Return in new contract order: block logits first, then air mask
+            return block_type_logits, air_mask_logits
+
+    export_model_wrapper = ExportWrapper(trainer.model)
+    export_model_wrapper.eval()
+
     torch.onnx.export(
-        trainer.model,
+        export_model_wrapper,
         dummy_input,
         onnx_path,
         export_params=True,
-        opset_version=11,
+        opset_version=opset,
         do_constant_folding=True,
         input_names=[
             "parent_voxel",
@@ -334,20 +358,11 @@ def export_model(config: Dict[str, Any], checkpoint_path: Path) -> None:
             "y_index",
             "lod",
         ],
-        output_names=["air_mask_logits", "block_type_logits"],
-        dynamic_axes={
-            "parent_voxel": {0: "batch_size"},
-            "biome_patch": {0: "batch_size"},
-            "heightmap_patch": {0: "batch_size"},
-            "river_patch": {0: "batch_size"},
-            "y_index": {0: "batch_size"},
-            "lod": {0: "batch_size"},
-            "air_mask_logits": {0: "batch_size"},
-            "block_type_logits": {0: "batch_size"},
-        },
+        output_names=["block_logits", "air_mask"],
+        dynamic_axes=None,  # Static for simpler runtime integration
     )
 
-    logger.info(f"Model exported to ONNX: {onnx_path}")
+    logger.info(f"Model exported to ONNX: {onnx_path} (opset {opset})")
 
     # Verify ONNX model parity
     try:
@@ -363,39 +378,38 @@ def export_model(config: Dict[str, Any], checkpoint_path: Path) -> None:
 
         # Run inference with both models
         with torch.no_grad():
-            torch_output = trainer.model(dummy_input)
+            # Torch output using contract wrapper for parity
+            with torch.no_grad():
+                torch_block_logits, torch_air_mask = export_model_wrapper(*dummy_input)
 
-            # Prepare ONNX input
+            # Prepare ONNX input (respect positional order)
             onnx_input = {
-                name: dummy_input[name].numpy()
-                for name in [
-                    "parent_voxel",
-                    "biome_patch",
-                    "heightmap_patch",
-                    "river_patch",
-                    "y_index",
-                    "lod",
-                ]
+                "parent_voxel": dummy_input[0].numpy(),
+                "biome_patch": dummy_input[1].numpy(),
+                "heightmap_patch": dummy_input[2].numpy(),
+                "river_patch": dummy_input[3].numpy(),
+                "y_index": dummy_input[4].numpy(),
+                "lod": dummy_input[5].numpy(),
             }
 
             onnx_output = ort_session.run(None, onnx_input)
 
         # Check parity
-        torch_air_mask = torch_output[0].numpy()
-        torch_block_types = torch_output[1].numpy()
-        onnx_air_mask = onnx_output[0]
-        onnx_block_types = onnx_output[1]
+        torch_block_types = torch_block_logits.numpy()
+        torch_air_mask_np = torch_air_mask.numpy()
+        onnx_block_types = onnx_output[0]
+        onnx_air_mask = onnx_output[1]
 
-        air_mask_diff = abs(torch_air_mask - onnx_air_mask).max()
-        block_types_diff = abs(torch_block_types - onnx_block_types).max()
+        block_diff = abs(torch_block_types - onnx_block_types).max()
+        air_diff = abs(torch_air_mask_np - onnx_air_mask).max()
 
-        logger.info(f"ONNX parity check - Air mask max diff: {air_mask_diff:.6f}")
-        logger.info(f"ONNX parity check - Block types max diff: {block_types_diff:.6f}")
+        logger.info(f"ONNX parity check - block_logits max diff: {block_diff:.6f}")
+        logger.info(f"ONNX parity check - air_mask max diff: {air_diff:.6f}")
 
-        if air_mask_diff < 1e-5 and block_types_diff < 1e-5:
-            logger.info("✅ ONNX export parity check PASSED")
+        if block_diff < 1e-5 and air_diff < 1e-5:
+            logger.info("ONNX export parity check PASSED")
         else:
-            logger.warning("⚠️ ONNX export parity check FAILED - differences too large")
+            logger.warning("ONNX export parity check FAILED - differences too large")
 
     except ImportError:
         logger.warning("ONNX verification skipped - onnx and onnxruntime not installed")
