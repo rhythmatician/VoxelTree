@@ -138,12 +138,12 @@ model:
   depth: 2 # Reduced from 4 to work with 8x8x8 inputs (8→4→2, then upsample back)
 
   # Conditioning inputs
-  biome_vocab_size: 80 # Increased to handle all Minecraft biomes (1.21 has ~70 biomes)
-  biome_embed_dim: 32
+  biome_vocab_size: 256 # Expanded to support full biome ID space safely
+  biome_embed_dim: 16 # Matches UNet3DConfig default to limit parameter growth
   heightmap_channels: 1
   river_channels: 1
   y_embed_dim: 8
-  lod_embed_dim: 16
+  lod_embed_dim: 32 # Increased for more expressive LOD conditioning (matches model default)
 
   # Training hyperparameters
   dropout_rate: 0.1
@@ -152,7 +152,7 @@ model:
 
   # Output configuration
   air_mask_channels: 1
-  block_type_channels: 1024 # Full Minecraft block vocabulary (1.21 has ~800+ blocks, rounded up for safety)
+  block_type_channels: 1104 # Full 1.21.5 block vocabulary (empirically enumerated)
 
 # Loss configuration
 loss:
