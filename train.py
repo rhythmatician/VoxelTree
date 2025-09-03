@@ -67,23 +67,48 @@ def generate_dataset(config: Dict[str, Any]) -> None:
 
     # Step 1: Generate world chunks
     logger.info("Step 1: Generating world chunks...")
-    bootstrap = WorldGenBootstrap(config["worldgen"])
+    bootstrap = WorldGenBootstrap(
+        seed=config["worldgen"].get("seed", "VoxelTree"),
+        java_heap=config["worldgen"].get("java_heap", "4G"),
+    )
     world_dir = bootstrap.generate_world_regions()
 
     # Step 2: Extract chunks to NPZ format
     logger.info("Step 2: Extracting chunks to NPZ...")
-    extractor = ChunkExtractor(config["extraction"])
-    chunk_output_dir = extractor.extract_all_chunks(world_dir)
+    extractor = ChunkExtractor()
+
+    # Find all .mca files in the world directory
+    region_dir = world_dir / "region"
+    mca_files = list(region_dir.glob("*.mca"))
+    logger.info(f"Found {len(mca_files)} .mca files to extract")
+
+    # Extract using parallel processing
+    chunk_output_paths = extractor.extract_regions_parallel(mca_files)
+    chunk_output_dir = extractor.output_dir
+    logger.info(f"Extracted {len(chunk_output_paths)} chunks to {chunk_output_dir}")
 
     # Step 3: Create LOD patch pairs
     logger.info("Step 3: Creating LOD patch pairs...")
-    pairer = PatchPairer(config["pairing"])
-    pairs_dir = pairer.create_patch_pairs(chunk_output_dir)
+    pairer = PatchPairer()
+    pairs_output_dir = Path("data/pairs")
+    pairs_output_dir.mkdir(parents=True, exist_ok=True)
+    total_pairs = pairer.process_batch(chunk_output_dir, pairs_output_dir)
+    logger.info(f"Created {total_pairs} training pairs")
 
     # Step 4: Link with seed inputs
     logger.info("Step 4: Linking with seed inputs...")
-    linker = SeedInputLinker(config["pairing"])
-    final_dataset_dir = linker.link_pairs_with_seed_inputs(pairs_dir)
+    linker = SeedInputLinker()
+
+    # Create output directory for linked examples
+    linked_output_dir = Path("data/linked")
+    linked_output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Process the pairs and link with seed inputs
+    linked_count = linker.process_batch_linking(
+        pairs_output_dir, linker.seed_inputs_dir, linked_output_dir
+    )
+    logger.info(f"Created {linked_count} linked training examples")
+    final_dataset_dir = linked_output_dir
 
     # Step 5: Split into train/val/test
     logger.info("Step 5: Splitting dataset...")

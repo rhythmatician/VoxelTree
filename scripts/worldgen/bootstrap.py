@@ -846,6 +846,22 @@ class WorldGenBootstrap:
         """
         return self.generate_region_batch(x_range=(chunk_x, chunk_x), z_range=(chunk_z, chunk_z))
 
+    def generate_world_regions(
+        self, x_range: tuple[int, int] = (-16, 16), z_range: tuple[int, int] = (-16, 16)
+    ) -> Optional[Path]:
+        """
+        Generate world regions for training dataset.
+
+        Args:
+            x_range: Tuple of (min_x, max_x) in chunk coordinates
+            z_range: Tuple of (min_z, max_z) in chunk coordinates
+
+        Returns:
+            Path to generated world directory containing .mca files
+        """
+        self.logger.info(f"Generating world regions: x={x_range}, z={z_range}")
+        return self.generate_region_batch(x_range, z_range)
+
     def start_shared_server(self) -> bool:
         """Start a shared server instance for multiple operations."""
         if not self.shared_server:

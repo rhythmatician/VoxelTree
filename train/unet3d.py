@@ -105,7 +105,7 @@ class UNet3DConfig:
     output_channels: int = 2  # Air mask + block types (will be split)
     base_channels: int = 32
     depth: int = 3  # Conditioning inputs
-    biome_vocab_size: int = 50
+    biome_vocab_size: int = 256  # Increased to handle all possible Minecraft biomes
     biome_embed_dim: int = 16
     heightmap_channels: int = 1
     river_channels: int = 1
