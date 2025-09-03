@@ -3,12 +3,15 @@ VoxelTree training orchestration and checkpoint management.
 """
 
 import logging
+import random
+import subprocess
 import time
 from pathlib import Path
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 import torch.optim as optim
 
 from .confusion_analyzer import create_confusion_analyzer
@@ -44,13 +47,13 @@ class VoxelTrainer:
         tensorboard_config = training_config.get("tensorboard", {})
         if tensorboard_config.get("enabled", False):
             log_dir = tensorboard_config.get("log_dir", "runs/tensorboard")
-            self.tb_logger = TensorBoardLogger(log_dir, enabled=True)
+            self.tb_logger: Optional[TensorBoardLogger] = TensorBoardLogger(log_dir, enabled=True)
 
             # Log model graph if enabled
             if tensorboard_config.get("log_model_graph", False):
                 try:
                     # Create a dummy input to trace the model
-                    model_cfg = config.get("model", {})
+                    # (Graph logging uses dummy tensor only; model_cfg retained in config)
                     dummy_input = torch.zeros(
                         1, 1, 16, 16, 16, device=self.device  # Batch, channels, D, H, W
                     )
@@ -63,10 +66,30 @@ class VoxelTrainer:
         # Initialize confusion matrix analyzer for 99% accuracy tracking
         self.confusion_analyzer = create_confusion_analyzer(config)
 
+        # Multi-LOD / scheduled sampling configuration
+        mlod_cfg = training_config.get("multi_lod", {})
+        self.multi_lod_enabled: bool = mlod_cfg.get("enabled", False)
+        self.multi_lod_factors: List[int] = mlod_cfg.get("factors", [1, 2, 4, 8, 16])
+        # Ensure valid powers of two up to 16
+        self.multi_lod_factors = [f for f in self.multi_lod_factors if f in [1, 2, 4, 8, 16]]
+        if self.multi_lod_enabled and not self.multi_lod_factors:
+            raise ValueError("multi_lod enabled but no valid factors provided")
+
+        sched_cfg = training_config.get("scheduled_sampling", {})
+        self.sched_enabled: bool = sched_cfg.get("enabled", False)
+        self.sched_start: float = float(sched_cfg.get("start_prob", 0.0))
+        self.sched_end: float = float(sched_cfg.get("end_prob", 0.3))
+        self.sched_warmup_epochs: int = int(sched_cfg.get("warmup_epochs", 1))
+        self.sched_total_epochs: int = int(
+            sched_cfg.get("total_epochs", max(1, training_config.get("epochs", 1)))
+        )
+
         # Loss configuration
         loss_config = config.get("loss", {})
         self.mask_weight = loss_config.get("mask_weight", 1.0)
         self.type_weight = loss_config.get("type_weight", 1.0)
+        # Cache for scheduled sampling (initialized lazily)
+        self._last_air_mask_pred: Optional[torch.Tensor] = None
 
     def training_step(self, batch: Dict[str, torch.Tensor]) -> torch.Tensor:
         """Execute one training step."""
@@ -74,6 +97,48 @@ class VoxelTrainer:
         batch = {
             k: v.to(self.device) if isinstance(v, torch.Tensor) else v for k, v in batch.items()
         }
+
+        # Optionally replace parent voxel with dynamically generated multi-LOD parent
+        if self.multi_lod_enabled and "target_mask" in batch:
+            factor = random.choice(self.multi_lod_factors)
+            # Map factor -> lod index (powers of two) 1->0,2->1,4->2,8->3,16->4
+            lod_index = {1: 0, 2: 1, 4: 2, 8: 3, 16: 4}[factor]
+            target_mask = batch["target_mask"]  # (B,1,16,16,16)
+            with torch.no_grad():
+                # Coarsen target occupancy by max pooling across factor blocks
+                if factor == 1:
+                    coarse = target_mask
+                else:
+                    B, C, D, H, W = target_mask.shape
+                    assert D == 16 and H == 16 and W == 16, "Expected 16^3 target volume"
+                    assert 16 % factor == 0, "Factor must divide 16"
+                    k = factor
+                    view = target_mask.view(B, C, D // k, k, H // k, k, W // k, k)
+                    # max over the k dimensions
+                    coarse = view.amax(dim=(3, 5, 7))  # (B,1,16/f,16/f,16/f)
+                # Upsample / downsample coarse to 8^3 canonical parent size
+                if coarse.shape[2:] != (8, 8, 8):
+                    # Use nearest interpolation for occupancy
+                    coarse_up = F.interpolate(coarse, size=(8, 8, 8), mode="nearest")  # (B,1,8,8,8)
+                else:
+                    coarse_up = coarse
+                # Scheduled sampling: optionally mix previous prediction to reduce teacher forcing
+                if self.sched_enabled and self.current_epoch >= self.sched_warmup_epochs:
+                    progress = min(
+                        1.0,
+                        (self.current_epoch - self.sched_warmup_epochs)
+                        / max(1, (self.sched_total_epochs - self.sched_warmup_epochs)),
+                    )
+                    p = self.sched_start + (self.sched_end - self.sched_start) * progress
+                    if random.random() < p and self._last_air_mask_pred is not None:
+                        # Threshold previous logits (<0 -> solid occupancy)
+                        pred_parent = (self._last_air_mask_pred.detach() < 0).float()
+                        if pred_parent.shape != coarse_up.shape:
+                            pred_parent = F.interpolate(pred_parent, size=(8, 8, 8), mode="nearest")
+                        # Blend: occupancy OR
+                        coarse_up = torch.clamp(coarse_up + pred_parent, 0, 1)
+                batch["parent_voxel"] = coarse_up.float()
+                batch["lod"] = torch.full_like(batch["lod"], lod_index, dtype=torch.long)
 
         # Forward pass
         outputs = self.model(
@@ -86,6 +151,9 @@ class VoxelTrainer:
         )
         air_mask_logits = outputs["air_mask_logits"]
         block_type_logits = outputs["block_type_logits"]
+
+        # Cache air mask logits for scheduled sampling (detach to avoid grad retention)
+        self._last_air_mask_pred = air_mask_logits.detach()
 
         # Compute loss
         loss = voxel_loss_fn(
@@ -299,13 +367,17 @@ class VoxelTrainer:
 
             self.tb_logger.log_metrics(
                 {
-                    "val/overall_accuracy": overall_accuracy,
-                    "val/mean_class_accuracy": (
+                    "val/overall_accuracy": float(overall_accuracy),
+                    "val/mean_class_accuracy": float(
                         np.mean(valid_accuracies) if valid_accuracies else 0.0
                     ),
-                    "val/min_class_accuracy": np.min(valid_accuracies) if valid_accuracies else 0.0,
-                    "val/blocks_above_99pct": sum(1 for acc in valid_accuracies if acc >= 0.99),
-                    "val/goal_progress": overall_accuracy / 0.99,  # Progress toward 99% goal
+                    "val/min_class_accuracy": float(
+                        np.min(valid_accuracies) if valid_accuracies else 0.0
+                    ),
+                    "val/blocks_above_99pct": float(
+                        sum(1 for acc in valid_accuracies if acc >= 0.99)
+                    ),
+                    "val/goal_progress": float(overall_accuracy / 0.99),
                 },
                 step=self.global_step,
             )
@@ -338,6 +410,7 @@ class VoxelTrainer:
             "best_loss": self.best_loss,
             "config": self.config,
             "timestamp": time.time(),
+            "provenance": self._collect_provenance(),
             **kwargs,
         }
 
@@ -390,3 +463,30 @@ class VoxelTrainer:
                 0, 10, (batch_size, 16, 16, 16), device=self.device
             ).long(),
         }
+
+    # ------------------------- Provenance Utilities ------------------------- #
+    def _collect_provenance(self) -> Dict[str, Any]:
+        """Collect lightweight provenance info for checkpoints."""
+        prov: Dict[str, Any] = {}
+        # Git commit SHA
+        try:
+            sha = (
+                subprocess.check_output(["git", "rev-parse", "HEAD"], stderr=subprocess.DEVNULL)
+                .decode()
+                .strip()
+            )
+            prov["git_commit"] = sha
+        except Exception:  # pragma: no cover - environment may not have git
+            pass
+        # Model parameter count
+        prov["param_count"] = sum(p.numel() for p in self.model.parameters())
+        # Multi-LOD settings
+        if self.multi_lod_enabled:
+            prov["multi_lod_factors"] = self.multi_lod_factors
+        if self.sched_enabled:
+            prov["scheduled_sampling"] = {
+                "start_prob": self.sched_start,
+                "end_prob": self.sched_end,
+                "warmup_epochs": self.sched_warmup_epochs,
+            }
+        return prov
