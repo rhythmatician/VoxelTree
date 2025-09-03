@@ -24,7 +24,7 @@ import torch
 import yaml
 from torch.utils.data import DataLoader
 
-from train.dataset import VoxelTreeDataset
+from train.dataset import TrainingDataCollator, VoxelTreeDataset
 from train.logger import TrainingLogger
 from train.trainer import VoxelTrainer
 
@@ -220,17 +220,20 @@ def train_model(config: Dict[str, Any], resume_checkpoint: Optional[Path] = None
 
     # Create data loaders
     batch_size = config["training"]["batch_size"]
+    collator = TrainingDataCollator()
     train_loader = DataLoader(
         train_dataset,
         batch_size=batch_size,
         shuffle=True,
         num_workers=data_config.get("num_workers", 4),
+        collate_fn=collator,
     )
     val_loader = DataLoader(
         val_dataset,
         batch_size=batch_size,
         shuffle=False,
         num_workers=data_config.get("num_workers", 4),
+        collate_fn=collator,
     )
 
     # Initialize trainer
