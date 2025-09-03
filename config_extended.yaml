@@ -1,0 +1,161 @@
+# Extended VoxelTree Configuration: Multi-LOD Training & Evaluation
+# This extends the base config.yaml with Item 2-8 features from acceptance criteria
+
+# Inherit all base settings from config.yaml (model, data, paths)
+# This file demonstrates additional multi-LOD and evaluation configuration
+
+training:
+  # Base training settings (inherit from config.yaml)
+  epochs: 50
+  batch_size: 8
+  learning_rate: 1e-4
+  weight_decay: 1e-5
+
+  # Multi-LOD training (Item 2: LOD pyramid & coarsening)
+  multi_lod:
+    enabled: true
+    factors: [1, 2, 4, 8, 16] # Coarsening factors for parent generation
+    # Each factor f creates parent via f×f×f max pooling then resize to 8³
+
+  # Scheduled sampling (Item 3: reduce teacher forcing over time)
+  scheduled_sampling:
+    enabled: true
+    start_prob: 0.0 # Initial probability of using model prediction
+    end_prob: 0.3 # Final probability after ramp
+    warmup_epochs: 5 # Epochs before sampling starts
+    total_epochs: 50 # Total training epochs for scheduling
+
+  # Cleanup management
+  cleanup:
+    enable: true
+
+# Item 4: Metrics & Evaluation Harness
+evaluation:
+  enabled: true
+  # Confusion matrix analysis frequency
+  confusion_analysis:
+    enabled: true
+    frequency: 5 # Every 5 epochs
+    save_detailed: true
+    accuracy_threshold: 0.99 # 99% goal
+
+  # IoU and surface accuracy metrics
+  metrics:
+    iou:
+      enabled: true
+      compute_per_lod: true
+    surface_accuracy:
+      enabled: true
+      boundary_width: 1
+    frequent_set_accuracy:
+      enabled: true
+      top_k_blocks: 50 # Most common blocks
+
+  # Rollout evaluation (chain multiple LOD steps)
+  rollout:
+    enabled: true
+    max_steps: 4 # 8³ -> 16³ -> 32³ -> 64³ -> 128³
+    seeds: [42, 1337, 9999] # Test seeds for rollout
+
+# Item 5: Determinism & DJL Parity Testing
+testing:
+  determinism:
+    enabled: true
+    repeat_runs: 3
+    max_diff_threshold: 1e-4
+    seeds: [12345, 67890]
+
+  djl_parity:
+    enabled: true
+    test_vectors_path: "production/test_vectors.npz"
+    max_abs_diff: 1e-4
+    timeout_seconds: 30
+
+# Item 6: Performance Benchmarking
+benchmarking:
+  enabled: true
+  cpu_latency:
+    enabled: true
+    warmup_iterations: 10
+    measurement_iterations: 100
+    input_shapes:
+      - [1, 1, 8, 8, 8] # Standard LOD input
+  memory_profiling:
+    enabled: true
+    baseline_measurement: true
+    peak_memory_tracking: true
+
+# Item 7: Enhanced Provenance & Artifact Enrichment
+provenance:
+  git_tracking: true
+  dataset_fingerprinting: true
+  config_hashing: true
+  seed_logging: true
+  block_mapping_embedding: true # Embed complete_block_mapping.json
+
+# Item 8: CI & Automation Enhancements
+ci:
+  json_schema_validation: true
+  evaluation_on_commit: true
+  performance_regression_detection: true
+  artifact_archival: true
+
+# TensorBoard enhanced logging
+tensorboard:
+  enabled: true
+  log_dir: "runs/multi_lod_training"
+  log_model_graph: true
+  log_visualizations: true
+  visualization_samples: 4
+  log_confusion_matrices: true
+  log_rollout_chains: true
+
+# Model architecture (inherit base settings, add multi-LOD specific)
+model:
+  # Base UNet3D settings from config.yaml
+  input_channels: 1
+  base_channels: 64
+  depth: 2
+  biome_vocab_size: 256
+  biome_embed_dim: 16
+  heightmap_channels: 1
+  river_channels: 1
+  y_embed_dim: 8
+  lod_embed_dim: 32
+  dropout_rate: 0.1
+  use_batch_norm: true
+  activation: "gelu"
+  air_mask_channels: 1
+  block_type_channels: 1104
+
+  # Multi-LOD specific model enhancements
+  enhanced_lod_conditioning: true
+  sinusoidal_lod_embedding: true
+  film_conditioning_layers: true
+
+# Data loading (inherit base paths)
+data:
+  train_dir: "data/processed"
+  val_dir: "data/processed"
+  test_dir: "data/test_world"
+
+  # Multi-LOD data augmentation
+  augmentation:
+    enabled: true
+    random_lod_sampling: true
+    parent_noise_injection: 0.05 # Small noise for robustness
+
+# Loss function configuration
+loss:
+  mask_weight: 1.0
+  type_weight: 1.0
+  # Potential future: LOD-aware loss weighting
+  lod_adaptive_weighting: false
+
+# Export configuration for LODiffusion contract
+export:
+  production_dir: "production"
+  include_provenance: true
+  include_test_vectors: true
+  embed_block_mapping: true
+  contract_validation: true

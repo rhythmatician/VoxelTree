@@ -7,8 +7,8 @@ import onnxruntime as ort
 REQ = {
     "inputs": {
         "x_parent": [1, 1, 8, 8, 8],
-        "x_biome": [1, "NB", 8, 8, 1],  # NB > 1
-        "x_height": [1, 1, 8, 8, 1],
+        "x_biome": [1, "NB", 16, 16, 1],  # NB > 1, 16x16 chunk size
+        "x_height": [1, 1, 16, 16, 1],  # 16x16 chunk size
         "x_lod": [1, 1],
     },
     "outputs": {"air_mask": [1, 1, 16, 16, 16], "block_logits": [1, 1104, 16, 16, 16]},
@@ -80,9 +80,7 @@ def main(path):
         print(f"FAIL: x_lod shape - got: {ins['x_lod']}, want: {REQ['inputs']['x_lod']}")
         return 1
     xb = ins["x_biome"]
-    if not (
-        len(xb) == 5 and xb[0] == 1 and xb[2:] == [8, 8, 1] and isinstance(xb[1], int) and xb[1] > 1
-    ):
+    if not (validate_biome_shape(xb)):
         print(f"FAIL: x_biome shape {xb}")
         return 1
 
@@ -101,10 +99,10 @@ def main(path):
     NB = xb[1]
     x = {
         "x_parent": np.zeros((1, 1, 8, 8, 8), np.float32),
-        "x_biome": np.eye(NB, dtype=np.float32)[np.zeros((1, 8, 8, 1), int)].transpose(
+        "x_biome": np.eye(NB, dtype=np.float32)[np.zeros((1, 16, 16, 1), int)].transpose(
             0, 4, 1, 2, 3
         ),  # one-hot(0)
-        "x_height": np.zeros((1, 1, 8, 8, 1), np.float32),
+        "x_height": np.zeros((1, 1, 16, 16, 1), np.float32),
         "x_lod": np.zeros((1, 1), np.float32),
     }
     y = sess.run(None, x)
@@ -117,6 +115,16 @@ def main(path):
 
     print(f"READY: opset {opset}, NB={NB}, shapes OK, runtime OK")
     return 0
+
+
+def validate_biome_shape(xb):
+    return (
+        len(xb) == 5
+        and xb[0] == 1
+        and xb[2:] == [16, 16, 1]
+        and isinstance(xb[1], int)
+        and xb[1] > 1
+    )
 
 
 if __name__ == "__main__":

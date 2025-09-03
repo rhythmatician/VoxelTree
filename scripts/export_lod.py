@@ -186,11 +186,11 @@ def export_contract(adapter: LODiffusionAdapter, cfg: Dict, out_dir: Path):
 
     dummy = (
         torch.rand(1, 1, 8, 8, 8),  # x_parent (already 0..1)
-        F.one_hot(torch.randint(0, biome_vocab, (1, 8, 8)), num_classes=biome_vocab)
+        F.one_hot(torch.randint(0, biome_vocab, (1, 16, 16)), num_classes=biome_vocab)
         .permute(0, 3, 1, 2)
         .unsqueeze(-1)
-        .float(),  # x_biome
-        torch.rand(1, 1, 8, 8, 1),  # x_height
+        .float(),  # x_biome: 16x16 chunk size
+        torch.rand(1, 1, 16, 16, 1),  # x_height: 16x16 chunk size
         torch.randint(1, 5, (1, 1)).float(),  # x_lod
     )
 
@@ -214,8 +214,8 @@ def export_contract(adapter: LODiffusionAdapter, cfg: Dict, out_dir: Path):
         "contract": "lodiffusion.v1",
         "inputs": {
             "x_parent": [1, 1, 8, 8, 8],
-            "x_biome": [1, biome_vocab, 8, 8, 1],
-            "x_height": [1, 1, 8, 8, 1],
+            "x_biome": [1, biome_vocab, 16, 16, 1],  # 16x16 chunk size
+            "x_height": [1, 1, 16, 16, 1],  # 16x16 chunk size
             "x_lod": [1, 1],
         },
         "outputs": {
