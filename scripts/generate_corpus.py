@@ -30,12 +30,12 @@ from tqdm import tqdm
 # Append project root to path to ensure modules can be imported
 sys.path.append(str(Path(__file__).resolve().parent.parent))
 
-from scripts.extraction.chunk_extractor import ChunkExtractor
-from scripts.pairing.patch_auditor import PatchQualityAuditor
-from scripts.pairing.patch_pairer import PatchPairer
-from scripts.pairing.patch_validator import PatchValidator
-from scripts.pairing.seed_input_linker import SeedInputLinker
-from scripts.worldgen.bootstrap import WorldGenBootstrap
+from scripts.extraction.chunk_extractor import ChunkExtractor  # noqa: E402
+from scripts.pairing.patch_auditor import PatchQualityAuditor  # noqa: E402
+from scripts.pairing.patch_pairer import PatchPairer  # noqa: E402
+from scripts.pairing.patch_validator import PatchValidator  # noqa: E402
+from scripts.pairing.seed_input_linker import SeedInputLinker  # noqa: E402
+from scripts.worldgen.bootstrap import WorldGenBootstrap  # noqa: E402
 
 
 def setup_logging(log_level: str = "INFO") -> None:
