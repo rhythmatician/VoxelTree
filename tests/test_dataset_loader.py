@@ -109,11 +109,12 @@ class TestVoxelTreeDataset:
         assert isinstance(sample["river_patch"], torch.Tensor)
 
         # Validate tensor dtypes
-        assert sample["parent_voxel"].dtype == torch.bool
-        assert sample["target_mask"].dtype == torch.bool
-        assert sample["target_types"].dtype == torch.uint8
-        assert sample["biome_patch"].dtype == torch.uint8
-        assert sample["heightmap_patch"].dtype == torch.int16  # Promote from uint16
+        # parent_voxel converted from bool to float32 for gradient flow
+        assert sample["parent_voxel"].dtype == torch.float32
+        assert sample["target_mask"].dtype == torch.float32
+        assert sample["target_types"].dtype == torch.int64
+        assert sample["biome_patch"].dtype == torch.int64
+        assert sample["heightmap_patch"].dtype == torch.float32
         assert sample["river_patch"].dtype == torch.float32
 
     def test_dataset_file_missing_handling(self, temp_training_data):
