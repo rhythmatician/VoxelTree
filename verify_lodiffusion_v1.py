@@ -62,18 +62,6 @@ COMMON_REQ = {
     "forbid_ops": {"Loop", "If", "Scan"},
 }
 
-# Legacy contract for backwards compatibility
-LEGACY_REQ = {
-    "inputs": {
-        "x_parent": [1, 1, 8, 8, 8],
-        "x_biome": [1, "NB", 16, 16, 1],  # NB > 1, 16x16 chunk size
-        "x_height": [1, 1, 16, 16, 1],  # 16x16 chunk size
-        "x_lod": [1, 1],
-    },
-    "outputs": {"air_mask": [1, 1, 16, 16, 16], "block_logits": [1, 1104, 16, 16, 16]},
-    **COMMON_REQ,
-}
-
 
 def get_shape(v):
     t = v.type.tensor_type
@@ -97,9 +85,7 @@ def main(path, lod_type="lod1to0"):
         lod_type: LOD refinement type to verify against
                  ("lod4to3", "lod3to2", "lod2to1", "lod1to0", or "legacy")
     """
-    if lod_type == "legacy":
-        REQ = LEGACY_REQ
-    elif lod_type in PROGRESSIVE_LOD_CONTRACTS:
+    if lod_type in PROGRESSIVE_LOD_CONTRACTS:
         contract = PROGRESSIVE_LOD_CONTRACTS[lod_type]
         REQ = {**contract, **COMMON_REQ}
     else:
