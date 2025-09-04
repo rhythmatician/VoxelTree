@@ -35,7 +35,7 @@ from scripts.pairing.patch_auditor import PatchQualityAuditor
 from scripts.pairing.patch_pairer import PatchPairer
 from scripts.pairing.patch_validator import PatchValidator
 from scripts.pairing.seed_input_linker import SeedInputLinker
-from scripts.worldgen.bootstrap import FabricWorldGenBootstrap
+from scripts.worldgen.bootstrap import WorldGenBootstrap
 
 
 def setup_logging(log_level: str = "INFO") -> None:
@@ -109,7 +109,7 @@ def generate_world_batch(
     }
 
     # Create bootstrap and generate world
-    bootstrap = FabricWorldGenBootstrap(
+    bootstrap = WorldGenBootstrap(
         seed=worldgen_config.get("seed"), java_heap=worldgen_config.get("java_heap")
     )
 
