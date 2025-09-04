@@ -27,3 +27,10 @@ mc-wiki-strongholdgeneration.txt
 training_run.txt
 test_metrics_report.json
 Hephaistos/
+
+# Model checkpoints and exports
+multi_lod_test/
+onnx_export/
+models/
+*.pt
+*.onnx
