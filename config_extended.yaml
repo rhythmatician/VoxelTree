@@ -1,8 +1,55 @@
 # Extended VoxelTree Configuration: Multi-LOD Training & Evaluation
 # This extends the base config.yaml with Item 2-8 features from acceptance criteria
 
-# Inherit all base settings from config.yaml (model, data, paths)
-# This file demonstrates additional multi-LOD and evaluation configuration
+# World generation (required base section)
+worldgen:
+  seed: "VoxelTree16x16"
+  java_heap: "6G"
+  batch_size: 32
+  max_temp_disk_gb: 15
+  generate_structures: false
+  chunk_region_bounds:
+    x_min: 0
+    x_max: 64  # Smaller for quick training
+    z_min: 0
+    z_max: 64
+  java_tools:
+    primary: "tools/fabric-server/fabric-server-mc.1.21.5-loader.0.16.14-launcher.1.0.3.jar"
+    chunky: "tools/fabric-server/runtime/mods/Chunky-Fabric-1.4.36.jar"
+    cubiomes: "tools/voxeltree_cubiomes_cli/voxeltree_cubiomes_cli.exe"
+
+# Corpus generation
+corpus:
+  seed_ranges: "1000-1010"  # Smaller range for quick training
+  world_radius: 4  # Small radius for quick testing
+  output_dir: "data/corpus"
+  splits:
+    train: 0.8
+    val: 0.1
+    test: 0.1
+  cleanup:
+    delete_temp_worlds: true
+    delete_raw_chunks: true
+    max_disk_usage_gb: 50
+
+# Extraction configuration  
+extraction:
+  output_dir: "data/chunks"
+  temp_dir: "temp_extraction"
+  max_disk_usage_gb: 15
+  batch_size: 64
+  num_workers: 4
+  compression_level: 6
+  validation:
+    verify_checksums: true
+    detect_corruption: true
+  block_mapping:
+    air_blocks: [0]
+    solid_blocks: [1, 2, 3]
+  heightmap:
+    surface_blocks: [2, 3, 4]
+    min_height: -64
+    max_height: 320
 
 training:
   # Base training settings (inherit from config.yaml)
@@ -159,3 +206,56 @@ export:
   include_test_vectors: true
   embed_block_mapping: true
   contract_validation: true
+
+# Data configuration (required)
+data:
+  chunk_format: "npz"
+  max_chunks_in_memory: 1000
+  temp_data_dir: "data/temp"
+  processed_data_dir: "data/processed"
+  train_split: 0.8
+  val_split: 0.1
+  test_split: 0.1
+
+# Seed-based input generation
+seed_inputs:
+  output_dir: "data/seed_inputs"
+  default_patch_size: 16
+  biome_source: "vanilla"
+  resolution: 4
+  noise_parameters:
+    height_scale: 0.01
+    river_scale: 0.005
+  height_parameters:
+    base_height: 64
+    height_variation: 60
+    min_height: 0
+    max_height: 384
+  vanilla_biome:
+    java_tool: "tools/amidst-cli.jar"
+    fallback_tool: "tools/cubeseed.jar"
+    cache_dir: "data/biome_cache"
+    chunk_batch_size: 64
+
+# Pairing configuration
+pairing:
+  extracted_data_dir: "data/chunks"
+  seed_inputs_dir: "data/seed_inputs"
+  output_dir: "data/pairs"
+  lod_levels: 4
+  pair_format:
+    parent_shape: [8, 8, 8]
+    target_shape: [16, 16, 16]
+    compression_level: 6
+  validation:
+    validate_alignment: true
+    detect_corruption: true
+  batch_processing:
+    chunk_batch_size: 32
+    num_workers: 4
+    max_memory_gb: 8
+
+# Loss configuration
+loss:
+  mask_weight: 1.0
+  type_weight: 0.5

@@ -29,7 +29,7 @@ from pathlib import Path
 
 import yaml
 
-from scripts.evaluation_metrics import RolloutEvaluator, VoxelMetrics
+from scripts.evaluation_metrics import VoxelMetrics
 
 # Import the enhanced components
 from scripts.lod_pyramid import LODPyramidGenerator, MultiLODDatasetAugmenter
@@ -78,7 +78,7 @@ def main():
     mlod_config = config.get("training", {}).get("multi_lod", {})
     if mlod_config.get("enabled", False):
         factors = mlod_config.get("factors", [1, 2, 4, 8, 16])
-        augmenter = MultiLODDatasetAugmenter(factors=factors)
+        _ = MultiLODDatasetAugmenter(factors=factors)
         logger.info(f"✅ Multi-LOD augmenter ready with factors: {factors}")
     else:
         logger.info("⚠️  Multi-LOD training disabled in config")
