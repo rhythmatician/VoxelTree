@@ -7,7 +7,6 @@ Also includes TensorBoard integration for training monitoring.
 """
 
 import logging
-import os
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Union
 
@@ -74,21 +73,50 @@ class TensorBoardLogger:
                 metric_name = f"{prefix}/{name}" if prefix else name
                 self.writer.add_scalar(metric_name, value, step)
 
-    def log_model_graph(self, model: torch.nn.Module, input_shape: Tuple[int, ...]):
+    def log_model_graph(
+        self, model: torch.nn.Module, sample_batch: Optional[Dict[str, torch.Tensor]] = None
+    ):
         """
         Log model architecture graph to TensorBoard.
 
         Args:
             model: PyTorch model
-            input_shape: Input tensor shape (including batch dimension)
+            sample_batch: Optional sample batch data to use for tracing
         """
         if not self.enabled or not self.writer:
             return
 
         try:
-            # Create dummy input tensor for tracing
-            dummy_input = torch.zeros(input_shape, device=next(model.parameters()).device)
-            self.writer.add_graph(model, dummy_input)
+            device = next(model.parameters()).device
+
+            if sample_batch is not None:
+                # Use real batch data for tracing
+                required_keys = [
+                    'parent_voxel', 'biome_patch', 'heightmap_patch',
+                    'river_patch', 'y_index', 'lod'
+                ]
+                dummy_inputs = {
+                    k: v[:1].to(device) for k, v in sample_batch.items()
+                    if k in required_keys
+                }
+            else:
+                # Create dummy inputs matching VoxelUNet3D forward signature
+                dummy_inputs = {
+                    'parent_voxel': torch.zeros(1, 1, 8, 8, 8, device=device),
+                    'biome_patch': torch.zeros(1, 256, 16, 16, device=device),
+                    'heightmap_patch': torch.zeros(1, 1, 16, 16, device=device),
+                    'river_patch': torch.zeros(1, 1, 16, 16, device=device),
+                    'y_index': torch.zeros(1, device=device, dtype=torch.long),
+                    'lod': torch.zeros(1, device=device, dtype=torch.long)
+                }
+
+            # Try to trace the model with dummy inputs
+            with torch.no_grad():
+                _ = model(**dummy_inputs)
+            
+            # Log just the model structure without inputs due to complexity
+            self.writer.add_graph(model, input_to_model=None, verbose=False)
+            logger.info("Model graph logged to TensorBoard")
         except Exception as e:
             logger.warning(f"Failed to log model graph: {e}")
 
