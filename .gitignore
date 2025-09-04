@@ -9,6 +9,7 @@ data/test_world/region/*
 debug_*
 output.txt
 runs/*
+artifacts/
 *.npz
 check_*.py
 *.mca
