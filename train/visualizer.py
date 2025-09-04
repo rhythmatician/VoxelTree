@@ -92,28 +92,31 @@ class TensorBoardLogger:
             if sample_batch is not None:
                 # Use real batch data for tracing
                 required_keys = [
-                    'parent_voxel', 'biome_patch', 'heightmap_patch',
-                    'river_patch', 'y_index', 'lod'
+                    "parent_voxel",
+                    "biome_patch",
+                    "heightmap_patch",
+                    "river_patch",
+                    "y_index",
+                    "lod",
                 ]
                 dummy_inputs = {
-                    k: v[:1].to(device) for k, v in sample_batch.items()
-                    if k in required_keys
+                    k: v[:1].to(device) for k, v in sample_batch.items() if k in required_keys
                 }
             else:
                 # Create dummy inputs matching VoxelUNet3D forward signature
                 dummy_inputs = {
-                    'parent_voxel': torch.zeros(1, 1, 8, 8, 8, device=device),
-                    'biome_patch': torch.zeros(1, 256, 16, 16, device=device),
-                    'heightmap_patch': torch.zeros(1, 1, 16, 16, device=device),
-                    'river_patch': torch.zeros(1, 1, 16, 16, device=device),
-                    'y_index': torch.zeros(1, device=device, dtype=torch.long),
-                    'lod': torch.zeros(1, device=device, dtype=torch.long)
+                    "parent_voxel": torch.zeros(1, 1, 8, 8, 8, device=device),
+                    "biome_patch": torch.zeros(1, 256, 16, 16, device=device),
+                    "heightmap_patch": torch.zeros(1, 1, 16, 16, device=device),
+                    "river_patch": torch.zeros(1, 1, 16, 16, device=device),
+                    "y_index": torch.zeros(1, device=device, dtype=torch.long),
+                    "lod": torch.zeros(1, device=device, dtype=torch.long),
                 }
 
             # Try to trace the model with dummy inputs
             with torch.no_grad():
                 _ = model(**dummy_inputs)
-            
+
             # Log just the model structure without inputs due to complexity
             self.writer.add_graph(model, input_to_model=None, verbose=False)
             logger.info("Model graph logged to TensorBoard")
@@ -445,6 +448,65 @@ class VoxelVisualizer:
             output_paths.append(vis_path)
 
         return output_paths
+
+    @staticmethod
+    def visualize_comparison(
+        input_voxel: Union[np.ndarray, Tensor],
+        pred_voxel: Union[np.ndarray, Tensor],
+        target_voxel: Union[np.ndarray, Tensor],
+        return_figure: bool = False,
+    ) -> Optional[plt.Figure]:
+        """
+        Create a comparison visualization of input, prediction, and target voxels.
+
+        Args:
+            input_voxel: Input voxel data
+            pred_voxel: Predicted voxel data
+            target_voxel: Target voxel data
+            return_figure: If True, return the figure object instead of showing
+
+        Returns:
+            Figure object if return_figure=True, else None
+        """
+        # Convert to numpy if tensors
+        if isinstance(input_voxel, Tensor):
+            input_voxel = input_voxel.detach().cpu().numpy()
+        if isinstance(pred_voxel, Tensor):
+            pred_voxel = pred_voxel.detach().cpu().numpy()
+        if isinstance(target_voxel, Tensor):
+            target_voxel = target_voxel.detach().cpu().numpy()
+
+        # Handle dimensions
+        if input_voxel.ndim > 3:
+            input_voxel = input_voxel.squeeze()
+        if pred_voxel.ndim > 3:
+            pred_voxel = pred_voxel.squeeze()
+        if target_voxel.ndim > 3:
+            target_voxel = target_voxel.squeeze()
+
+        # Create figure
+        fig = plt.figure(figsize=(15, 5))
+
+        # Plot input
+        ax1 = fig.add_subplot(1, 3, 1, projection="3d")
+        VoxelVisualizer._plot_binary_voxel(ax1, input_voxel > 0.5, title="Input")
+
+        # Plot prediction
+        ax2 = fig.add_subplot(1, 3, 2, projection="3d")
+        VoxelVisualizer._plot_binary_voxel(ax2, pred_voxel > 0.5, title="Prediction")
+
+        # Plot target
+        ax3 = fig.add_subplot(1, 3, 3, projection="3d")
+        VoxelVisualizer._plot_binary_voxel(ax3, target_voxel > 0.5, title="Target")
+
+        plt.tight_layout()
+
+        if return_figure:
+            return fig
+        else:
+            plt.show()
+            plt.close(fig)
+            return None
 
     @staticmethod
     def _plot_binary_voxel(ax, voxels, title=None):

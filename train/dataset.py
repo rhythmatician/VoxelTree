@@ -288,7 +288,12 @@ class TrainingDataCollator:
             else:
                 # Handle other data types
                 try:
-                    batch[key] = torch.tensor(values)
+                    # Convert list of numpy arrays to single numpy array first for efficiency
+                    if isinstance(values[0], np.ndarray):
+                        stacked_array = np.stack(values)
+                        batch[key] = torch.from_numpy(stacked_array)
+                    else:
+                        batch[key] = torch.tensor(values)
                 except (ValueError, TypeError):
                     # Keep as list if can't convert to tensor
                     batch[key] = values

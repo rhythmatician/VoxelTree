@@ -49,17 +49,11 @@ class VoxelTrainer:
             log_dir = tensorboard_config.get("log_dir", "runs/tensorboard")
             self.tb_logger: Optional[TensorBoardLogger] = TensorBoardLogger(log_dir, enabled=True)
 
-            # Log model graph if enabled
+            # Log model graph if enabled (will be called with first batch)
             if tensorboard_config.get("log_model_graph", False):
-                try:
-                    # Create a dummy input to trace the model
-                    # (Graph logging uses dummy tensor only; model_cfg retained in config)
-                    dummy_input = torch.zeros(
-                        1, 1, 16, 16, 16, device=self.device  # Batch, channels, D, H, W
-                    )
-                    self.tb_logger.log_model_graph(self.model, dummy_input.shape)
-                except Exception as e:
-                    logging.warning(f"Failed to log model graph: {e}")
+                self._log_model_graph_pending = True
+            else:
+                self._log_model_graph_pending = False
         else:
             self.tb_logger = None
 
@@ -97,6 +91,16 @@ class VoxelTrainer:
         batch = {
             k: v.to(self.device) if isinstance(v, torch.Tensor) else v for k, v in batch.items()
         }
+
+        # Log model graph with first batch if pending
+        if hasattr(self, "_log_model_graph_pending") and self._log_model_graph_pending:
+            if self.tb_logger:
+                try:
+                    self.tb_logger.log_model_graph(self.model, batch)
+                    self._log_model_graph_pending = False
+                except Exception as e:
+                    logging.warning(f"Failed to log model graph: {e}")
+                    self._log_model_graph_pending = False
 
         # Optionally replace parent voxel with dynamically generated multi-LOD parent
         if self.multi_lod_enabled and "target_mask" in batch:
