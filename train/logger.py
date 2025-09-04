@@ -66,7 +66,6 @@ class TrainingLogger:
                 metrics.get("loss", ""),
                 metrics.get("lr", ""),
                 metrics.get("epoch_time", ""),
-                metrics.get("global_step", ""),
             ]
             writer.writerow(row)
 
@@ -79,7 +78,7 @@ class TrainingLogger:
             step = metrics.get("global_step", 0)
 
         for key, value in metrics.items():
-            # Skip timestamp and global_step (global_step is used as step parameter, not logged as metric)
+            # Skip timestamp and global_step (global_step is used as step parameter, not logged as metric)  # noqa
             if isinstance(value, (int, float)) and key not in ["timestamp", "global_step"]:
                 self.writer.add_scalar(key, value, step)
 
