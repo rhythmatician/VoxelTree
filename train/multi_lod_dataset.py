@@ -147,6 +147,10 @@ def create_lod_training_pairs(
         # Add batch and channel dimensions
         parent_voxel = parent_occupancy[None, None, ...]  # (1, 1, S, S, S)
 
+        # Add batch dimensions to targets
+        target_blocks = target_blocks[None, ...]  # (1, H, W, D)
+        target_occupancy = target_occupancy[None, ...]  # (1, H, W, D)
+
         # Prepare conditioning data
         biome_onehot = np.eye(256, dtype=np.float32)[biome_patch]  # (16, 16, 256)
         biome_tensor = biome_onehot.transpose(2, 0, 1)[None, ...]  # (1, 256, 16, 16)
@@ -304,7 +308,7 @@ class MultiLODDataset:
             "river_patch": torch.from_numpy(pair["river_patch"]),
             "y_index": torch.from_numpy(pair["y_index"]),
             "lod": torch.from_numpy(pair["lod"]),
-            "target_blocks": torch.from_numpy(pair["target_blocks"]),
+            "target_blocks": torch.from_numpy(pair["target_blocks"]).long(),  # Convert to int64
             "target_occupancy": torch.from_numpy(pair["target_occupancy"]),
             "lod_transition": pair["lod_transition"],
         }
@@ -343,7 +347,8 @@ def collate_multi_lod_batch(samples: List[Dict]) -> Dict:
         "target_occupancy",
     ]:
         if key in transition_samples[0]:
-            batch[key] = torch.stack([s[key] for s in transition_samples])
+            # Use cat instead of stack since our samples already have batch dimension
+            batch[key] = torch.cat([s[key] for s in transition_samples], dim=0)
 
     batch["lod_transition"] = transition_type
     return batch

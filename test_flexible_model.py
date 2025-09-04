@@ -14,22 +14,21 @@ import torch
 # Add train directory to path
 sys.path.append(str(Path(__file__).parent / "train"))
 
-from flexible_unet3d import FlexibleUNet3DConfig, FlexibleVoxelUNet3D
+from train.unet3d import SimpleFlexibleConfig, SimpleFlexibleUNet3D
 
 
 def test_flexible_model():
     """Test the flexible model with different input sizes."""
 
     # Create model config
-    config = FlexibleUNet3DConfig(
+    config = SimpleFlexibleConfig(
         base_channels=16,  # Smaller for testing
-        depth=2,
         biome_vocab_size=256,
         block_vocab_size=1104,
     )
 
     # Create model
-    model = FlexibleVoxelUNet3D(config)
+    model = SimpleFlexibleUNet3D(config)
     model.eval()
 
     print("Testing flexible multi-LOD model...")
@@ -37,10 +36,10 @@ def test_flexible_model():
 
     # Test data for all LOD transitions
     test_cases = [
-        ("LOD4→LOD3", 1, 2),  # 1³ → 2³
-        ("LOD3→LOD2", 2, 4),  # 2³ → 4³
-        ("LOD2→LOD1", 4, 8),  # 4³ → 8³
-        ("LOD1→LOD0", 8, 16),  # 8³ → 16³
+        ("LOD4->LOD3", 1, 2),  # 1^3 -> 2^3
+        ("LOD3->LOD2", 2, 4),  # 2^3 -> 4^3
+        ("LOD2->LOD1", 4, 8),  # 4^3 -> 8^3
+        ("LOD1->LOD0", 8, 16),  # 8^3 -> 16^3
     ]
 
     batch_size = 2
@@ -154,7 +153,7 @@ def test_multi_lod_dataset():
 
     try:
         # Import here to avoid issues if not available
-        from multi_lod_dataset import create_lod_training_pairs
+        from train.multi_lod_dataset import create_lod_training_pairs
 
         # Generate training pairs
         pairs = create_lod_training_pairs(
@@ -183,7 +182,7 @@ def test_multi_lod_dataset():
 
 
 if __name__ == "__main__":
-    print("🧪 Testing Flexible Multi-LOD Architecture")
+    print("Testing Flexible Multi-LOD Architecture")
     print("=" * 50)
 
     test_flexible_model()

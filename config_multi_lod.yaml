@@ -1,0 +1,75 @@
+# Multi-LOD Training Configuration
+
+# Model configuration
+model:
+  base_channels: 32
+  biome_vocab_size: 256
+  block_vocab_size: 1104
+  conditioning_dim: 64
+
+# Training configuration
+training:
+  epochs: 100
+  batch_size: 4
+  learning_rate: 1e-4
+  weight_decay: 1e-4
+  air_loss_weight: 0.25
+  save_every: 10
+  validate_every: 5
+
+# Data configuration
+data:
+  train_split: 0.8
+  val_split: 0.15
+  test_split: 0.05
+
+  # LOD sampling weights for training
+  # Higher weight = more samples during training
+  lod_sampling_weights:
+    lod4to3: 0.2 # 1³ → 2³ (coarsest)
+    lod3to2: 0.25 # 2³ → 4³
+    lod2to1: 0.25 # 4³ → 8³
+    lod1to0: 0.3 # 8³ → 16³ (finest, emphasize)
+
+# Validation metrics thresholds
+validation:
+  # Per-LOD transition accuracy targets
+  target_accuracies:
+    lod4to3_overall: 0.90 # Coarsest transition, lower target
+    lod3to2_overall: 0.92
+    lod2to1_overall: 0.94
+    lod1to0_overall: 0.96 # Finest transition, highest target
+
+  # Overall model targets
+  overall_accuracy: 0.93
+  air_accuracy: 0.95
+  block_accuracy: 0.92
+
+# Device configuration
+device:
+  type: "auto" # auto, cpu, cuda
+  mixed_precision: true
+
+# Optimizer configuration
+optimizer:
+  type: "adamw"
+  betas: [0.9, 0.999]
+  eps: 1e-8
+
+# Learning rate schedule
+scheduler:
+  type: "cosine"
+  warmup_epochs: 5
+  min_lr: 1e-6
+
+# Logging configuration
+logging:
+  log_every: 10 # Log every N batches
+  tensorboard: true
+  save_model_graph: true
+
+# Early stopping
+early_stopping:
+  patience: 20
+  min_delta: 0.001
+  monitor: "val_loss"
