@@ -9,38 +9,27 @@ input/output shapes for LOD-aware terrain generation.
 import pytest
 import torch
 
-from train.unet3d import UNet3DConfig, VoxelUNet3D
+from train.unet3d import SimpleFlexibleConfig, SimpleFlexibleUNet3D
 
 
-class TestVoxelUNet3D:
+class TestSimpleFlexibleUNet3D:
     """Test 3D U-Net model instantiation and basic functionality."""
 
     @pytest.fixture
     def basic_config(self):
         """Create basic model configuration for testing."""
-        return UNet3DConfig(
-            # Input dimensions
-            input_channels=1,  # Parent voxel (bool -> float32)
-            output_channels=2,  # Air mask logits + block type logits
-            # Model architecture
-            base_channels=32,  # Starting channel count
-            depth=3,  # Number of down/up sampling layers
-            # Conditioning inputs
-            biome_vocab_size=50,  # Max biome ID
-            biome_embed_dim=16,  # Biome embedding dimension
-            heightmap_channels=1,  # Single heightmap channel
-            river_channels=1,  # Single river noise channel
-            y_embed_dim=8,  # Y-index embedding dimension
-            lod_embed_dim=8,  # LOD level embedding dimension
-            # Training settings
-            dropout_rate=0.1,
-            use_batch_norm=True,
-            activation="relu",
+        return SimpleFlexibleConfig(
+            base_channels=32,
+            max_channels=128,
+            biome_vocab_size=50,
+            biome_embed_dim=16,
+            lod_embed_dim=8,
+            block_vocab_size=100,
         )
 
     def test_model_instantiation(self, basic_config):
         """RED: Fails if model can't be instantiated with config."""
-        model = VoxelUNet3D(basic_config)
+        model = SimpleFlexibleUNet3D(basic_config)
 
         # Model should be created successfully
         assert model is not None
@@ -55,7 +44,7 @@ class TestVoxelUNet3D:
 
     def test_model_forward_pass_shapes(self, basic_config):
         """RED: Fails if forward pass produces wrong output shapes."""
-        model = VoxelUNet3D(basic_config)
+        model = SimpleFlexibleUNet3D(basic_config)
         batch_size = 4
 
         # Create mock input tensors (from dataset)
@@ -91,7 +80,7 @@ class TestVoxelUNet3D:
 
     def test_model_gradient_flow(self, basic_config):
         """RED: Fails if gradients don't flow through the model."""
-        model = VoxelUNet3D(basic_config)
+        model = SimpleFlexibleUNet3D(basic_config)
         batch_size = 2
 
         # Create inputs
@@ -126,7 +115,7 @@ class TestVoxelUNet3D:
 
     def test_conditioning_input_integration(self, basic_config):
         """RED: Fails if conditioning inputs aren't properly integrated."""
-        model = VoxelUNet3D(basic_config)
+        model = SimpleFlexibleUNet3D(basic_config)
         batch_size = 2
 
         # Create inputs with different conditioning values
@@ -178,7 +167,7 @@ class TestVoxelUNet3D:
 
     def test_model_device_compatibility(self, basic_config):
         """RED: Fails if model doesn't work on different devices."""
-        model = VoxelUNet3D(basic_config)
+        model = SimpleFlexibleUNet3D(basic_config)
 
         # Test CPU
         model_cpu = model.cpu()
@@ -277,7 +266,7 @@ class TestModelIntegration:
 
     def test_model_with_dataset_outputs(self, basic_config):
         """RED: Fails if model can't process real dataset batch format."""
-        model = VoxelUNet3D(basic_config)
+        model = SimpleFlexibleUNet3D(basic_config)
 
         # Simulate batch from VoxelTreeDataLoader
         batch = {
@@ -335,7 +324,7 @@ class TestModelIntegration:
 
     def test_model_memory_usage(self, basic_config):
         """RED: Fails if model uses excessive memory."""
-        model = VoxelUNet3D(basic_config)
+        model = SimpleFlexibleUNet3D(basic_config)
 
         # Count parameters
         total_params = sum(p.numel() for p in model.parameters())
@@ -390,7 +379,7 @@ class TestActivationFunctions:
             activation=activation,
         )
 
-        model = VoxelUNet3D(config)
+        model = SimpleFlexibleUNet3D(config)
         batch_size = 2
 
         # Create test inputs
@@ -441,7 +430,7 @@ class TestActivationFunctions:
             activation=activation,
         )
 
-        model = VoxelUNet3D(config)
+        model = SimpleFlexibleUNet3D(config)
         batch_size = 2
 
         # Create test inputs with gradients
@@ -498,7 +487,7 @@ class TestActivationFunctions:
             activation=activation,
         )
 
-        model = VoxelUNet3D(config)
+        model = SimpleFlexibleUNet3D(config)
         batch_size = 2
 
         # Create test inputs
@@ -552,7 +541,7 @@ class TestActivationFunctions:
             activation=activation,
         )
 
-        model = VoxelUNet3D(config)
+        model = SimpleFlexibleUNet3D(config)
         batch_size = 2
 
         # Create test inputs

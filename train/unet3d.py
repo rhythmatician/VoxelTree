@@ -286,8 +286,3 @@ class SimpleFlexibleUNet3D(nn.Module):
         block_type_logits = self.block_type_head(final_features)
 
         return {"air_mask_logits": air_mask_logits, "block_type_logits": block_type_logits}
-
-
-# Backward compatibility aliases
-UNet3DConfig = SimpleFlexibleConfig
-VoxelUNet3D = SimpleFlexibleUNet3D
