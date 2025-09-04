@@ -20,14 +20,13 @@ Usage:
 
 import argparse
 import logging
-import os
 import shutil
 import sys
 import threading
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Set, Tuple, Union
+from typing import Callable, Dict, List, Optional, Set, Tuple
 
 import psutil
 
@@ -380,7 +379,7 @@ def main():
         )
 
         # Run until interrupted
-        print(f"Monitoring disk space... (Press Ctrl+C to stop)")
+        print("Monitoring disk space... (Press Ctrl+C to stop)")
         print(f"Logs are being saved to {log_file}")
         while True:
             time.sleep(1)

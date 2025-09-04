@@ -9,7 +9,7 @@ import onnx
 
 
 def main():
-    artifacts_dir = Path("artifacts/quick_test")
+    artifacts_dir = Path("artifacts/chunk_16x16")
 
     print("🌲 VoxelTree → LODiffusion Integration Check")
     print("=" * 60)
@@ -42,7 +42,7 @@ def main():
     actual_outputs = [o[0] for o in outputs]
     names_match = actual_outputs == expected_outputs
 
-    print(f"\n🎯 Contract Compliance:")
+    print("\n🎯 Contract Compliance:")
     print(f"   Expected outputs: {expected_outputs}")
     print(f"   Actual outputs:   {actual_outputs}")
     print(f"   Names match: {'✅ YES' if names_match else '❌ NO'}")
@@ -52,7 +52,7 @@ def main():
     with open(config_path, "r") as f:
         config = json.load(f)
 
-    print(f"\n📋 Model Configuration:")
+    print("\n📋 Model Configuration:")
     print(f"   Block vocabulary: {config.get('block_vocab_size', 'unknown')}")
     print(f"   Biome vocabulary: {config.get('biome_vocab_size', 'unknown')}")
     print(f"   Contract: {config.get('contract', 'unknown')}")
@@ -61,7 +61,7 @@ def main():
     # Check provenance
     if "provenance" in config:
         prov = config["provenance"]
-        print(f"\n🔍 Provenance:")
+        print("\n🔍 Provenance:")
         print(f"   Git commit: {prov.get('git_commit', 'unknown')[:8]}...")
         print(f"   Git branch: {prov.get('git_branch', 'unknown')}")
         print(f"   Clean repo: {'✅ YES' if prov.get('git_clean', False) else '⚠️  NO'}")
