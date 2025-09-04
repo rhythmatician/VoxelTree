@@ -4,7 +4,66 @@ import numpy as np
 import onnx
 import onnxruntime as ort
 
-REQ = {
+# Progressive LOD refinement contracts
+PROGRESSIVE_LOD_CONTRACTS = {
+    "lod4to3": {
+        "inputs": {
+            "x_parent": [1, 1, 1, 1, 1],  # Single voxel (entire subchunk)
+            "x_biome": [1, "NB", 16, 16, 1],  # Biome data (16x16 chunk)
+            "x_height": [1, 1, 16, 16, 1],  # Height data (16x16 chunk)
+            "x_lod": [1, 1],  # LOD level
+        },
+        "outputs": {
+            "air_mask": [1, 1, 2, 2, 2],  # 2x2x2 air/solid mask
+            "block_logits": [1, 1104, 2, 2, 2],  # 2x2x2 block type probabilities
+        },
+    },
+    "lod3to2": {
+        "inputs": {
+            "x_parent": [1, 1, 2, 2, 2],  # 2x2x2 parent voxels
+            "x_biome": [1, "NB", 16, 16, 1],  # Biome data (16x16 chunk)
+            "x_height": [1, 1, 16, 16, 1],  # Height data (16x16 chunk)
+            "x_lod": [1, 1],  # LOD level
+        },
+        "outputs": {
+            "air_mask": [1, 1, 4, 4, 4],  # 4x4x4 air/solid mask
+            "block_logits": [1, 1104, 4, 4, 4],  # 4x4x4 block type probabilities
+        },
+    },
+    "lod2to1": {
+        "inputs": {
+            "x_parent": [1, 1, 4, 4, 4],  # 4x4x4 parent voxels
+            "x_biome": [1, "NB", 16, 16, 1],  # Biome data (16x16 chunk)
+            "x_height": [1, 1, 16, 16, 1],  # Height data (16x16 chunk)
+            "x_lod": [1, 1],  # LOD level
+        },
+        "outputs": {
+            "air_mask": [1, 1, 8, 8, 8],  # 8x8x8 air/solid mask
+            "block_logits": [1, 1104, 8, 8, 8],  # 8x8x8 block type probabilities
+        },
+    },
+    "lod1to0": {
+        "inputs": {
+            "x_parent": [1, 1, 8, 8, 8],  # 8x8x8 parent voxels
+            "x_biome": [1, "NB", 16, 16, 1],  # Biome data (16x16 chunk)
+            "x_height": [1, 1, 16, 16, 1],  # Height data (16x16 chunk)
+            "x_lod": [1, 1],  # LOD level
+        },
+        "outputs": {
+            "air_mask": [1, 1, 16, 16, 16],  # 16x16x16 air/solid mask
+            "block_logits": [1, 1104, 16, 16, 16],  # 16x16x16 block type probabilities
+        },
+    },
+}
+
+# Common requirements for all LOD levels
+COMMON_REQ = {
+    "opset_min": 17,
+    "forbid_ops": {"Loop", "If", "Scan"},
+}
+
+# Legacy contract for backwards compatibility
+LEGACY_REQ = {
     "inputs": {
         "x_parent": [1, 1, 8, 8, 8],
         "x_biome": [1, "NB", 16, 16, 1],  # NB > 1, 16x16 chunk size
@@ -12,8 +71,7 @@ REQ = {
         "x_lod": [1, 1],
     },
     "outputs": {"air_mask": [1, 1, 16, 16, 16], "block_logits": [1, 1104, 16, 16, 16]},
-    "opset_min": 17,
-    "forbid_ops": {"Loop", "If", "Scan"},
+    **COMMON_REQ,
 }
 
 
@@ -30,7 +88,26 @@ def get_shape(v):
     return dims
 
 
-def main(path):
+def main(path, lod_type="lod1to0"):
+    """
+    Verify ONNX model against progressive LOD contracts.
+
+    Args:
+        path: Path to ONNX model file
+        lod_type: LOD refinement type to verify against
+                 ("lod4to3", "lod3to2", "lod2to1", "lod1to0", or "legacy")
+    """
+    if lod_type == "legacy":
+        REQ = LEGACY_REQ
+    elif lod_type in PROGRESSIVE_LOD_CONTRACTS:
+        contract = PROGRESSIVE_LOD_CONTRACTS[lod_type]
+        REQ = {**contract, **COMMON_REQ}
+    else:
+        print(f"FAIL: Unknown LOD type '{lod_type}'")
+        available = list(PROGRESSIVE_LOD_CONTRACTS.keys()) + ["legacy"]
+        print(f"Available: {available}")
+        return 1
+
     m = onnx.load(path)
     onnx.checker.check_model(m)
 
@@ -71,13 +148,17 @@ def main(path):
         return all(x == y for x, y in zip(a, b))
 
     if ins["x_parent"] != REQ["inputs"]["x_parent"]:
-        print(f"FAIL: x_parent shape - got: {ins['x_parent']}, want: {REQ['inputs']['x_parent']}")
+        print(
+            f"FAIL: x_parent shape - got: {ins['x_parent']}, " f"want: {REQ['inputs']['x_parent']}"
+        )
         return 1
     if ins["x_height"] != REQ["inputs"]["x_height"]:
-        print(f"FAIL: x_height shape - got: {ins['x_height']}, want: {REQ['inputs']['x_height']}")
+        print(
+            f"FAIL: x_height shape - got: {ins['x_height']}, " f"want: {REQ['inputs']['x_height']}"
+        )
         return 1
     if ins["x_lod"] != REQ["inputs"]["x_lod"]:
-        print(f"FAIL: x_lod shape - got: {ins['x_lod']}, want: {REQ['inputs']['x_lod']}")
+        print(f"FAIL: x_lod shape - got: {ins['x_lod']}, " f"want: {REQ['inputs']['x_lod']}")
         return 1
     xb = ins["x_biome"]
     if not (validate_biome_shape(xb)):
@@ -97,23 +178,28 @@ def main(path):
     sess_opt.inter_op_num_threads = 1
     sess = ort.InferenceSession(path, sess_options=sess_opt, providers=["CPUExecutionProvider"])
     NB = xb[1]
+
+    # Create test inputs based on parent shape
+    parent_shape = REQ["inputs"]["x_parent"]
     x = {
-        "x_parent": np.zeros((1, 1, 8, 8, 8), np.float32),
+        "x_parent": np.zeros(parent_shape, np.float32),
         "x_biome": np.eye(NB, dtype=np.float32)[np.zeros((1, 16, 16, 1), int)].transpose(
             0, 4, 1, 2, 3
-        ),  # one-hot(0)
+        ),
         "x_height": np.zeros((1, 1, 16, 16, 1), np.float32),
         "x_lod": np.zeros((1, 1), np.float32),
     }
     y = sess.run(None, x)
-    ok = y[1].shape == tuple(REQ["outputs"]["air_mask"]) and y[0].shape == tuple(
-        REQ["outputs"]["block_logits"]
-    )
+
+    expected_air_shape = tuple(REQ["outputs"]["air_mask"])
+    expected_logits_shape = tuple(REQ["outputs"]["block_logits"])
+    ok = y[1].shape == expected_air_shape and y[0].shape == expected_logits_shape
     if not ok:
         print(f"FAIL: runtime output shapes {y[0].shape}, {y[1].shape}")
+        print(f"Expected: {expected_logits_shape}, {expected_air_shape}")
         return 1
 
-    print(f"READY: opset {opset}, NB={NB}, shapes OK, runtime OK")
+    print(f"READY: {lod_type} contract, opset {opset}, NB={NB}, " f"shapes OK, runtime OK")
     return 0
 
 
@@ -128,4 +214,57 @@ def validate_biome_shape(xb):
 
 
 if __name__ == "__main__":
-    sys.exit(main(sys.argv[1] if len(sys.argv) > 1 else "artifacts/quick_test/model.onnx"))
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Verify ONNX model contracts")
+    parser.add_argument(
+        "model_path",
+        nargs="?",
+        default="artifacts/chunk_16x16/model.onnx",
+        help="Path to ONNX model file",
+    )
+    parser.add_argument(
+        "--lod-type",
+        default="lod1to0",
+        choices=list(PROGRESSIVE_LOD_CONTRACTS.keys()) + ["legacy"],
+        help="LOD contract to verify against",
+    )
+    parser.add_argument(
+        "--print-contract",
+        action="store_true",
+        help="Print the contract definition and exit",
+    )
+    args = parser.parse_args()
+
+    if args.print_contract:
+        lod_type = args.lod_type
+        if lod_type == "legacy":
+            # Use the original contract for legacy mode
+            req = {
+                "inputs": {
+                    "x_parent": [1, 1, 8, 8, 8],
+                    "x_biome": [1, "NB", 16, 16, 1],
+                    "x_height": [1, 1, 16, 16, 1],
+                    "x_lod": [1, 1],
+                },
+                "outputs": {
+                    "air_mask": [1, 1, 16, 16, 16],
+                    "block_logits": [1, 1104, 16, 16, 16],
+                },
+            }
+        else:
+            req = PROGRESSIVE_LOD_CONTRACTS.get(lod_type)
+
+        if req is not None:
+            print(f"=== Contract for {lod_type} ===")
+            import json
+
+            print(json.dumps(req, indent=2))
+            sys.exit(0)
+        else:
+            print(f"FAIL: Unknown LOD type '{lod_type}'")
+            available = list(PROGRESSIVE_LOD_CONTRACTS.keys()) + ["legacy"]
+            print(f"Available: {available}")
+            sys.exit(1)
+
+    sys.exit(main(args.model_path, args.lod_type))
