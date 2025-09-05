@@ -9,8 +9,20 @@ all LOD transitions in a single network:
 - LOD1→LOD0: 8³ → 16³
 
 Key Features:
-- Adaptive input/output processing for multiple scales
-- Multi-modal conditioning (biome, heightmap, river, Y-level, LOD)
+- Adaptive input/output processing for multiple        # Simpler 2-level UNet for 8x8x8 inputs (8→4→2, then back up)
+        self.down1 = self._make_layer(config.base_channels, config.base_channels * 2)
+        self.down2 = self._make_layer(config.base_channels * 2, config.base_channels * 4)
+
+        # Bottleneck at 2x2x2 resolution
+        self.bottleneck = self._make_layer(config.base_channels * 4, config.base_channels * 8)
+
+        # Up-sampling path
+        self.up2 = self._make_layer(
+            config.base_channels * 8 + config.base_channels * 4, config.base_channels * 4
+        )
+        self.up1 = self._make_layer(
+            config.base_channels * 4 + config.base_channels * 2, config.base_channels * 2
+        )odal conditioning (biome, heightmap, river, Y-level, LOD)
 - Dual output heads for air mask and block type prediction
 - Memory-efficient architecture suitable for training on consumer GPUs
 """
@@ -286,3 +298,227 @@ class SimpleFlexibleUNet3D(nn.Module):
         block_type_logits = self.block_type_head(final_features)
 
         return {"air_mask_logits": air_mask_logits, "block_type_logits": block_type_logits}
+
+
+class V2ConditioningFusion(nn.Module):
+    """V2 conditioning for LODiffusion inputs: x_height + x_biomefeat."""
+
+    def __init__(self, config: SimpleFlexibleConfig):
+        super().__init__()
+
+        # x_biomefeat has 6 channels: temp, prec_one_hot(3), has_prec, is_cold
+        # x_height has 1 channel
+        # Total input: 6 + 1 = 7 channels at 8×8 resolution
+        input_channels = 7
+
+        self.spatial_conv = nn.Sequential(
+            nn.Conv2d(input_channels, config.base_channels, 3, padding=1),
+            nn.BatchNorm2d(config.base_channels),
+            nn.ReLU(inplace=True),
+            # Upsample from 8×8 to 16×16 for UNet processing
+            nn.Upsample(size=(16, 16), mode="bilinear", align_corners=False),
+        )
+
+    def forward(self, x_height, x_biomefeat, x_lod):
+        """
+        Args:
+            x_height: [B,1,8,8,1] -> squeeze to [B,1,8,8]
+            x_biomefeat: [B,6,8,8,1] -> squeeze to [B,6,8,8]
+            x_lod: [B,1] (not used spatially yet)
+        """
+        # Remove the trailing dimension
+        height_2d = x_height.squeeze(-1)  # [B,1,8,8]
+        biome_2d = x_biomefeat.squeeze(-1)  # [B,6,8,8]
+
+        # Concatenate height + biome features
+        spatial_features = torch.cat([height_2d, biome_2d], dim=1)  # [B,7,8,8]
+
+        # Process and upsample to 16×16
+        conditioning = self.spatial_conv(spatial_features)  # [B,base_channels,16,16]
+
+        return conditioning
+
+
+class SimpleFlexibleUNet3D_V2(nn.Module):
+    """V2 model that accepts LODiffusion contract inputs."""
+
+    def __init__(self, config: SimpleFlexibleConfig):
+        super().__init__()
+        self.config = config
+        self.lod_embed_dim = config.lod_embed_dim
+
+        # V2 conditioning fusion for new input format
+        self.conditioning_fusion = V2ConditioningFusion(config)
+
+        # Same 3D processing as original model
+        self.input_conv = nn.Sequential(
+            nn.Conv3d(1, config.base_channels, 3, padding=1),
+            nn.BatchNorm3d(config.base_channels),
+            nn.ReLU(inplace=True),
+        )
+
+        # Down-sampling path
+        self.down1 = self._make_layer(config.base_channels, config.base_channels * 2)
+        self.down2 = self._make_layer(config.base_channels * 2, config.base_channels * 4)
+        self.down3 = self._make_layer(config.base_channels * 4, config.base_channels * 8)
+
+        # Bottleneck
+        self.bottleneck = self._make_layer(config.base_channels * 8, config.base_channels * 16)
+
+        # Up-sampling path
+        self.up3 = self._make_layer(
+            config.base_channels * 16 + config.base_channels * 8, config.base_channels * 8
+        )
+        self.up2 = self._make_layer(
+            config.base_channels * 8 + config.base_channels * 4, config.base_channels * 4
+        )
+        self.up1 = self._make_layer(
+            config.base_channels * 4 + config.base_channels * 2, config.base_channels * 2
+        )
+
+        # Final convolution combining spatial conditioning
+        self.final_conv = nn.Conv3d(
+            config.base_channels * 2 + config.base_channels, config.base_channels, 1
+        )  # Same heads as original
+        self.air_mask_head = nn.Conv3d(config.base_channels, 1, 1)
+        self.block_type_head = nn.Conv3d(config.base_channels, config.block_vocab_size, 1)
+
+    def _make_layer(self, in_channels, out_channels):
+        """Create a simple conv layer with normalization."""
+        return nn.Sequential(
+            nn.Conv3d(in_channels, out_channels, 3, padding=1),
+            nn.BatchNorm3d(out_channels),
+            nn.ReLU(inplace=True),
+            nn.Conv3d(out_channels, out_channels, 3, padding=1),
+            nn.BatchNorm3d(out_channels),
+            nn.ReLU(inplace=True),
+        )
+
+    def forward(
+        self,
+        x_parent: torch.Tensor,
+        x_height: torch.Tensor,
+        x_biomefeat: torch.Tensor,
+        x_lod: torch.Tensor,
+    ) -> Dict[str, torch.Tensor]:
+        """
+        Forward pass with v2 LODiffusion inputs.
+
+        Args:
+            x_parent: [B,1,8,8,8] parent occupancy
+            x_height: [B,1,16,16] height features at full resolution
+            x_biomefeat: [B,6,16,16] biome climate features at full resolution
+            x_lod: [B,1] LOD level
+        """
+
+        # Super-resolution approach: Start with upsampled parent at target resolution
+        # Upsample parent from 8x8x8 to 16x16x16 using trilinear interpolation
+        x_parent_upsampled = F.interpolate(
+            x_parent, size=(16, 16, 16), mode="trilinear", align_corners=False
+        )  # [B, 1, 16, 16, 16]
+
+        # Process 2D conditioning at full 16x16 resolution
+        # Add depth dimension to 2D features (broadcast along Y axis)
+        x_height_3d = x_height.unsqueeze(-1).expand(-1, -1, -1, -1, 16)  # [B, 1, 16, 16, 16]
+        x_biomefeat_3d = x_biomefeat.unsqueeze(-1).expand(-1, -1, -1, -1, 16)  # [B, 6, 16, 16, 16]
+
+        # Combine all inputs at 16x16x16 resolution
+        x = torch.cat(
+            [x_parent_upsampled, x_height_3d, x_biomefeat_3d], dim=1
+        )  # [B, 8, 16, 16, 16]
+
+        # Encoder path (16x16x16 -> 8x8x8 -> 4x4x4, stop before 2x2x2)
+        skip1 = x  # [B, 8, 16, 16, 16]
+        x = self.encoder1(x)  # [B, 64, 16, 16, 16]
+        x = self.pool1(x)  # [B, 64, 8, 8, 8]
+
+        skip2 = x  # [B, 64, 8, 8, 8]
+        x = self.encoder2(x)  # [B, 128, 8, 8, 8]
+        x = self.pool2(x)  # [B, 128, 4, 4, 4]
+
+        # Bottleneck at 4x4x4 (safe for batch norm)
+        x = self.bottleneck(x)  # [B, 256, 4, 4, 4]
+
+        # Decoder path with skip connections
+        x = self.upconv2(x)  # [B, 128, 8, 8, 8]
+        x = torch.cat([x, skip2], dim=1)  # [B, 192, 8, 8, 8]
+        x = self.decoder2(x)  # [B, 128, 8, 8, 8]
+
+        x = self.upconv1(x)  # [B, 64, 16, 16, 16]
+        x = torch.cat([x, skip1], dim=1)  # [B, 72, 16, 16, 16]
+        x = self.decoder1(x)  # [B, 64, 16, 16, 16]
+
+        # Output heads
+        air_mask_logits = self.air_head(x)  # [B, 1, 16, 16, 16]
+        block_type_logits = self.block_head(x)  # [B, num_blocks, 16, 16, 16]
+
+        return {
+            "air_mask_logits": air_mask_logits,
+            "block_type_logits": block_type_logits,
+        }
+        x = self.input_conv(x)  # (B, base_channels, 16, 16, 16)
+
+        # Encoder path with skip connections
+        skip1 = x
+        x = F.max_pool3d(x, 2)
+        x = self.down1(x)  # (B, 128, 8, 8, 8)
+
+        skip2 = x
+        x = F.max_pool3d(x, 2)
+        x = self.down2(x)  # (B, 256, 4, 4, 4)
+
+        skip3 = x
+        x = F.max_pool3d(x, 2)
+        x = self.down3(x)  # (B, 512, 2, 2, 2)
+
+        # Bottleneck - now safely at 2x2x2
+        x = F.max_pool3d(x, 2)  # (B, 512, 1, 1, 1)
+        x = self.bottleneck(x)
+
+        # Decoder path with skip connections
+        x = F.interpolate(x, scale_factor=2, mode="trilinear", align_corners=False)
+        x = torch.cat([x, skip3], dim=1)
+        x = self.up3(x)
+
+        x = F.interpolate(x, scale_factor=2, mode="trilinear", align_corners=False)
+        x = torch.cat([x, skip2], dim=1)
+        x = self.up2(x)
+
+        x = F.interpolate(x, scale_factor=2, mode="trilinear", align_corners=False)
+        x = torch.cat([x, skip1], dim=1)
+        x = self.up1(x)
+
+        # No final upsampling needed - we're already at 16x16x16
+
+        # Output heads
+        air_mask_logits = self.air_head(x)
+        block_type_logits = self.block_head(x)
+
+        return {
+            "air_mask_logits": air_mask_logits,
+            "block_type_logits": block_type_logits,
+        }
+
+        # Decoder path with skip connections
+        x = F.interpolate(x, scale_factor=2, mode="trilinear", align_corners=False)
+        x = torch.cat([x, skip3], dim=1)
+        x = self.up3(x)
+
+        x = F.interpolate(x, scale_factor=2, mode="trilinear", align_corners=False)
+        x = torch.cat([x, skip2], dim=1)
+        x = self.up2(x)
+
+        x = F.interpolate(x, scale_factor=2, mode="trilinear", align_corners=False)
+        x = torch.cat([x, skip1], dim=1)
+        x = self.up1(x)
+
+        # No final upsampling needed - we're already at 16x16x16
+
+        # Output heads
+        air_mask_logits = self.air_head(x)
+        block_type_logits = self.block_head(x)
+
+        return {
+            "air_mask_logits": air_mask_logits,
+            "block_type_logits": block_type_logits,
+        }
