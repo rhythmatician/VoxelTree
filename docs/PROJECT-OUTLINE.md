@@ -1,146 +1,194 @@
-# 🌲 VoxelTree Project Outline — **Current Status (2025‑06‑05)**
+# 🌲 VoxelTree Project Outline
 
 > **TDD workflow legend**
-> **[X]** = Cycle complete (RED → GREEN → REFACTOR)  **[ ]** = Not started  **[\~]** = In‑progress  **[🆕]** = Added or heavily modified since last outline
+> **[X]** = Cycle complete (RED → GREEN → REFACTOR)  **[ ]** = Not started  **[~]** = In-progress  **[🆕]** = Added/changed in this outline
 
 ---
 
-## ✅ Phase 0 — Developer Infrastructure
+## ✅ Phase 0 — Developer Infrastructure
 
-**Status:** Complete
+**Status:** Complete
 
-| Cycle    | Goal                 | Notes                                                         |
-| -------- | -------------------- | ------------------------------------------------------------- |
-| [X] 0.1 | Repo scaffold        | `train/`, `scripts/`, `tests/`, `docs/` skeletons in place    |
-| [X] 0.2 | CI + pre‑commit      | GitHub Actions matrix (Ubuntu & Windows) + `pre‑commit` hooks |
-| [X] 0.3 | `config.yaml` loader | Centralised schema validation & env overrides                 |
-
----
-
-## ✅ Phase 0B — Real Chunk Generation *(Vanilla 1.21.5 compatible)*
-
-**Status:** Complete — 🆕 full refactor
-
-Implemented headless Fabric server bootstrap plus Chunky pregeneration. Region decode now uses **`anvil` (package: `anvil‑parser2`)** with verified 1.18 + support. Outputs: 16³ tensors, downsampled 8³ parents, persisted as `.npz`.
-
-| Cycle     | Goal                      | Result                                                           |
-| --------- | ------------------------- | ---------------------------------------------------------------- |
-| [X] 0B.1 | Headless chunkgen CLI     | `scripts/worldgen/bootstrap.py` spawns & scripts Fabric + Chunky |
-| [X] 0B.2 | Validate `.mca` structure | Integrity tests ensure expected chunk sections exist             |
-| [X] 0B.3 | Extract 16³ block arrays  | `scripts/extraction/chunk_extractor.py` converts NBT → numpy     |
-| [X] 0B.4 | Downsample → 8³           | Verified pooling alignment unit tests                            |
-| [X] 0B.5 | Save real‑data `.npz`     | Parity with seed‑only format confirmed                           |
+| Cycle    | Goal            | Notes                                           |
+| -------- | --------------- | ----------------------------------------------- |
+| [X] 0.1 | Repo scaffold   | `train/`, `scripts/`, `tests/`, `docs/`         |
+| [X] 0.2 | CI + pre-commit | GH Actions (Linux/Windows) + `pre-commit` hooks |
+| [X] 0.3 | Config loader   | Central schema + env overrides                  |
 
 ---
 
-## ✅ Phase 1 — `.mca` Chunk Extraction *(Legacy mock remains for regression)*
+## 🆕 Phase 0B — Worldgen Integration (Fabric **1.21.5**) & Caching
 
-**Status:** Complete – superseded by 0B but kept for sanity tests.
+**Status:** [~] In-progress (new API-aligned design)
 
-| Cycle        | Goal                             | Result                                        |
-| ------------ | -------------------------------- | --------------------------------------------- |
-| [X] 1.1–1.5 | Mock extractor + multiproc batch | Tests still pass to guard against regressions |
+**Principles**
 
----
+* **Cache at API granularity** (no upsampling in the mod).
 
-## ✅ Phase 1B — Seed‑Based Input Generation
+  * Heightmaps: **16×16** planes (`WORLD_SURFACE_WG`, `OCEAN_FLOOR_WG`), plus derived `slope_x`, `slope_z`, `curvature`.
+  * Biomes: **4×4×4** quart lattice features (temp, precip[3], isCold).
+  * NoiseRouter slices: **16×16 @ 1 Y** for `temperature, vegetation, continents, erosion, depth, ridges` (Router-6).
+  * Optional: `barrier` (16×16), `aquifer` trio (16×16), **coarse cave prior** (4×4×4 or 8×8×8).
+* **Downsample only** when feeding early LODs; **all upsampling is done inside the ONNX models**.
+* **Vanilla carve** is **kept** and called only at **LOD0**.
 
-**Status:** Complete
-
-Generates biome IDs, heightmap slices, river noise & patch coordinates purely from `(seed, x, z)` via `tools/voxeltree_cubiomes_cli/`. Output cached as `.npz`.
-
----
-
-## ✅ Phase 2 — LOD Patch Pairing
-
-**Status:** Complete
-
-Parent 8³ + child 16³ + seed‑derived conditioning zipped into training samples; cross‑checked alignment tests.
+| Cycle      | Goal                             | Notes                                                                     |
+| ---------- | -------------------------------- | ------------------------------------------------------------------------- |
+| [🆕] 0B.1 | `NoiseTap` interface + impl      | One-call capture per chunk; returns native-grid tensors                   |
+| [🆕] 0B.2 | `FeatureBundle` cache + LRU      | In-mem LRU + optional sidecar on disk; keyed by `ChunkPos`                |
+| [🆕] 0B.3 | Normalization plumbing           | Heights (min-max by world limits), Router/Aquifer (z-score), flags [0,1] |
+| [🆕] 0B.4 | Parity tests vs vanilla samplers | Unit tests for heights/biomes/router consistency                          |
 
 ---
 
-## ✅ Phase 3 — Dataset Loader
+## 🆕 Phase 1 — Dataset Respec (Native Caches → LOD Targets)
 
-**Status:** Complete (Phase 3.1 REF factor finished)
+**Status:** [ ] Not started
 
-`train/dataset.py` + custom collator support lazy NPZ loading, optional RAM cache, and full type hints. All data‑shape validation tests pass.
-
----
-
-## ✅ Phase 4 — Model Architecture
-
-**Status:** Complete
-
-`train/unet3d.py` implements multichannel 3‑D U‑Net with dual heads (block logits, air mask) and integrated conditioning (biome, height, river, LOD positional encoding).
-
-| Cycle    | Goal                    |
-| -------- | ----------------------- |
-| [X] 4.1 | Instantiate network     |
-| [X] 4.2 | Forward pass (8³ → 16³) |
-| [X] 4.3 | Conditioning inputs     |
-| [X] 4.4 | LOD timestep embedding  |
+| Cycle     | Goal                          | Notes                                                            |
+| --------- | ----------------------------- | ---------------------------------------------------------------- |
+| [🆕] 1.1 | Cache-driven dataset builder  | Read native caches; no upsampling; emit shared inputs            |
+| [🆕] 1.2 | LOD targets (1³/2³/4³/8³/16³) | Majority downscaling for labels; `air_mask` as mean(air)         |
+| [🆕] 1.3 | Channel stats export          | Per-channel mean/std (Router/Aquifer/Cave), world height min/max |
+| [🆕] 1.4 | `test_vectors.npz` generation | Golden vectors for DJL parity                                    |
 
 ---
 
-## ✅ Phase 5 — Training Loop
+## 🆕 Phase 2 — Model Family v3 (5 Static-Shape ONNX Models)
 
-**Status:** Complete
+**Status:** [ ] Not started
 
-`train/trainer.py` handles epoch loop, gradient step (`train/step.py`), checkpoint save/resume, CSV & TensorBoard logging (`train/logger.py`). End‑to‑end dry‑run integration test passes.
+**Design rules**
 
-| Cycle    | Goal               |
-| -------- | ------------------ |
-| [X] 5.1 | One‑epoch dry run  |
-| [X] 5.2 | Checkpoint saving  |
-| [X] 5.3 | Resume training    |
-| [X] 5.4 | Logging (CSV + TB) |
+* Five models: **Init (noise→LOD4)**, then **LOD4→3**, **3→2**, **2→1**, **1→0**.
+* Pure Conv3D + GroupNorm + ReLU (+ Resize/nearest or strided-conv) — **no dynamic ops**.
+* Inputs are **exact shared cached tensors**; only `x_parent_prev` size changes per LOD.
+* Optional channels (`barrier`, `aquifer`, `cave_prior`) are **zero-fillable**.
 
----
-
-## 🧪 Phase 6 — Evaluation & Visualization
-
-**Status:** [ ] Not started
-
-| Planned Cycle | Goal                                 |
-| ------------- | ------------------------------------ |
-| 6.1           | Accuracy metrics (mask & block type) |
-| 6.2           | IoU / Dice scores                    |
-| 6.3           | 3‑D voxel render previews            |
+| Cycle     | Goal                               | Notes                                             |
+| --------- | ---------------------------------- | ------------------------------------------------- |
+| [🆕] 2.1 | Init micro-UNet (outputs 1³)       | Fastest; establishes first coarse voxel           |
+| [🆕] 2.2 | LOD refine UNets (2³, 4³, 8³, 16³) | Width caps scale with D; CPU-friendly             |
+| [🆕] 2.3 | Internal resize blocks             | Models upsample planar/biome/parent internally    |
+| [🆕] 2.4 | Config stubs per model             | `model_config.json` names, shapes, norms, palette |
 
 ---
 
-## 📤 Phase 7 — ONNX Export
+## 🆕 Phase 3 — Training & Ablations
 
-**Status:** [ ] Not started
+**Status:** [ ] Not started
 
-| Planned Cycle | Goal                          |
-| ------------- | ----------------------------- |
-| 7.1           | Export to ONNX                |
-| 7.2           | PyTorch vs ONNX parity tests  |
-| 7.3           | Static‑shape compliance check |
-
----
-
-## 🚦 Phase 8 — Disk‑Aware Batch Controller
-
-**Status:** [ ] Not started
-
-| Planned Cycle | Goal                            |
-| ------------- | ------------------------------- |
-| 8.1           | Cap disk usage during chunk gen |
-| 8.2           | Auto‑purge old batches          |
-| 8.3           | Generation history tracking     |
-| 8.4           | Retry failed patch extracts     |
+| Cycle     | Goal                                     | Notes                               |
+| --------- | ---------------------------------------- | ----------------------------------- |
+| [🆕] 3.1 | Baseline: Height+Biome+Coords+LOD+Parent | No Router/Aquifer/Cave              |
+| [🆕] 3.2 | + Router-6 (2D slice)                    | Check seam/shore coherence & IoU    |
+| [🆕] 3.3 | + Barrier (2D)                           | Deltas on deltas; coastal crispness |
+| [🆕] 3.4 | + Aquifer (2D)                           | Surface wetness fidelity            |
+| [🆕] 3.5 | + Cave prior (4³) **only for LOD1→0**    | Underground fidelity vs cost        |
+| [🆕] 3.6 | Timing: sampling+inference per LOD       | Keep <100 ms/patch budget           |
 
 ---
 
-## 📌 Immediate Next Steps
+## 🆕 Phase 4 — Evaluation & Visualization
 
-1. Kick off Phase 6: draft RED tests for metrics & renders.
-2. Prototype lightweight voxel visualiser (matplotlib ↔ trame) for QA.
-3. Begin ONNX export early—catch unsupported ops ASAP.
-4. Draft spec for Phase 8 (likely SQLite state + daemonized worker).
+**Status:** [ ] Not started
+
+| Cycle | Goal                                          |
+| ----: | --------------------------------------------- |
+|   4.1 | Accuracy (block IoU/Dice) + `air_mask` MAE    |
+|   4.2 | **Seam metrics** across chunk borders         |
+|   4.3 | Coastline continuity (edge/PSNR at sea level) |
+|   4.4 | 3-D voxel preview (fast viewer)               |
 
 ---
 
-*Outline refreshed on **2025‑06‑05** based on branch `feat‑headless‑chunk‑maker`.*
+## 🆕 Phase 5 — ONNX Export (x5) & Parity
+
+**Status:** [ ] Not started
+
+| Cycle | Goal                          | Notes                          |
+| ----: | ----------------------------- | ------------------------------ |
+|   5.1 | Export 5 models to ONNX 1.12+ | Static shapes only             |
+|   5.2 | PyTorch↔ONNX numeric parity   | Use `test_vectors.npz`         |
+|   5.3 | Op audit                      | Conv3D/GN/ReLU/Resize only     |
+|   5.4 | Size & memory checks          | <~2 MB per patch at inference |
+
+---
+
+## 🆕 Phase 6 — LODiffusion Runtime Integration
+
+**Status:** [ ] Not started
+
+| Cycle | Goal                                                 |
+| ----: | ---------------------------------------------------- |
+|   6.1 | Java tensor packer (shared inputs → ONNX I/O shapes) |
+|   6.2 | Progressive loop: Init → 4→3 → 3→2 → 2→1 → 1→0       |
+|   6.3 | Caching: `FeatureBundle` LRU + optional sidecar      |
+|   6.4 | **Vanilla carve** only at LOD0                       |
+|   6.5 | Metrics & logs: sampling ms / inference ms per stage |
+
+---
+
+## 🆕 Phase 7 — Performance & Reliability
+
+**Status:** [ ] Not started
+
+| Cycle | Goal                                        |
+| ----: | ------------------------------------------- |
+|   7.1 | Disk-aware cache management (evict/TTL)     |
+|   7.2 | Graceful fallback (missing cache → rebuild) |
+|   7.3 | Seed/coord determinism tests                |
+|   7.4 | Memory caps & GC-safe buffers               |
+
+---
+
+## 📌 Immediate Next Steps
+
+1. Implement **NoiseTap (0B.1)** + **FeatureBundle (0B.2)** with unit tests.
+2. Draft **five `model_config.json` stubs** (Phase 2.4) with shapes below.
+3. Build **dataset respec** (Phase 1.1–1.3) and emit first `test_vectors.npz`.
+4. Start **Init model** (Phase 2.1) and verify end-to-end through DJL with the vectors.
+
+---
+
+## 📎 Spec Appendix — **Unified I/O (5 Models)**
+
+**Shared cached inputs (produced once; no upsampling in the mod)**
+
+* `x_height_planes` → **[1,5,1,16,16]**
+  *(surface, ocean_floor, slope_x, slope_z, curvature)*
+* `x_biome_quart` → **[1,6,4,4,4]**
+  *(temp, precip[3], isCold, downfall)*
+* `x_router6` → **[1,6,1,16,16]**
+  *(temperature, vegetation, continents, erosion, depth, ridges)*
+* *(opt)* `x_barrier` → **[1,1,1,16,16]**
+* *(opt)* `x_aquifer3` → **[1,3,1,16,16]**
+* *(opt)* `x_cave_prior4` → **[1,1,4,4,4]**
+* Scalars: `x_chunk_pos` **[1,2]**, `x_lod` **[1,1]**
+
+> **Normalization**: heights (min-max by world limits), Router/Aquifer/Cave (z-score), flags [0,1], coords via affine/tanh.
+> **Palette**: `N_blocks` documented per dataset in `model_config.json`.
+
+**Per-model inputs/outputs**
+
+| Model | Purpose     | `x_parent_prev`          | Outputs (`block_logits`, `air_mask`)     |
+| ----: | ----------- | ------------------------ | ---------------------------------------- |
+|     0 | Init → LOD4 | **[1,1,1,1,1]** (zeros) | **[1,N,1,1,1]**, **[1,1,1,1,1]**       |
+|     1 | LOD4 → LOD3 | **[1,1,1,1,1]**         | **[1,N,2,2,2]**, **[1,1,2,2,2]**       |
+|     2 | LOD3 → LOD2 | **[1,1,2,2,2]**         | **[1,N,4,4,4]**, **[1,1,4,4,4]**       |
+|     3 | LOD2 → LOD1 | **[1,1,4,4,4]**         | **[1,N,8,8,8]**, **[1,1,8,8,8]**       |
+|     4 | LOD1 → LOD0 | **[1,1,8,8,8]**         | **[1,N,16,16,16]**, **[1,1,16,16,16]** |
+
+**Policy highlights**
+
+* **No upsampling in the mod**; models contain static Resize/conv to align inputs with their internal grid.
+* **Downsampling** only when feeding earlier LODs (handled **inside** the training/inference graphs for parity).
+* **Vanilla `carve()`** runs only at **LOD0** to finalize caves/aquifers/structures.
+
+---
+
+### Notes on previous outline
+
+* Old phases **0B/1/2/3/4/5** (seed-only + single UNet) are **superseded** by the five-model family and API-native caching.
+* “Water depth” input was **removed**; the model learns `surface − ocean_floor` implicitly.
+* Chunk coordinate pair `(chunkX,chunkZ)` is now an explicit scalar input for global coherence.
