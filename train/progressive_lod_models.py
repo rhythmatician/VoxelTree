@@ -198,83 +198,92 @@ class VanillaConditioningFusion(nn.Module):
 
 class ProgressiveLODModel0_Initial(nn.Module):
     """
-    Model 0: Initial terrain generation (no parent input)
+    Model 0: Initial terrain generation (Nothing→LOD4: 1×1×1)
     Generates the very first LOD from conditioning inputs only.
 
-    Outputs: [1, N_blocks, 1, 1, 1] or [1, N_blocks, 2, 2, 2]
+    This is a lightweight model since it only predicts 1 voxel.
+    Outputs: [1, N_blocks, 1, 1, 1]
     """
 
-    def __init__(self, config: SimpleFlexibleConfig, output_size: int = 2):
+    def __init__(self, config: SimpleFlexibleConfig, output_size: int = 1):
         super().__init__()
         self.config = config
-        self.output_size = output_size  # 1 or 2
+        self.output_size = output_size  # Should be 1 for LOD4
 
-        # Enhanced conditioning fusion
-        self.conditioning_fusion = VanillaConditioningFusion()
+        # Compact feature dimensions for single voxel prediction
+        hidden_dim = 16  # Much smaller than base_channels=32
 
-        # No parent encoder - start from conditioning only
-        # Main processing layers
-        self.main_conv = nn.Sequential(
-            self._make_layer(config.base_channels, config.base_channels * 2),
-            self._make_layer(config.base_channels * 2, config.base_channels * 4),
-            self._make_layer(config.base_channels * 4, config.base_channels * 2),
-            self._make_layer(config.base_channels * 2, config.base_channels),
-        )
+        # Lightweight conditioning processor
+        self.height_processor = nn.Linear(5, hidden_dim // 4)  # 5→4
+        self.biome_processor = nn.Linear(6 * 4 * 4 * 4, hidden_dim // 4)  # 384→4
+        self.router6_processor = nn.Linear(6, hidden_dim // 4)  # 6→4
+        self.coord_processor = nn.Linear(2, hidden_dim // 8)  # 2→2
+        self.lod_embedding = nn.Embedding(8, hidden_dim // 8)  # →2
 
-        # Output heads
-        self.air_head = nn.Conv3d(config.base_channels, 1, kernel_size=1)
-        self.block_head = nn.Conv3d(config.base_channels, config.block_vocab_size, kernel_size=1)
+        # Total: 4+4+4+2+2 = 16 features
 
-    def _make_layer(self, in_channels: int, out_channels: int) -> nn.Module:
-        """Create conv layer with normalization and activation."""
-        return nn.Sequential(
-            nn.Conv3d(in_channels, out_channels, kernel_size=3, padding=1),
-            nn.BatchNorm3d(out_channels),
+        # Compact processing network (much smaller than UNet)
+        self.processor = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim * 2),
             nn.ReLU(inplace=True),
-            nn.Conv3d(out_channels, out_channels, kernel_size=3, padding=1),
-            nn.BatchNorm3d(out_channels),
+            nn.Dropout(0.1),
+            nn.Linear(hidden_dim * 2, hidden_dim),
+            nn.ReLU(inplace=True),
+            nn.Dropout(0.1),
+            nn.Linear(hidden_dim, hidden_dim // 2),
             nn.ReLU(inplace=True),
         )
+
+        # Output heads - predict single voxel directly
+        self.air_head = nn.Linear(hidden_dim // 2, 1)
+        self.block_head = nn.Linear(hidden_dim // 2, config.block_vocab_size)
 
     def forward(
         self,
-        x_height_planes: torch.Tensor,  # [1,5,1,16,16]
-        x_biome_quart: torch.Tensor,  # [1,6,4,4,4]
-        x_router6: torch.Tensor,  # [1,6,1,16,16]
-        x_chunk_pos: torch.Tensor,  # [1,2]
-        x_lod: torch.Tensor,  # [1,1]
-        x_barrier: Optional[torch.Tensor] = None,  # [1,1,1,16,16]
-        x_aquifer3: Optional[torch.Tensor] = None,  # [1,3,1,16,16]
-        x_cave_prior4: Optional[torch.Tensor] = None,  # [1,1,4,4,4]
+        x_height_planes: torch.Tensor,  # [B,5,1,16,16]
+        x_biome_quart: torch.Tensor,  # [B,6,4,4,4]
+        x_router6: torch.Tensor,  # [B,6,1,16,16]
+        x_chunk_pos: torch.Tensor,  # [B,2]
+        x_lod: torch.Tensor,  # [B,1]
+        x_barrier: Optional[torch.Tensor] = None,  # [B,1,1,16,16]
+        x_aquifer3: Optional[torch.Tensor] = None,  # [B,3,1,16,16]
+        x_cave_prior4: Optional[torch.Tensor] = None,  # [B,1,4,4,4]
     ) -> Dict[str, torch.Tensor]:
+        """Predict a single voxel at LOD4 from conditioning inputs.
+
+        Strategy: aggressively pool inputs to scalars per-channel, then MLP.
         """
-        Generate initial terrain from conditioning inputs only.
-        No parent input since this is the first/coarsest level.
-        """
-        # Fuse conditioning inputs into spatial features
-        conditioning_features = self.conditioning_fusion(
-            x_height_planes,
-            x_biome_quart,
-            x_router6,
-            x_chunk_pos,
-            x_lod,
-            self.output_size,
-            x_barrier,
-            x_aquifer3,
-            x_cave_prior4,
-        )  # [1, base_channels, output_size, output_size, output_size]
+        B = x_height_planes.shape[0]
 
-        # Main processing (no downsampling needed since we generated at target size)
-        features = self.main_conv(conditioning_features)
+        # Reduce height planes: average over 16x16 to get 5 scalars per sample
+        height_2d = x_height_planes.squeeze(2)  # [B,5,16,16]
+        height_vec = height_2d.mean(dim=(2, 3))  # [B,5]
+        h_feat = self.height_processor(height_vec)  # [B,4]
 
-        # Generate outputs
-        air_mask_logits = self.air_head(features)
-        block_type_logits = self.block_head(features)
+        # Reduce router6: average over 16x16 to get 6 scalars per sample
+        router2d = x_router6.squeeze(2)  # [B,6,16,16]
+        router_vec = router2d.mean(dim=(2, 3))  # [B,6]
+        r_feat = self.router6_processor(router_vec)  # [B,4]
 
-        return {
-            "air_mask_logits": air_mask_logits,
-            "block_type_logits": block_type_logits,
-        }
+        # Reduce biome quart: flatten 4x4x4 to 96 scalars per channel then FC
+        biome_vec = x_biome_quart.view(B, -1)  # [B,6*4*4*4]
+        b_feat = self.biome_processor(biome_vec)  # [B,4]
+
+        # Coordinates and LOD embed
+        lod_emb = self.lod_embedding(x_lod.squeeze(-1))  # [B,2]
+        coord_feat = self.coord_processor(x_chunk_pos)  # [B,2]
+
+        # Concatenate into 16-dim vector
+        fused = torch.cat([h_feat, r_feat, b_feat, coord_feat, lod_emb], dim=1)  # [B,16]
+
+        # Process
+        z = self.processor(fused)  # [B,8]
+
+        # Heads -> reshape to 3D 1x1x1 outputs
+        air_logit = self.air_head(z).view(B, 1, 1, 1, 1)
+        block_logits = self.block_head(z).view(B, self.config.block_vocab_size, 1, 1, 1)
+
+        return {"air_mask_logits": air_logit, "block_type_logits": block_logits}
 
 
 class ProgressiveLODModel(nn.Module):
@@ -283,6 +292,7 @@ class ProgressiveLODModel(nn.Module):
     i.e. LOD4→LOD3, LOD3→LOD2, LOD2→LOD1, LOD1→LOD0
 
     The output size is determined by the LOD level:
+    - Model0:  Nothing→LOD4: 1×1×1
     - LOD4→LOD3: 2×2×2
     - LOD3→LOD2: 4×4×4
     - LOD2→LOD1: 8×8×8
