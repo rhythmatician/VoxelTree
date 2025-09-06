@@ -129,7 +129,7 @@ class ChunkExtractor:
                 heightmap = self.compute_heightmap(block_types)
 
             except Exception as chunk_error:
-                logger.warning(
+                logger.error(
                     f"Failed to extract chunk ({chunk_x}, {chunk_z}) "
                     f"from {region_file.name}: {chunk_error}"
                 )
