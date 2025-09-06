@@ -1,0 +1,118 @@
+{
+    "modelName": "lodiffusion_lod2_to_lod1",
+    "version": "1.0.0",
+    "inputs": {
+        "x_parent_prev": [
+            1,
+            1104,
+            4,
+            4,
+            4
+        ],
+        "x_height_planes": [
+            1,
+            5,
+            1,
+            16,
+            16
+        ],
+        "x_biome_quart": [
+            1,
+            6,
+            4,
+            4,
+            4
+        ],
+        "x_router6": [
+            1,
+            6,
+            1,
+            16,
+            16
+        ],
+        "x_chunk_pos": [
+            1,
+            2
+        ],
+        "x_lod": [
+            1,
+            1
+        ]
+    },
+    "optionalInputs": {
+        "x_barrier": [
+            1,
+            1,
+            1,
+            16,
+            16
+        ],
+        "x_aquifer3": [
+            1,
+            3,
+            1,
+            16,
+            16
+        ],
+        "x_cave_prior4": [
+            1,
+            1,
+            4,
+            4,
+            4
+        ]
+    },
+    "outputs": {
+        "block_logits": [
+            1,
+            256,
+            8,
+            8,
+            8
+        ],
+        "air_mask": [
+            1,
+            1,
+            8,
+            8,
+            8
+        ]
+    },
+    "normalization": {
+        "heights": {
+            "type": "minmax",
+            "bottomY": -64,
+            "height": 384
+        },
+        "router6": {
+            "type": "zscore",
+            "mean": [
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0
+            ],
+            "std": [
+                1.0,
+                1.0,
+                1.0,
+                1.0,
+                1.0,
+                1.0
+            ]
+        },
+        "biome": {
+            "type": "mixed"
+        },
+        "coords": {
+            "type": "tanh",
+            "scale": 1000.0
+        }
+    },
+    "blockPalette": {
+        "size": 256,
+        "mapping": "standard_minecraft_blocks.json"
+    }
+}
