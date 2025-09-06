@@ -58,7 +58,7 @@
     "outputs": {
         "block_logits": [
             1,
-            256,
+            1104,
             1,
             1,
             1
@@ -105,7 +105,7 @@
         }
     },
     "blockPalette": {
-        "size": 256,
+        "size": 1104,
         "mapping": "standard_minecraft_blocks.json"
     }
 }
