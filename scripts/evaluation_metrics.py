@@ -100,7 +100,6 @@ class VoxelMetrics:
             air_mask_true: (B, 1, H, W, D) true air mask (0=air, 1=solid)
             lod_indices: (B,) LOD level indices for per-LOD tracking
         """
-        batch_size = predictions.shape[0]
 
         # Convert predictions to indices
         pred_indices = torch.argmax(predictions, dim=1)  # (B, H, W, D)
@@ -453,7 +452,7 @@ class RolloutEvaluator:
         Returns:
             Rollout evaluation results
         """
-        results = {
+        results: Dict[str, Any] = {
             "steps": [],
             "occupancy_progression": [],
             "consistency_metrics": [],
