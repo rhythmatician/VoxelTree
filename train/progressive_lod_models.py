@@ -121,26 +121,25 @@ class VanillaConditioningFusion(nn.Module):
 
         # Process 3D biome features (upsample from 4×4×4 to output size)
         biome_feat = self.biome_processor(x_biome_quart)  # [B,4,4,4,4]
-        if output_size != 4:
-            scale_factor = output_size / 4
-            biome_feat = nn.functional.interpolate(
-                biome_feat, scale_factor=scale_factor, mode="trilinear", align_corners=False
-            )  # [B,4,output_size,output_size,output_size]
+        biome_feat = nn.functional.interpolate(
+            biome_feat,
+            size=(output_size, output_size, output_size),
+            mode="trilinear",
+            align_corners=False,
+        )  # [B,4,output_size,output_size,output_size]
 
         # Process coordinates + LOD
         lod_emb = self.lod_embedding(x_lod.squeeze(-1))  # [B,lod_embed_dim]
         coord_feat = self.coord_processor(torch.cat([x_chunk_pos, lod_emb], dim=1))  # [B,4]
 
         # Broadcast 2D features to 3D at output size
-        if output_size != 16:
-            # Resize 2D features to match output size
-            scale_factor = output_size / 16
-            height_feat = nn.functional.interpolate(
-                height_feat, scale_factor=scale_factor, mode="bilinear", align_corners=False
-            )
-            router6_feat = nn.functional.interpolate(
-                router6_feat, scale_factor=scale_factor, mode="bilinear", align_corners=False
-            )
+        # Resize 2D features to match output size exactly
+        height_feat = nn.functional.interpolate(
+            height_feat, size=(output_size, output_size), mode="bilinear", align_corners=False
+        )
+        router6_feat = nn.functional.interpolate(
+            router6_feat, size=(output_size, output_size), mode="bilinear", align_corners=False
+        )
 
         # Broadcast to 3D
         height_3d = height_feat.unsqueeze(-1).expand(-1, -1, -1, -1, output_size)
@@ -156,32 +155,29 @@ class VanillaConditioningFusion(nn.Module):
         if x_barrier is not None:
             barrier_2d = x_barrier.squeeze(2)  # [B,1,16,16]
             barrier_feat = self.barrier_processor(barrier_2d)  # [B,2,16,16]
-            if output_size != 16:
-                scale_factor = output_size / 16
-                barrier_feat = nn.functional.interpolate(
-                    barrier_feat, scale_factor=scale_factor, mode="bilinear", align_corners=False
-                )
+            barrier_feat = nn.functional.interpolate(
+                barrier_feat, size=(output_size, output_size), mode="bilinear", align_corners=False
+            )
             barrier_3d = barrier_feat.unsqueeze(-1).expand(-1, -1, -1, -1, output_size)
             features.append(barrier_3d)  # +2 channels
 
         if x_aquifer3 is not None:
             aquifer_2d = x_aquifer3.squeeze(2)  # [B,3,16,16]
             aquifer_feat = self.aquifer_processor(aquifer_2d)  # [B,4,16,16]
-            if output_size != 16:
-                scale_factor = output_size / 16
-                aquifer_feat = nn.functional.interpolate(
-                    aquifer_feat, scale_factor=scale_factor, mode="bilinear", align_corners=False
-                )
+            aquifer_feat = nn.functional.interpolate(
+                aquifer_feat, size=(output_size, output_size), mode="bilinear", align_corners=False
+            )
             aquifer_3d = aquifer_feat.unsqueeze(-1).expand(-1, -1, -1, -1, output_size)
             features.append(aquifer_3d)  # +4 channels
 
         if x_cave_prior4 is not None:
             cave_feat = self.cave_processor(x_cave_prior4)  # [B,2,4,4,4]
-            if output_size != 4:
-                scale_factor = output_size / 4
-                cave_feat = nn.functional.interpolate(
-                    cave_feat, scale_factor=scale_factor, mode="trilinear", align_corners=False
-                )
+            cave_feat = nn.functional.interpolate(
+                cave_feat,
+                size=(output_size, output_size, output_size),
+                mode="trilinear",
+                align_corners=False,
+            )
             features.append(cave_feat)  # +2 channels
 
         # Combine all features
@@ -309,21 +305,24 @@ class ProgressiveLODModel(nn.Module):
         # Conditioning fusion
         self.conditioning_fusion = VanillaConditioningFusion(hidden_dim=config.base_channels)
 
-        # Parent processing (if parent exists)
-        if output_size > 2:  # Has a parent from previous LOD
-            self.parent_encoder = nn.Sequential(
+        # Parent processing (for all progressive stages >= 2 we have a parent)
+        if self.output_size >= 2:
+            # Encode parent occupancy; upsampling will be handled dynamically in forward
+            self.parent_pre = nn.Sequential(
                 nn.Conv3d(1, config.base_channels, 3, padding=1),
                 nn.BatchNorm3d(config.base_channels),
                 nn.ReLU(inplace=True),
-                nn.Upsample(scale_factor=2, mode="trilinear", align_corners=False),  # 2× upsampling
+            )
+            self.parent_post = nn.Sequential(
                 nn.Conv3d(config.base_channels, config.base_channels, 3, padding=1),
                 nn.BatchNorm3d(config.base_channels),
                 nn.ReLU(inplace=True),
             )
-            combined_channels = config.base_channels * 2  # parent + conditioning
+            combined_channels = config.base_channels * 2
         else:
-            self.parent_encoder = None
-            combined_channels = config.base_channels  # conditioning only
+            self.parent_pre = None
+            self.parent_post = None
+            combined_channels = config.base_channels
 
         # Main processing layers
         self.main_conv = nn.Sequential(
@@ -354,7 +353,7 @@ class ProgressiveLODModel(nn.Module):
         x_router6: torch.Tensor,  # [1,6,1,16,16]
         x_chunk_pos: torch.Tensor,  # [1,2]
         x_lod: torch.Tensor,  # [1,1]
-        # Parent input (None for LOD4→LOD3)
+        # Parent input (required for stages with output_size >= 2; e.g., LOD4→LOD3 uses 1³ parent)
         x_parent_prev: Optional[torch.Tensor] = None,  # [1,1,parent_size,parent_size,parent_size]
         # Optional inputs
         x_barrier: Optional[torch.Tensor] = None,  # [1,1,1,16,16]
@@ -380,10 +379,19 @@ class ProgressiveLODModel(nn.Module):
         )  # [B, base_channels, output_size, output_size, output_size]
 
         # Process parent if available
-        if self.parent_encoder is not None and x_parent_prev is not None:
-            parent_features = self.parent_encoder(
-                x_parent_prev
-            )  # [B, base_channels, output_size, output_size, output_size]
+        if self.parent_pre is not None and x_parent_prev is not None:
+            # Encode at native parent resolution
+            parent_features = self.parent_pre(x_parent_prev)
+            # Upsample to match current output_size if needed
+            if parent_features.shape[-1] != self.output_size:
+                parent_features = nn.functional.interpolate(
+                    parent_features,
+                    size=(self.output_size, self.output_size, self.output_size),
+                    mode="trilinear",
+                    align_corners=False,
+                )
+            # Finish parent feature processing
+            parent_features = self.parent_post(parent_features)
             combined = torch.cat([parent_features, conditioning_features], dim=1)
         else:
             combined = conditioning_features
