@@ -8,7 +8,7 @@ Implements a single training step that:
 - Updates model parameters
 """
 
-from typing import Any, Callable, Dict
+from typing import Callable, Dict
 
 import torch
 import torch.nn as nn

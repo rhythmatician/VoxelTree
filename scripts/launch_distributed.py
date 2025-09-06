@@ -16,7 +16,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
-from typing import List, Optional
+from typing import List
 
 import torch
 import yaml

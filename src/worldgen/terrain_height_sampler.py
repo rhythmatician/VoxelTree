@@ -1,7 +1,7 @@
 # terrain_height_sampler.py
 # Reconstructed from verified WebAssembly logic (Chunkbase Seed Map)
 
-from math import cos, pi, sin
+from math import cos, sin
 from typing import NamedTuple
 
 # -------------------------

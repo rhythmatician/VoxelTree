@@ -10,7 +10,6 @@ RED Phase: These tests MUST FAIL initially if the model ignores conditioning inp
 import pytest
 import torch
 
-from train.unet3d import SimpleFlexibleConfig, SimpleFlexibleUNet3D
 
 
 class TestConditioning:

@@ -10,19 +10,12 @@ Tests the basic training loop with:
 
 import csv
 import json
-import shutil
 import tempfile
 from pathlib import Path
-from unittest.mock import MagicMock, patch
 
-import numpy as np
 import pytest
 import torch
-import torch.nn as nn
-import yaml
 
-from train.dataset import VoxelTreeDataset
-from train.unet3d import UNet3DConfig, VoxelUNet3D
 
 
 class TestTrainingLoop:

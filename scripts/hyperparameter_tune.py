@@ -371,14 +371,14 @@ def run_hyperparameter_search(
 
     # Save summary.txt with tuning results
     with open(output_dir / "summary.txt", "w") as f:
-        f.write(f"VoxelTree Hyperparameter Tuning Results\n")
-        f.write(f"=====================================\n\n")
+        f.write("VoxelTree Hyperparameter Tuning Results\n")
+        f.write("=====================================\n\n")
         f.write(f"Total trials: {len(study.trials)}\n")
         f.write(f"Completed trials: {study_stats['n_completed_trials']}\n")
         f.write(f"Pruned trials: {study_stats['n_pruned_trials']}\n\n")
         f.write(f"Best trial: {best_trial.number}\n")
         f.write(f"Best validation loss: {best_value:.6f}\n\n")
-        f.write(f"Best hyperparameters:\n")
+        f.write("Best hyperparameters:\n")
         for param, value in best_params.items():
             f.write(f"  {param}: {value}\n")
 
@@ -502,7 +502,7 @@ def main():
             )
             logger.info(f"Production config saved to {final_config_path}")
 
-        logger.info(f"Hyperparameter tuning completed successfully")
+        logger.info("Hyperparameter tuning completed successfully")
         return 0
 
     except Exception as e:

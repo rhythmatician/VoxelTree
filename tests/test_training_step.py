@@ -8,11 +8,8 @@ Tests a single training step with:
 - Optimizer step
 """
 
-from pathlib import Path
 
-import pytest
 import torch
-import torch.nn as nn
 import torch.optim as optim
 
 from train.losses import voxel_loss_fn
