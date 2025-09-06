@@ -12,6 +12,7 @@ from typing import Any, Dict, List, Optional
 
 import numpy as np
 import yaml
+from tqdm import tqdm
 
 logger = logging.getLogger(__name__)
 
@@ -219,7 +220,7 @@ class PatchPairer:
         chunk_files = list(chunks_dir.glob("*.npz"))
         total_pairs = 0
 
-        for chunk_file in chunk_files:
+        for chunk_file in tqdm(chunk_files, desc="Processing chunks", unit="chunk"):
             pairs = self.extract_parent_child_pairs(chunk_file)
 
             for i, pair in enumerate(pairs):
