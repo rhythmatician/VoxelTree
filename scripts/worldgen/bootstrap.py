@@ -4,6 +4,7 @@ WorldGenBootstrap implementation for Fabric server + Chunky mod.
 This is the GREEN phase implementation to make integration tests pass.
 """
 
+import glob
 import logging
 import os
 import subprocess
@@ -63,6 +64,7 @@ class FabricWorldGenBootstrap:
         self.server_ready = threading.Event()
         self.server_output_lines: list[str] = []
         self.output_lock = threading.Lock()
+        self.copied_mods: list[str] = []
 
         self._validate_tool_paths()
 
@@ -150,6 +152,7 @@ class FabricWorldGenBootstrap:
         center_z: int = 0,
         radius: int = 5,
         world_name: str = "voxeltree_world",
+        post_generation_commands: Optional[list[str]] = None,
     ) -> Optional[Path]:
         """
         Generate chunks around a center point using Fabric + Chunky.
@@ -159,6 +162,7 @@ class FabricWorldGenBootstrap:
             center_z: Center Z coordinate in chunk coordinates
             radius: Radius in chunks around center
             world_name: Name for the temporary world
+            post_generation_commands: Commands to run after generation completes
 
         Returns:
             Path to the generated world directory, or None if generation failed
@@ -235,18 +239,21 @@ class FabricWorldGenBootstrap:
                     self.logger.error("Generation did not complete successfully")
                     return None
 
+                if post_generation_commands:
+                    if not self.run_post_generation_commands(post_generation_commands):
+                        self.logger.error("Failed to execute post-generation commands")
+                        return None
+
                 # Step 5: Force world save to ensure chunks are written to disk
                 self.logger.info("Forcing world save...")
                 if self.server_process and self.server_process.stdin:
-                    self.server_process.stdin.write("save-all\n")
-                    self.server_process.stdin.flush()
+                    self._send_server_command("save-all")
 
                     # Wait for save to complete
                     time.sleep(15)  # Increased from 10
 
                     # Send save-all again to ensure it's saved
-                    self.server_process.stdin.write("save-all flush\n")
-                    self.server_process.stdin.flush()
+                    self._send_server_command("save-all flush")
                     time.sleep(10)  # Increased from 5
 
                 # Step 6: Verify .mca files were generated
@@ -337,7 +344,6 @@ class FabricWorldGenBootstrap:
         try:
             # Convert to absolute paths to avoid issues with cwd=world_path
             fabric_jar = Path(self.config["worldgen"]["java_tools"]["primary"]).resolve()
-            chunky_jar = Path(self.config["worldgen"]["java_tools"]["chunky"]).resolve()
             java_heap = self.config["worldgen"].get("java_heap", "4G")
 
             # Create server directory
@@ -347,14 +353,22 @@ class FabricWorldGenBootstrap:
             server_props = world_path / "server.properties"
 
             # Use minimal distances for fast testing
-            view_distance = "2" if self.test_mode else "6"
-            simulation_distance = "2" if self.test_mode else "4"
+            worldgen_config = self.config.get("worldgen", {})
+            view_distance = (
+                "2" if self.test_mode else str(worldgen_config.get("view_distance", "6"))
+            )
+            simulation_distance = (
+                "2" if self.test_mode else str(worldgen_config.get("simulation_distance", "4"))
+            )
+            gamemode = worldgen_config.get("gamemode", "creative")
+            difficulty = worldgen_config.get("difficulty", "peaceful")
+            generate_structures = worldgen_config.get("generate_structures", False)
 
             properties = [
                 "level-type=normal",
                 f"level-seed={self.config['worldgen'].get('seed', 'VoxelTree')}",
-                "gamemode=creative",
-                "difficulty=peaceful",
+                f"gamemode={gamemode}",
+                f"difficulty={difficulty}",
                 "spawn-protection=0",
                 "online-mode=false",
                 "enable-command-block=true",
@@ -367,7 +381,7 @@ class FabricWorldGenBootstrap:
                 "hardcore=false",
                 "white-list=false",
                 "pvp=false",
-                "generate-structures=true",
+                f"generate-structures={str(generate_structures).lower()}",
                 "op-permission-level=4",
                 "allow-flight=true",
                 "resource-pack=",
@@ -386,21 +400,7 @@ class FabricWorldGenBootstrap:
             mods_dir = world_path / "mods"
             mods_dir.mkdir(exist_ok=True)
 
-            import shutil
-
-            # Copy Chunky mod
-            chunky_dest = mods_dir / chunky_jar.name
-            shutil.copy2(chunky_jar, chunky_dest)
-
-            # Copy Fabric API (required by Chunky)
-            fabric_api_jar = Path("tools/fabric-server/runtime/mods/fabric-api-0.125.3+1.21.5.jar")
-            if fabric_api_jar.exists():
-                fabric_api_dest = mods_dir / fabric_api_jar.name
-                shutil.copy2(fabric_api_jar, fabric_api_dest)
-                self.logger.info(f"Copied Fabric API to {fabric_api_dest}")
-            else:
-                self.logger.warning(f"Fabric API not found at {fabric_api_jar}")
-
+            self.copied_mods = self._copy_configured_mods(mods_dir)
             self.logger.info(f"Copied mods to {mods_dir}")  # Accept EULA
             eula_file = world_path / "eula.txt"
             eula_file.write_text("eula=true\n")
@@ -508,18 +508,97 @@ class FabricWorldGenBootstrap:
                 "chunky start",
             ]
 
-            for cmd in commands:
-                self.logger.info(f"Executing: {cmd}")
-                if self.server_process and self.server_process.stdin:
-                    self.server_process.stdin.write(f"{cmd}\n")
-                    self.server_process.stdin.flush()
-                time.sleep(2)  # Give time between commands
-
-            return True
+            return self._send_server_commands(commands, delay_s=2.0)
 
         except Exception as e:
             self.logger.error(f"Failed to execute Chunky commands: {e}")
             return False
+
+    def _send_server_command(self, cmd: str) -> None:
+        """Send a single command to the server stdin."""
+        if not self.server_process or self.server_process.poll() is not None:
+            raise RuntimeError("Server process is not running")
+        if not self.server_process.stdin:
+            raise RuntimeError("Server stdin is not available")
+        self.logger.info(f"Executing: {cmd}")
+        self.server_process.stdin.write(f"{cmd}\n")
+        self.server_process.stdin.flush()
+
+    def _send_server_commands(self, cmds: list[str], delay_s: float = 1.0) -> bool:
+        """Send multiple commands to the server with an optional delay."""
+        try:
+            for cmd in cmds:
+                self._send_server_command(cmd)
+                time.sleep(delay_s)
+            return True
+        except Exception as e:
+            self.logger.error(f"Failed to send server commands: {e}")
+            return False
+
+    def run_post_generation_commands(self, commands: list[str]) -> bool:
+        """Run commands after chunk generation completes."""
+        if not commands:
+            return True
+        self.logger.info("Running post-generation commands...")
+        return self._send_server_commands(commands, delay_s=1.0)
+
+    def was_command_unknown(self, cmd: str, recent_lines: int = 50) -> bool:
+        """Check server output for unknown-command messages matching the command."""
+        patterns = [
+            "unknown or incomplete command",
+            "unknown command",
+            "not a valid command",
+        ]
+        cmd_token = cmd.strip().split()[0].lstrip("/").lower() if cmd.strip() else ""
+        with self.output_lock:
+            recent_output = self.server_output_lines[-recent_lines:]
+        for line in recent_output:
+            line_lower = line.lower()
+            if any(pattern in line_lower for pattern in patterns):
+                if not cmd_token or cmd_token in line_lower:
+                    return True
+        return False
+
+    def _resolve_mod_paths(self, mod_paths: list[str]) -> list[Path]:
+        """Resolve configured mod paths (including globs) into existing files."""
+        resolved: list[Path] = []
+        for mod_path in mod_paths:
+            if not mod_path:
+                continue
+            raw_path = Path(mod_path).expanduser()
+            if not raw_path.is_absolute():
+                raw_path = self.base_dir / raw_path
+            matches = [Path(p) for p in glob.glob(str(raw_path))]
+            if not matches:
+                if raw_path.exists():
+                    matches = [raw_path]
+                else:
+                    self.logger.warning(f"Configured mod not found: {mod_path}")
+                    continue
+            for match in matches:
+                if match.is_file():
+                    resolved.append(match)
+                else:
+                    self.logger.warning(f"Configured mod is not a file: {match}")
+        return resolved
+
+    def _copy_configured_mods(self, mods_dir: Path) -> list[str]:
+        """Copy configured mods into the server mods directory."""
+        import shutil
+
+        mod_paths = self.config.get("worldgen", {}).get("mods")
+        if not mod_paths:
+            mod_paths = [self.config["worldgen"]["java_tools"]["chunky"]]
+            self.logger.warning(
+                "No worldgen.mods configured; defaulting to Chunky only."
+            )
+        resolved = self._resolve_mod_paths(mod_paths)
+        copied = []
+        for mod_path in resolved:
+            dest = mods_dir / mod_path.name
+            shutil.copy2(mod_path, dest)
+            copied.append(str(mod_path))
+        return copied
 
     def _wait_for_generation_complete(self, timeout: int = 300) -> bool:
         """Wait for chunk generation to complete."""

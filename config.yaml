@@ -4,6 +4,11 @@
 worldgen:
   seed: 6901795026152433433
   java_heap: "4G"
+  generate_structures: false
+  gamemode: "creative"
+  difficulty: "peaceful"
+  view_distance: 6
+  simulation_distance: 4
   batch_size: 16 # Chunks per .mca generation batch
   max_temp_disk_gb: 5
   chunk_region_bounds:
@@ -15,6 +20,11 @@ worldgen:
     primary: "tools/fabric-server/fabric-server-mc.1.21.5-loader.0.16.14-launcher.1.0.3.jar"
     chunky: "tools/fabric-server/runtime/mods/Chunky-Fabric-1.4.36.jar"
     cubiomes: "tools/voxeltree_cubiomes_cli/voxeltree_cubiomes_cli.exe"
+  mods:
+    - "tools/fabric-server/runtime/mods/fabric-api-0.125.3+1.21.5.jar"
+    - "tools/fabric-server/runtime/mods/Chunky-Fabric-1.4.36.jar"
+    - "tools/fabric-server/runtime/mods/fabric-carpet-*.jar"
+    - "tools/fabric-server/runtime/mods/voxy-*.jar"
 
 # Extraction configuration (Phase 0C)
 extraction:

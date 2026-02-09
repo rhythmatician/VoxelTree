@@ -11,6 +11,7 @@ import zipfile
 from pathlib import Path
 
 import pytest
+import yaml
 
 from scripts.worldgen.bootstrap import WorldGenBootstrap
 
@@ -72,6 +73,89 @@ class TestWorldGenBootstrap:
         assert len(validation_result["corrupted_files"]) == 1
         assert "r.0.0.mca" in validation_result["corrupted_files"][0]
 
+    def test_server_properties_generate_structures_configured(self, tmp_path, monkeypatch):
+        """Ensure server.properties respects generate-structures config."""
+        config_path, chunky_path, fabric_path = _write_worldgen_config(tmp_path)
+
+        def fake_run(*args, **kwargs):
+            class Result:
+                returncode = 0
+                stderr = ""
+
+            return Result()
+
+        monkeypatch.setattr("subprocess.run", fake_run)
+        bootstrap = WorldGenBootstrap(
+            config_path=config_path,
+            temp_world_dir=tmp_path / "temp_worlds",
+            test_mode=True,
+        )
+        world_path = tmp_path / "world"
+        assert bootstrap._start_fabric_server(world_path)
+
+        server_props = world_path / "server.properties"
+        contents = server_props.read_text()
+        assert "generate-structures=false" in contents
+        assert "difficulty=peaceful" in contents
+
+    def test_mod_copying_warns_on_missing_optional_mods(self, tmp_path, monkeypatch, caplog):
+        """Verify mod copying uses config list and warns on missing mods."""
+        config_path, chunky_path, fabric_path = _write_worldgen_config(
+            tmp_path, extra_mods=[tmp_path / "missing-mod.jar"]
+        )
+
+        def fake_run(*args, **kwargs):
+            class Result:
+                returncode = 0
+                stderr = ""
+
+            return Result()
+
+        monkeypatch.setattr("subprocess.run", fake_run)
+        bootstrap = WorldGenBootstrap(
+            config_path=config_path,
+            temp_world_dir=tmp_path / "temp_worlds",
+            test_mode=True,
+        )
+        world_path = tmp_path / "world_mods"
+        with caplog.at_level("WARNING"):
+            assert bootstrap._start_fabric_server(world_path)
+
+        mods_dir = world_path / "mods"
+        copied = list(mods_dir.glob("*.jar"))
+        assert any(mod.name == chunky_path.name for mod in copied)
+        assert any("Configured mod not found" in record.message for record in caplog.records)
+
+    def test_send_server_commands_writes_to_stdin(self, tmp_path):
+        """Ensure _send_server_commands writes commands to stdin."""
+        config_path, _, _ = _write_worldgen_config(tmp_path)
+        bootstrap = WorldGenBootstrap(
+            config_path=config_path,
+            temp_world_dir=tmp_path / "temp_worlds",
+            test_mode=True,
+        )
+
+        class DummyStdin:
+            def __init__(self):
+                self.writes = []
+
+            def write(self, data):
+                self.writes.append(data)
+
+            def flush(self):
+                return None
+
+        class DummyProcess:
+            def __init__(self):
+                self.stdin = DummyStdin()
+
+            def poll(self):
+                return None
+
+        bootstrap.server_process = DummyProcess()
+        assert bootstrap._send_server_commands(["foo", "bar"], delay_s=0.0)
+        assert bootstrap.server_process.stdin.writes == ["foo\n", "bar\n"]
+
 
 class TestWorldGenConfiguration:
     """Test configuration loading and validation."""
@@ -85,6 +169,33 @@ class TestWorldGenConfiguration:
         assert "seed" in config
         assert "java_heap" in config
         assert config["seed"] == 6901795026152433433
+
+
+def _write_worldgen_config(tmp_path, extra_mods=None):
+    tools_dir = tmp_path / "tools"
+    tools_dir.mkdir()
+    fabric_path = tools_dir / "fabric-server.jar"
+    chunky_path = tools_dir / "chunky.jar"
+    fabric_path.write_text("fabric")
+    chunky_path.write_text("chunky")
+
+    mods = [str(chunky_path)]
+    if extra_mods:
+        mods.extend(str(path) for path in extra_mods)
+
+    config = {
+        "worldgen": {
+            "seed": 123,
+            "java_heap": "1G",
+            "generate_structures": False,
+            "difficulty": "peaceful",
+            "java_tools": {"primary": str(fabric_path), "chunky": str(chunky_path)},
+            "mods": mods,
+        }
+    }
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml.safe_dump(config))
+    return config_path, chunky_path, fabric_path
 
 
 @pytest.mark.integration
