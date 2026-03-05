@@ -1,7 +1,7 @@
 """
 SeedInputLinker - Phase 2.2 GREEN Implementation
 
-Links LOD pairs with seed-derived conditioning variables (biomes, heightmaps, river noise)
+Links LOD pairs with seed-derived conditioning variables (biomes, heightmaps)
 to create complete training examples ready for machine learning.
 """
 
@@ -21,7 +21,7 @@ class SeedInputLinker:
     Links LOD pairs with seed-derived conditioning variables.
 
     Takes parent-child LOD pairs and combines them with corresponding
-    biome, heightmap, and river noise data to create complete training examples.
+    biome and heightmap data to create complete training examples.
     """
 
     def __init__(self, config_path: Optional[Path] = None):
@@ -83,7 +83,6 @@ class SeedInputLinker:
         return {
             "biomes": seed_data["biomes"],
             "heightmap": seed_data["heightmap"],
-            "river_noise": seed_data["river_noise"],
         }
 
     def link_pair_with_seed_inputs(
@@ -192,27 +191,7 @@ class SeedInputLinker:
 
         return height_relative.astype(np.float32)
 
-    def extract_river_conditioning(self, river_noise: np.ndarray, y_index: int) -> np.ndarray:
-        """
-        Extract river conditioning with y-level specific effects.
-
-        Args:
-            river_noise: (16, 16) river noise array [-1, 1]
-            y_index: Y-level index (0-23)
-
-        Returns:
-            (16, 16) river conditioning array
-        """
-        # Apply y-level specific river effects
-        y_world = y_index * 16 - 64
-
-        # Rivers have stronger effect near sea level (y=64)
-        river_strength = 1.0 - abs(y_world - 64) / 64.0
-        river_strength = np.clip(river_strength, 0.1, 1.0)
-
-        # Scale river noise by y-level strength
-        conditioned_river = river_noise * river_strength
-        return conditioned_river.astype(np.float32)
+    # River conditioning removed from the contract
 
     def create_linked_example(
         self, pair_data: Dict[str, Any], seed_data: Dict[str, Any]
@@ -232,9 +211,7 @@ class SeedInputLinker:
         # Extract conditioning variables
         biome_conditioning = self.extract_biome_conditioning(seed_data["biomes"], y_index)
         heightmap_conditioning = self.extract_height_conditioning(seed_data["heightmap"], y_index)
-        river_conditioning = self.extract_river_conditioning(
-            seed_data["river_noise"], y_index
-        )  # Combine all data
+        # River conditioning removed
         linked_example = {
             # Original pair data
             "parent_voxel": pair_data["parent_voxel"],
@@ -244,11 +221,9 @@ class SeedInputLinker:
             # Raw conditioning variables (for compatibility with existing tests)
             "biomes": biome_conditioning,
             "heightmap": heightmap_conditioning,
-            "river_noise": river_conditioning,
             # Processed conditioning patches (for training format specification)
             "biome_patch": biome_conditioning,
             "heightmap_patch": heightmap_conditioning,
-            "river_patch": river_conditioning,
             # Metadata
             "y_index": pair_data["y_index"],
             "chunk_x": pair_data["chunk_x"],
@@ -353,7 +328,7 @@ class SeedInputLinker:
             KeyError: If required keys are missing
             ValueError: If array shapes are incorrect
         """
-        required_keys = ["biomes", "heightmap", "river_noise"]
+        required_keys = ["biomes", "heightmap"]
         for key in required_keys:
             if key not in seed_data:
                 raise KeyError(f"Missing required key '{key}' in seed data")

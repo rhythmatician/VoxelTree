@@ -8,12 +8,11 @@ Tests a single training step with:
 - Optimizer step
 """
 
-
 import torch
 import torch.optim as optim
 
 from train.losses import voxel_loss_fn
-from train.unet3d import UNet3DConfig, VoxelUNet3D
+from train.unet3d import SimpleFlexibleConfig, SimpleFlexibleUNet3D
 
 
 class TestTrainingStep:
@@ -24,15 +23,14 @@ class TestTrainingStep:
         from train.step import perform_training_step
 
         # Setup
-        config = UNet3DConfig()
-        model = VoxelUNet3D(config)
+        config = SimpleFlexibleConfig()
+        model = SimpleFlexibleUNet3D(config)
         optimizer = optim.Adam(model.parameters(), lr=1e-4)
 
         batch_size = 2
         parent_voxel = torch.randn(batch_size, 1, 8, 8, 8, requires_grad=False)
         biome_patch = torch.randint(0, 50, (batch_size, 16, 16), dtype=torch.long)
         heightmap_patch = torch.randn(batch_size, 1, 16, 16)
-        river_patch = torch.randn(batch_size, 1, 16, 16)
         y_index = torch.randint(0, 24, (batch_size,), dtype=torch.long)
         lod = torch.randint(1, 5, (batch_size,), dtype=torch.long)
 
@@ -48,7 +46,6 @@ class TestTrainingStep:
                 "parent_voxel": parent_voxel,
                 "biome_patch": biome_patch,
                 "heightmap_patch": heightmap_patch,
-                "river_patch": river_patch,
                 "y_index": y_index,
                 "lod": lod,
                 "target_mask": target_mask,
@@ -66,8 +63,8 @@ class TestTrainingStep:
         from train.step import perform_training_step
 
         # Setup
-        config = UNet3DConfig()
-        model = VoxelUNet3D(config)
+        config = SimpleFlexibleConfig()
+        model = SimpleFlexibleUNet3D(config)
         optimizer = optim.Adam(model.parameters(), lr=1e-4)
 
         # Store initial parameters
@@ -80,7 +77,6 @@ class TestTrainingStep:
             "parent_voxel": torch.randn(batch_size, 1, 8, 8, 8),
             "biome_patch": torch.randint(0, 50, (batch_size, 16, 16), dtype=torch.long),
             "heightmap_patch": torch.randn(batch_size, 1, 16, 16),
-            "river_patch": torch.randn(batch_size, 1, 16, 16),
             "y_index": torch.randint(0, 24, (batch_size,), dtype=torch.long),
             "lod": torch.randint(1, 5, (batch_size,), dtype=torch.long),
             "target_mask": torch.randint(0, 2, (batch_size, 1, 16, 16, 16)).float(),
@@ -110,8 +106,8 @@ class TestTrainingStep:
         """Test that training step properly zeros gradients before computation"""
         from train.step import perform_training_step
 
-        config = UNet3DConfig()
-        model = VoxelUNet3D(config)
+        config = SimpleFlexibleConfig()
+        model = SimpleFlexibleUNet3D(config)
         optimizer = optim.Adam(model.parameters(), lr=1e-4)
 
         batch_size = 1
@@ -119,7 +115,6 @@ class TestTrainingStep:
             "parent_voxel": torch.randn(batch_size, 1, 8, 8, 8),
             "biome_patch": torch.randint(0, 50, (batch_size, 16, 16), dtype=torch.long),
             "heightmap_patch": torch.randn(batch_size, 1, 16, 16),
-            "river_patch": torch.randn(batch_size, 1, 16, 16),
             "y_index": torch.randint(0, 24, (batch_size,), dtype=torch.long),
             "lod": torch.randint(1, 5, (batch_size,), dtype=torch.long),
             "target_mask": torch.randint(0, 2, (batch_size, 1, 16, 16, 16)).float(),

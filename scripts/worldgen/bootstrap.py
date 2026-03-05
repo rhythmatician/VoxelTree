@@ -604,6 +604,157 @@ class WorldGenBootstrap:
         self.logger.error("Generation did not complete within timeout")
         return False
 
+    def _execute_chunky_region_selection(self, x1: int, z1: int, x2: int, z2: int) -> bool:
+        """Execute Chunky commands to select an exact rectangular chunk area and start."""
+        try:
+            if not self.server_process or self.server_process.poll() is not None:
+                self.logger.error("Server process is not running")
+                return False
+
+            # Prefer explicit selection of corners to ensure the exact 32x32 region
+            commands = [
+                f"chunky corners {x1} {z1} {x2} {z2}",
+                "chunky start",
+            ]
+
+            for cmd in commands:
+                self.logger.info(f"Executing: {cmd}")
+                if self.server_process and self.server_process.stdin:
+                    self.server_process.stdin.write(f"{cmd}\n")
+                    self.server_process.stdin.flush()
+                time.sleep(2)
+
+            return True
+        except Exception as e:
+            self.logger.error(f"Failed to execute Chunky selection commands: {e}")
+            return False
+
+    def generate_exact_region(
+        self,
+        region_x: int,
+        region_z: int,
+        world_name: str = "voxeltree_world",
+    ) -> Optional[Path]:
+        """Generate exactly one 32x32 chunk region using Chunky rectangle selection."""
+        temp_dir = None
+        try:
+            temp_dir = tempfile.mkdtemp(prefix="voxeltree_world_")
+            temp_path = Path(temp_dir)
+            world_path = temp_path / world_name
+
+            self.logger.info(f"Starting world generation at {world_path}")
+            # Compute chunk-space corners for the 32x32 region
+            cx1 = region_x * 32
+            cz1 = region_z * 32
+            cx2 = cx1 + 31
+            cz2 = cz1 + 31
+
+            # Convert to block-space inclusive corners for Chunky (each chunk = 16x16 blocks)
+            x1 = cx1 * 16
+            z1 = cz1 * 16
+            x2 = cx2 * 16 + 15
+            z2 = cz2 * 16 + 15
+            self.logger.info(
+                (
+                    f"Selecting exact region r.{region_x}.{region_z} "
+                    f"corners=({x1},{z1})-({x2},{z2}) [blocks]"
+                )
+            )
+
+            # Start server
+            if not self._start_fabric_server(world_path):
+                self.logger.error("Failed to start Fabric server")
+                return None
+
+            try:
+                if not self._wait_for_server_ready():
+                    self.logger.error("Server failed to become ready")
+                    return None
+
+                if not self._execute_chunky_region_selection(x1, z1, x2, z2):
+                    self.logger.error("Failed to execute Chunky selection commands")
+                    return None
+
+                if not self._wait_for_generation_complete():
+                    self.logger.error("Generation did not complete successfully")
+                    return None
+
+                # Force world save
+                self.logger.info("Forcing world save...")
+                if self.server_process and self.server_process.stdin:
+                    self.server_process.stdin.write("save-all\n")
+                    self.server_process.stdin.flush()
+                    time.sleep(15)
+                    self.server_process.stdin.write("save-all flush\n")
+                    self.server_process.stdin.flush()
+                    time.sleep(10)
+
+                # Locate region files
+                region_path = world_path / "region"
+                default_world_path = world_path / "world" / "region"
+                if region_path.exists():
+                    actual_region_path = region_path
+                elif default_world_path.exists():
+                    self.logger.info(
+                        f"Found region data in default world subdirectory: {default_world_path}"
+                    )
+                    actual_region_path = default_world_path
+                else:
+                    self.logger.error(
+                        f"Region directory not found at {region_path} or {default_world_path}"
+                    )
+                    return None
+
+                mca_files = list(actual_region_path.glob("*.mca"))
+                if not mca_files:
+                    self.logger.error(f"No .mca files generated in {actual_region_path}")
+                    return None
+
+                self.logger.info(f"Successfully generated {len(mca_files)} .mca files")
+                found_region_path = actual_region_path
+            finally:
+                self._stop_server()
+
+            # Copy region files to data/test_world like generate_chunks()
+            try:
+                import shutil
+
+                permanent_world = Path("data") / "test_world"
+                permanent_world.parent.mkdir(exist_ok=True)
+                if permanent_world.exists():
+                    shutil.rmtree(permanent_world)
+
+                permanent_world.mkdir()
+                permanent_region = permanent_world / "region"
+                permanent_region.mkdir()
+                for mca_file in found_region_path.glob("*.mca"):
+                    shutil.copy2(mca_file, permanent_region / mca_file.name)
+
+                mca_file_count = len(list(permanent_region.glob("*.mca")))
+                self.logger.info(f"Copied {mca_file_count} .mca files to {permanent_world}")
+                return permanent_world
+            except Exception as copy_error:
+                self.logger.error(f"Failed to copy world data: {copy_error}")
+                return world_path
+        except Exception as e:
+            self.logger.error(f"World generation failed: {e}")
+            return None
+        finally:
+            if (
+                not self.test_mode
+                and not self.defer_cleanup
+                and temp_dir
+                and Path(temp_dir).exists()
+            ):
+                import shutil
+
+                try:
+                    shutil.rmtree(temp_dir)
+                except Exception as e:
+                    self.logger.warning(f"Failed to clean up temp directory: {e}")
+            elif self.defer_cleanup and temp_dir:
+                self.logger.info(f"Preserving temp world for later cleanup: {temp_dir}")
+
     def _stop_server(self):
         """Stop the Fabric server."""
         if not self.server_process:
@@ -846,24 +997,6 @@ class WorldGenBootstrap:
         new_batch = max(8, current_batch // 2)  # Minimum batch size of 8
         self.config["worldgen"]["chunk_batch_size"] = new_batch
         self.logger.info(f"Reduced batch size from {current_batch} to {new_batch}")
-
-    def generate_single_chunk(self, chunk_x: int = 0, chunk_z: int = 0) -> Optional[Path]:
-        """
-        Generate a single chunk for fast integration testing.
-
-        This is optimized for speed:
-        - Generates only one chunk at (chunk_x, chunk_z)
-        - Uses minimal view/simulation distance
-        - Reuses server if shared_server=True
-
-        Args:
-            chunk_x: X coordinate of chunk to generate
-            chunk_z: Z coordinate of chunk to generate
-
-        Returns:
-            Path to generated world directory containing .mca files
-        """
-        return self.generate_region_batch(x_range=(chunk_x, chunk_x), z_range=(chunk_z, chunk_z))
 
     def generate_world_regions(
         self, x_range: tuple[int, int] = (-16, 16), z_range: tuple[int, int] = (-16, 16)

@@ -1,7 +1,15 @@
 {
     "modelName": "lodiffusion_init_bootstrap",
     "version": "1.0.0",
+    "description": "Init model: Noise → LOD4 (1×1×1 voxel)",
     "inputs": {
+        "x_parent_prev": [
+            1,
+            1,
+            1,
+            1,
+            1
+        ],
         "x_height_planes": [
             1,
             5,

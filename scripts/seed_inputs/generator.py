@@ -16,7 +16,7 @@ class SeedInputGenerator:
     """
     Generate conditioning variables from seed and coordinates using vanilla-accurate tools.
 
-    Biome, heightmap, and river data must come from external generators (e.g., Cubiomes CLI).
+    Biome and heightmap data must come from external generators (e.g., Cubiomes CLI).
     """
 
     seed: int
@@ -234,44 +234,7 @@ class SeedInputGenerator:
         height = max(0, min(int(height), 384))
         return height
 
-    def get_river_noise(self, x: int, z: int) -> float:
-        """
-        Generate deterministic river noise at coordinates (x, z).
-        Returns a float value representing river noise (typically in range [-1, 1]).
-
-        Since the cubiomes CLI tool doesn't support river noise generation,
-        we implement a simple deterministic noise function here.
-        """
-        # Try to use Python's hash function deterministically
-        # Hash the seed and coordinates together
-        import hashlib
-
-        # Create a deterministic hash from the seed and coordinates
-        hash_input = f"{self.seed}:{x}:{z}".encode("utf-8")
-        hash_value = int(hashlib.md5(hash_input).hexdigest(), 16)
-
-        # Convert hash to float in range [-1, 1]
-        river_noise = (hash_value % 10000) / 5000 - 1.0
-
-        # Add some spatial coherence - neighboring coordinates should have similar values
-        # by using weighted contributions from adjacent points
-        if x > 0 and z > 0:
-            hash_input_adj1 = f"{self.seed}:{x-1}:{z}".encode("utf-8")
-            hash_input_adj2 = f"{self.seed}:{x}:{z-1}".encode("utf-8")
-            hash_input_adj3 = f"{self.seed}:{x-1}:{z-1}".encode("utf-8")
-
-            hash_adj1 = int(hashlib.md5(hash_input_adj1).hexdigest(), 16)
-            hash_adj2 = int(hashlib.md5(hash_input_adj2).hexdigest(), 16)
-            hash_adj3 = int(hashlib.md5(hash_input_adj3).hexdigest(), 16)
-
-            adj1 = (hash_adj1 % 10000) / 5000 - 1.0
-            adj2 = (hash_adj2 % 10000) / 5000 - 1.0
-            adj3 = (hash_adj3 % 10000) / 5000 - 1.0
-
-            # Weighted average with main point having more weight
-            river_noise = 0.7 * river_noise + 0.1 * adj1 + 0.1 * adj2 + 0.1 * adj3
-
-        return river_noise
+    # River noise removed from contract
 
     def get_patch(self, x_start: int, z_start: int, size: int) -> Dict[str, Any]:
         """
@@ -286,7 +249,6 @@ class SeedInputGenerator:
             A dictionary containing:
                 - biomes: uint8 array of shape (size, size)
                 - heightmap: uint16 array of shape (size, size)
-                - river: float32 array of shape (size, size)
                 - x, z: Starting coordinates
                 - seed: World seed used
         """
@@ -297,7 +259,7 @@ class SeedInputGenerator:
         # Initialize arrays for the patch data
         biomes = np.zeros((size, size), dtype=np.uint8)
         heightmap = np.zeros((size, size), dtype=np.uint16)
-        river = np.zeros((size, size), dtype=np.float32)
+        # no river
 
         # Fill in the arrays with data for each coordinate in the patch
         for i in range(size):
@@ -305,16 +267,15 @@ class SeedInputGenerator:
                 world_x = x_start + i
                 world_z = z_start + j
 
-                # Get biome, heightmap, and river noise for this coordinate
+                # Get biome and heightmap for this coordinate
                 biomes[i, j] = self.get_biome(world_x, world_z)
                 heightmap[i, j] = self.get_heightmap(world_x, world_z)
-                river[i, j] = self.get_river_noise(world_x, world_z)
 
         # Create and return the patch dictionary
         patch = {
             "biomes": biomes,
             "heightmap": heightmap,
-            "river": river,
+            # river removed
             "x": x_start,
             "z": z_start,
             "seed": self.seed,

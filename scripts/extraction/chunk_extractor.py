@@ -113,27 +113,62 @@ class ChunkExtractor:
 
         try:
             # Open region file with anvil-parser
-            region = anvil.Region.from_file(str(region_file))  # noqa: F841
+            region = anvil.Region.from_file(str(region_file))
 
-            # Check if chunk exists in this region
-            # Extract real chunk data from region file
+            # Determine region origin from filename r.X.Z.mca
+            try:
+                stem = region_file.stem  # e.g., 'r.-1.0'
+                parts = stem.split(".")
+                rx, rz = int(parts[1]), int(parts[2])
+            except Exception:
+                rx, rz = 0, 0
+
+            # Attempt to fetch the chunk: try local (0..31) first, then global fallback
+            def _is_chunk_not_found(exc: Exception) -> bool:
+                name = exc.__class__.__name__
+                msg = str(exc)
+                return (
+                    name == "ChunkNotFound"
+                    or "Chunk does not exist" in msg
+                    or "Could not find chunk" in msg
+                    or "chunk not found" in msg.lower()
+                )
+
             try:
                 chunk = region.get_chunk(chunk_x, chunk_z)
-                if chunk is None:
-                    logger.warning(f"Chunk ({chunk_x}, {chunk_z}) not found in {region_file.name}")
-                    return None  # Skip missing chunks instead of creating fake data
+            except Exception as e_local:
+                # Fallback to global chunk coordinates if library expects absolutes
+                gx, gz = rx * 32 + chunk_x, rz * 32 + chunk_z
+                try:
+                    chunk = region.get_chunk(gx, gz)
+                except Exception as e_global:
+                    # Known benign case: chunk slot is absent in this region file
+                    if _is_chunk_not_found(e_local) or _is_chunk_not_found(e_global):
+                        logger.debug(
+                            "Skipping missing chunk (%d,%d) in %s: %s",
+                            chunk_x,
+                            chunk_z,
+                            region_file.name,
+                            e_global,
+                        )
+                        return None
+                    # If both attempts fail for another reason, surface the original error
+                    raise e_global from e_local
 
-                # Process real chunk data
-                block_types, air_mask = self.process_block_data(chunk)
-                biomes = self.extract_biome_data(chunk)
-                heightmap = self.compute_heightmap(block_types)
-
-            except Exception as chunk_error:
-                logger.error(
-                    f"Failed to extract chunk ({chunk_x}, {chunk_z}) "
-                    f"from {region_file.name}: {chunk_error}"
+            if chunk is None:
+                # Chunk slot not generated in this region; benign skip
+                logger.debug(
+                    "Skipping absent chunk (%d,%d) in %s",
+                    chunk_x,
+                    chunk_z,
+                    region_file.name,
                 )
-                return None  # Skip corrupted chunks
+                return None
+
+            # Process real chunk data
+            block_types, air_mask = self.process_block_data(chunk)
+            biomes = self.extract_biome_data(chunk)
+            heightmap = self.compute_heightmap(block_types)
 
             # Pack data into dictionary for .npz storage
             chunk_data = {
@@ -151,9 +186,23 @@ class ChunkExtractor:
             )
             return chunk_data
         except Exception as e:
-            if "Chunk does not exist" in str(e):
-                logger.error(f"Chunk ({chunk_x}, {chunk_z}) not found in {region_file}: {e}")
-                raise RuntimeError(f"Failed to find chunk: {e}")
+            # Treat known 'missing chunk' conditions as benign skips
+            cls_name = e.__class__.__name__
+            msg = str(e)
+            if (
+                cls_name in {"ChunkNotFound", "MissingChunk"}
+                or "Chunk does not exist" in msg
+                or "Could not find chunk" in msg
+                or "chunk not found" in msg.lower()
+            ):
+                logger.debug(
+                    "Skipping missing chunk (%d,%d) in %s: %s",
+                    chunk_x,
+                    chunk_z,
+                    region_file.name,
+                    e,
+                )
+                return None
             elif "Region does not exist" in str(e):
                 logger.error(f"Invalid region file {region_file}: {e}")
                 raise RuntimeError(f"Failed to read region: {e}")
@@ -436,6 +485,8 @@ class ChunkExtractor:
             # Iterate over full 32x32 region coordinate space
             region_id = region_file.stem
             attempted = 0
+            last_log = 0
+            logger.info(f"Extracting region {region_file.name} -> {self.output_dir} (1024 chunks)")
             for chunk_x in range(32):
                 for chunk_z in range(32):
                     attempted += 1
@@ -456,6 +507,15 @@ class ChunkExtractor:
                             e,
                         )
                         continue
+                    # Periodic progress log every 128 chunk slots
+                    if attempted - last_log >= 128 or attempted == 1024:
+                        last_log = attempted
+                        logger.info(
+                            "Region %s: processed %d/1024 slots, written %d files",
+                            region_file.name,
+                            attempted,
+                            len(output_files),
+                        )
 
             logger.info(
                 "Region %s: extracted %d / %d chunk slots (skipped missing/corrupted)",

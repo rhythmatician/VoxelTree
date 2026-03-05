@@ -30,7 +30,13 @@ def create_test_inputs_onnx(output_size=16):
         "x_router6": torch.randn(1, 6, 1, 16, 16),
         "x_chunk_pos": torch.randn(1, 2),
         "x_lod": torch.tensor([[0]], dtype=torch.long),
-        "x_parent_prev": torch.randn(1, 1, output_size // 2, output_size // 2, output_size // 2),
+        "x_parent_prev": torch.randn(
+            1,
+            SimpleFlexibleConfig().block_vocab_size,
+            output_size // 2,
+            output_size // 2,
+            output_size // 2,
+        ),
     }
 
 

@@ -35,7 +35,7 @@ class TestVoxelTreeDataset:
                 "target_types": np.random.randint(0, 10, size=(16, 16, 16), dtype=np.uint8),
                 "biome_patch": np.random.randint(0, 50, size=(16, 16), dtype=np.uint8),
                 "heightmap_patch": np.random.randint(60, 100, size=(16, 16), dtype=np.uint16),
-                "river_patch": np.random.uniform(-1, 1, size=(16, 16)).astype(np.float32),
+                # river removed
                 "y_index": i % 24,  # 0-23 for vertical subchunks
                 "chunk_x": i % 5,
                 "chunk_z": i // 5,
@@ -70,7 +70,7 @@ class TestVoxelTreeDataset:
             "target_types",
             "biome_patch",
             "heightmap_patch",
-            "river_patch",
+            # river removed
             "y_index",
             "chunk_x",
             "chunk_z",
@@ -85,7 +85,7 @@ class TestVoxelTreeDataset:
         assert sample["target_types"].shape == (16, 16, 16)
         assert sample["biome_patch"].shape == (16, 16)
         assert sample["heightmap_patch"].shape == (16, 16)
-        assert sample["river_patch"].shape == (16, 16)
+        # river removed
 
         # Validate scalar types
         assert isinstance(sample["y_index"], (int, np.integer))
@@ -106,7 +106,7 @@ class TestVoxelTreeDataset:
         assert isinstance(sample["target_types"], torch.Tensor)
         assert isinstance(sample["biome_patch"], torch.Tensor)
         assert isinstance(sample["heightmap_patch"], torch.Tensor)
-        assert isinstance(sample["river_patch"], torch.Tensor)
+        # river removed
 
         # Validate tensor dtypes
         # parent_voxel converted from bool to float32 for gradient flow
@@ -115,7 +115,8 @@ class TestVoxelTreeDataset:
         assert sample["target_types"].dtype == torch.int64
         assert sample["biome_patch"].dtype == torch.int64
         assert sample["heightmap_patch"].dtype == torch.float32
-        assert sample["river_patch"].dtype == torch.float32
+
+    # river removed
 
     def test_dataset_file_missing_handling(self, temp_training_data):
         """RED: Fails if file missing or data misaligned."""
@@ -169,7 +170,7 @@ class TestTrainingDataCollator:
                 "target_types": torch.randint(0, 10, (16, 16, 16), dtype=torch.uint8),
                 "biome_patch": torch.randint(0, 50, (16, 16), dtype=torch.uint8),
                 "heightmap_patch": torch.randint(60, 100, (16, 16), dtype=torch.int16),
-                "river_patch": torch.rand(16, 16),
+                # river removed
                 "y_index": i,
                 "chunk_x": i,
                 "chunk_z": i,
@@ -190,7 +191,7 @@ class TestTrainingDataCollator:
         assert batch["target_types"].shape == (batch_size, 16, 16, 16)
         assert batch["biome_patch"].shape == (batch_size, 16, 16)
         assert batch["heightmap_patch"].shape == (batch_size, 16, 16)
-        assert batch["river_patch"].shape == (batch_size, 16, 16)
+        # river removed
 
         # Validate scalar batching
         assert batch["y_index"].shape == (batch_size,)
@@ -209,7 +210,8 @@ class TestTrainingDataCollator:
         assert batch["target_types"].dtype == torch.uint8
         assert batch["biome_patch"].dtype == torch.uint8
         assert batch["heightmap_patch"].dtype == torch.int16
-        assert batch["river_patch"].dtype == torch.float32
+
+    # river removed
 
 
 class TestVoxelTreeDataLoader:
@@ -318,7 +320,7 @@ class TestDatasetConfiguration:
                     "target_types": np.random.randint(0, 10, size=(16, 16, 16), dtype=np.uint8),
                     "biome_patch": np.random.randint(0, 50, size=(16, 16), dtype=np.uint8),
                     "heightmap_patch": np.random.randint(60, 100, size=(16, 16), dtype=np.uint16),
-                    "river_patch": np.random.uniform(-1, 1, size=(16, 16)).astype(np.float32),
+                    # river removed
                     "y_index": i,
                     "chunk_x": i,
                     "chunk_z": i,
@@ -349,7 +351,7 @@ class TestDatasetConfiguration:
                 "target_types": np.random.randint(0, 10, size=(16, 16, 16), dtype=np.uint8),
                 "biome_patch": np.random.randint(0, 50, size=(16, 16), dtype=np.uint8),
                 "heightmap_patch": np.random.randint(60, 100, size=(16, 16), dtype=np.uint16),
-                "river_patch": np.random.uniform(-1, 1, size=(16, 16)).astype(np.float32),
+                # river removed
                 "y_index": i,
                 "chunk_x": i,
                 "chunk_z": i,

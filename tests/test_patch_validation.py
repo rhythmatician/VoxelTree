@@ -45,7 +45,7 @@ class TestPatchValidator:
             "target_types",
             "biome_patch",
             "heightmap_patch",
-            "river_patch",
+            # no river_patch
             "y_index",
             "chunk_x",
             "chunk_z",
@@ -66,7 +66,7 @@ class TestFormatValidation:
             "target_types": np.ones((16, 16, 16), dtype=np.uint8),
             "biome_patch": np.ones((16, 16), dtype=np.uint8),
             "heightmap_patch": np.ones((16, 16), dtype=np.uint16),
-            "river_patch": np.ones((16, 16), dtype=np.float32),
+            # river removed
             "y_index": 5,
             "chunk_x": 10,
             "chunk_z": 15,
@@ -167,7 +167,7 @@ class TestBatchValidation:
                 "target_types": np.random.randint(0, 5, size=(16, 16, 16), dtype=np.uint8),
                 "biome_patch": np.random.randint(0, 50, size=(16, 16), dtype=np.uint8),
                 "heightmap_patch": np.random.randint(60, 100, size=(16, 16), dtype=np.uint16),
-                "river_patch": np.random.uniform(-1, 1, size=(16, 16)).astype(np.float32),
+                # river removed
                 "y_index": i,
                 "chunk_x": 10,
                 "chunk_z": 15,
@@ -182,7 +182,7 @@ class TestBatchValidation:
             "target_types": np.ones((16, 16, 16), dtype=np.uint8),
             "biome_patch": np.ones((16, 16), dtype=np.uint8),
             "heightmap_patch": np.ones((16, 16), dtype=np.uint16),
-            "river_patch": np.ones((16, 16), dtype=np.float32),
+            # river removed
             "y_index": 5,
             "chunk_x": 10,
             "chunk_z": 15,
@@ -196,7 +196,7 @@ class TestBatchValidation:
             # Missing target_types
             "biome_patch": np.ones((16, 16), dtype=np.uint8),
             "heightmap_patch": np.ones((16, 16), dtype=np.uint16),
-            "river_patch": np.ones((16, 16), dtype=np.float32),
+            # river removed
             "y_index": 5,
             "chunk_x": 10,
             "chunk_z": 15,
@@ -265,7 +265,7 @@ class TestSpecificValidations:
             "target_types": np.ones((16, 16, 16), dtype=np.uint8),
             "biome_patch": np.ones((16, 16), dtype=np.uint8),
             "heightmap_patch": np.ones((16, 16), dtype=np.uint16),
-            "river_patch": np.ones((16, 16), dtype=np.float32),
+            # river removed
             "y_index": 5,
             "chunk_x": 10,
             "chunk_z": 15,
@@ -308,7 +308,7 @@ class TestSpecificValidations:
             "target_types": np.ones((16, 16, 16), dtype=np.uint8) * 255,  # Valid but at boundary
             "biome_patch": np.ones((16, 16), dtype=np.uint8),
             "heightmap_patch": np.ones((16, 16), dtype=np.uint16),
-            "river_patch": np.ones((16, 16), dtype=np.float32) * 10,  # Out of range [0,1]
+            # river removed
             "y_index": 30,  # Out of range [0,23]
             "chunk_x": 10,
             "chunk_z": 15,
@@ -336,7 +336,7 @@ class TestValidationReporting:
             # Missing target_types
             "biome_patch": np.ones((16, 16), dtype=np.uint8),
             "heightmap_patch": np.ones((16, 16), dtype=np.uint16),
-            "river_patch": np.ones((16, 16), dtype=np.float32),
+            # river removed
             "y_index": 50,  # Out of range
             "chunk_x": 10,
             "chunk_z": 15,

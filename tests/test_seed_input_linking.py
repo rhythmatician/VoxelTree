@@ -2,7 +2,7 @@
 Test suite for Phase 2.2: Link with seed-derived input
 
 RED phase tests for linking LOD pairs with seed-derived conditioning variables
-(biomes, heightmaps, river noise) to create complete training examples.
+(biomes, heightmaps) to create complete training examples.
 """
 
 import shutil
@@ -39,10 +39,8 @@ class TestSeedInputLinker:
 
         assert "biomes" in seed_inputs
         assert "heightmap" in seed_inputs
-        assert "river_noise" in seed_inputs
         assert seed_inputs["biomes"].shape == (16, 16)
         assert seed_inputs["heightmap"].shape == (16, 16)
-        assert seed_inputs["river_noise"].shape == (16, 16)
 
 
 class TestBiomeHeightmapPairing:
@@ -75,7 +73,6 @@ class TestBiomeHeightmapPairing:
         seed_data = {
             "biomes": np.random.randint(0, 50, size=(16, 16), dtype=np.uint8),
             "heightmap": np.random.randint(60, 100, size=(16, 16), dtype=np.uint16),
-            "river_noise": np.random.uniform(-1, 1, size=(16, 16)).astype(np.float32),
             "chunk_x": 10,
             "chunk_z": 15,
         }
@@ -102,7 +99,6 @@ class TestBiomeHeightmapPairing:
         assert "target_types" in linked_example
         assert "biomes" in linked_example
         assert "heightmap" in linked_example
-        assert "river_noise" in linked_example
         assert "y_index" in linked_example
         assert "lod" in linked_example
 
@@ -159,19 +155,7 @@ class TestBiomeHeightmapPairing:
         assert height_conditioning.shape == (16, 16)
         assert height_conditioning.dtype in [np.float32, np.int16]
 
-    def test_river_noise_conditioning(self):
-        """RED: Fails if river noise conditioning is incorrect."""
-        linker = SeedInputLinker()
-
-        river_noise = np.random.uniform(-1, 1, size=(16, 16)).astype(np.float32)
-        y_index = 5
-
-        river_conditioning = linker.extract_river_conditioning(river_noise, y_index)
-
-        # Should apply y-level specific river effects
-        assert river_conditioning.shape == (16, 16)
-        assert river_conditioning.dtype == np.float32
-        assert np.all(river_conditioning >= -1) and np.all(river_conditioning <= 1)
+    # River conditioning removed from contract
 
 
 class TestBatchLinking:
@@ -194,7 +178,6 @@ class TestBatchLinking:
                 seed_data = {
                     "biomes": np.random.randint(0, 50, size=(16, 16), dtype=np.uint8),
                     "heightmap": np.random.randint(60, 100, size=(16, 16), dtype=np.uint16),
-                    "river_noise": np.random.uniform(-1, 1, size=(16, 16)).astype(np.float32),
                     "chunk_x": chunk_x,
                     "chunk_z": chunk_z,
                 }
@@ -278,21 +261,19 @@ class TestLinkedOutputFormat:
         seed_data = {
             "biomes": np.ones((16, 16), dtype=np.uint8),
             "heightmap": np.ones((16, 16), dtype=np.uint16),
-            "river_noise": np.ones((16, 16), dtype=np.float32),
             "chunk_x": 10,
             "chunk_z": 15,
         }
 
         linked_example = linker.create_linked_example(pair_data, seed_data)
 
-        # Validate all required keys are present
+        # Validate all required keys are present (no river)
         required_keys = [
             "parent_voxel",
             "target_mask",
             "target_types",
             "biome_patch",
             "heightmap_patch",
-            "river_patch",
             "y_index",
             "chunk_x",
             "chunk_z",
@@ -307,7 +288,7 @@ class TestLinkedOutputFormat:
         assert linked_example["target_types"].shape == (16, 16, 16)
         assert linked_example["biome_patch"].shape == (16, 16)
         assert linked_example["heightmap_patch"].shape == (16, 16)
-        assert linked_example["river_patch"].shape == (16, 16)
+        assert "river_patch" not in linked_example
 
     def test_save_linked_example_npz(self, tmp_path):
         """RED: Fails if NPZ saving of linked examples loses data integrity."""
@@ -320,7 +301,7 @@ class TestLinkedOutputFormat:
             "target_types": np.ones((16, 16, 16), dtype=np.uint8),
             "biome_patch": np.ones((16, 16), dtype=np.uint8),
             "heightmap_patch": np.ones((16, 16), dtype=np.uint16),
-            "river_patch": np.ones((16, 16), dtype=np.float32),
+            # river_patch removed
             "y_index": 5,
             "chunk_x": 10,
             "chunk_z": 15,
@@ -369,7 +350,7 @@ class TestErrorHandlingLinked:
         # Create malformed seed data (missing required keys)
         malformed_seed = {
             "biomes": np.ones((16, 16), dtype=np.uint8),
-            # Missing heightmap and river_noise
+            # Missing heightmap
         }
 
         with pytest.raises(KeyError):
@@ -383,7 +364,6 @@ class TestErrorHandlingLinked:
         wrong_shape_seed = {
             "biomes": np.ones((10, 10), dtype=np.uint8),  # Wrong shape
             "heightmap": np.ones((16, 16), dtype=np.uint16),
-            "river_noise": np.ones((16, 16), dtype=np.float32),
         }
 
         with pytest.raises(ValueError):

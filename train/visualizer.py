@@ -95,7 +95,6 @@ class TensorBoardLogger:
                     "parent_voxel",
                     "biome_patch",
                     "heightmap_patch",
-                    "river_patch",
                     "y_index",
                     "lod",
                 ]
@@ -108,7 +107,6 @@ class TensorBoardLogger:
                     "parent_voxel": torch.zeros(1, 1, 8, 8, 8, device=device),
                     "biome_patch": torch.zeros(1, 256, 16, 16, device=device),
                     "heightmap_patch": torch.zeros(1, 1, 16, 16, device=device),
-                    "river_patch": torch.zeros(1, 1, 16, 16, device=device),
                     "y_index": torch.zeros(1, device=device, dtype=torch.long),
                     "lod": torch.zeros(1, device=device, dtype=torch.long),
                 }
@@ -427,9 +425,9 @@ class VoxelVisualizer:
 
             metadata = {"sample_idx": i}
             if y_index is not None:
-                metadata["y_index"] = y_index
+                metadata["y_index"] = int(y_index)
             if lod is not None:
-                metadata["lod"] = lod
+                metadata["lod"] = int(lod)
 
             # Create output path
             output_path = output_dir / f"{prefix}_{i}.png"
@@ -447,7 +445,8 @@ class VoxelVisualizer:
 
             output_paths.append(vis_path)
 
-        return output_paths
+        # Filter out any None values to satisfy return type List[Path]
+        return [p for p in output_paths if p is not None]
 
     @staticmethod
     def visualize_comparison(

@@ -1,10 +1,11 @@
 {
     "modelName": "lodiffusion_lod4_to_lod3",
     "version": "1.0.0",
+    "description": "LOD4 → LOD3 refinement (1×1×1 → 2×2×2)",
     "inputs": {
         "x_parent_prev": [
             1,
-            1104,
+            1,
             1,
             1,
             1

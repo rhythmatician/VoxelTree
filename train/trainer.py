@@ -16,7 +16,7 @@ import torch.optim as optim
 
 from .confusion_analyzer import create_confusion_analyzer
 from .losses import voxel_loss_fn
-from .unet3d import UNet3DConfig, VoxelUNet3D
+from .unet3d import SimpleFlexibleConfig, SimpleFlexibleUNet3D
 from .visualizer import TensorBoardLogger
 
 
@@ -25,11 +25,10 @@ class VoxelTrainer:
 
     def __init__(self, config: Dict[str, Any]):
         self.config = config
-        self.device = torch.device(
-            "cuda" if torch.cuda.is_available() else "cpu"
-        )  # Initialize model
-        model_config = UNet3DConfig(**config.get("model", {}))
-        self.model = VoxelUNet3D(model_config).to(self.device)
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        # Initialize model
+        model_config = SimpleFlexibleConfig(**config.get("model", {}))
+        self.model = SimpleFlexibleUNet3D(model_config).to(self.device)
         self.model.train()  # Ensure model is in training mode
 
         # Initialize optimizer
@@ -149,7 +148,6 @@ class VoxelTrainer:
             parent_voxel=batch["parent_voxel"],
             biome_patch=batch["biome_patch"],
             heightmap_patch=batch["heightmap_patch"],
-            river_patch=batch["river_patch"],
             y_index=batch["y_index"],
             lod=batch["lod"],
         )
@@ -249,7 +247,6 @@ class VoxelTrainer:
                     parent_voxel=batch["parent_voxel"],
                     biome_patch=batch["biome_patch"],
                     heightmap_patch=batch["heightmap_patch"],
-                    river_patch=batch["river_patch"],
                     y_index=batch["y_index"],
                     lod=batch["lod"],
                 )
@@ -281,7 +278,6 @@ class VoxelTrainer:
                     parent_voxel=batch["parent_voxel"],
                     biome_patch=batch["biome_patch"],
                     heightmap_patch=batch["heightmap_patch"],
-                    river_patch=batch["river_patch"],
                     y_index=batch["y_index"],
                     lod=batch["lod"],
                 )
@@ -457,7 +453,7 @@ class VoxelTrainer:
             "heightmap_patch": torch.randint(
                 50, 100, (batch_size, 1, 16, 16), device=self.device
             ).float(),
-            "river_patch": torch.randn(batch_size, 1, 16, 16, device=self.device),
+            # river removed
             "y_index": torch.randint(0, 24, (batch_size,), device=self.device),
             "lod": torch.randint(0, 5, (batch_size,), device=self.device),
             "target_mask": torch.randint(

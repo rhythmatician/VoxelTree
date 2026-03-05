@@ -130,19 +130,26 @@ def _downsample_targets(blocks: torch.Tensor, occ: torch.Tensor, out_size: int):
     return blk_mode, occ_ds
 
 
-def _build_parent_from_targets(occ16: torch.Tensor, parent_size: int):
-    """Build parent occupancy from 16^3 occupancy via OR pooling to parent_size^3."""
+def _build_parent_logits_from_targets(blocks16: torch.Tensor, parent_size: int, num_classes: int):
+    """Build parent block logits [B,C,P,P,P] from 16^3 integer block labels via window mode.
+
+    We downsample labels to parent_size using window mode (like _downsample_targets) and then
+    create one-hot logits scaled to a positive margin for the true class.
+    """
     if parent_size is None:
         return None
-    factor = 16 // parent_size
-    if factor < 1:
-        raise ValueError("parent_size must be <= 16 and divide 16")
-    if parent_size == 16:
-        return occ16.unsqueeze(1).float()
-    B = occ16.shape[0]
-    x = occ16.view(B, parent_size, factor, parent_size, factor, parent_size, factor)
-    x = x.amax(dim=(2, 4, 6)).float()  # [B,parent,parent,parent]
-    return x.unsqueeze(1)  # [B,1,P,P,P]
+    if 16 % parent_size != 0:
+        raise ValueError("parent_size must divide 16")
+    # Reuse downsample to get parent labels (ignore occupancy result)
+    parent_labels, _ = _downsample_targets(blocks16, torch.ones_like(blocks16), parent_size)
+    # One-hot -> logits
+    B, P, _, _ = parent_labels.shape
+    one_hot = torch.nn.functional.one_hot(
+        parent_labels.long(), num_classes=num_classes
+    )  # [B,P,P,P,C]
+    one_hot = one_hot.permute(0, 4, 1, 2, 3).contiguous().float()  # [B,C,P,P,P]
+    logits = (one_hot * 6.0) + ((1.0 - one_hot) * -6.0)  # margin logits
+    return logits
 
 
 def compute_metrics(
@@ -253,16 +260,17 @@ def train_model(model, train_loader, val_loader, config, model_name, device="cud
                     else:
                         parent_size = None
 
-                    parent_input = batch.get("parent_voxel")
-                    # If dummy parent_voxel exists but wrong shape, rebuild from targets
+                    parent_input = batch.get("parent_logits")
+                    # If parent logits missing or wrong shape, rebuild from targets
                     if parent_size is not None:
                         rebuild_parent = True
                         if isinstance(parent_input, torch.Tensor) and parent_input.dim() == 5:
                             if parent_input.shape[-1] == parent_size:
                                 rebuild_parent = False
                         if rebuild_parent:
-                            parent_input = _build_parent_from_targets(
-                                batch["target_occupancy"], parent_size
+                            num_classes = model.config.block_vocab_size
+                            parent_input = _build_parent_logits_from_targets(
+                                batch["target_blocks"], parent_size, num_classes
                             ).to(device)
 
                     predictions = model(
@@ -340,7 +348,10 @@ def train_model(model, train_loader, val_loader, config, model_name, device="cud
                         ps = 4
                     else:
                         ps = 8
-                    parent_in = _build_parent_from_targets(vb["target_occupancy"], ps).to(device)
+                    num_classes = model.config.block_vocab_size
+                    parent_in = _build_parent_logits_from_targets(
+                        vb["target_blocks"], ps, num_classes
+                    ).to(device)
                     preds = model(
                         vb["height_planes"],
                         vb["biome_quart"],

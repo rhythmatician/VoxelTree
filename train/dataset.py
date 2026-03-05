@@ -88,7 +88,6 @@ class VoxelTreeDataset(Dataset):
                     "target_types",
                     "biome_patch",
                     "heightmap_patch",
-                    "river_patch",
                     "y_index",
                     "chunk_x",
                     "chunk_z",
@@ -181,13 +180,7 @@ class VoxelTreeDataset(Dataset):
             if tensor.dim() == 2:
                 tensor = tensor.unsqueeze(0)
             return tensor
-        elif key == "river_patch":
-            # River noise values - convert to float and add channel dimension
-            tensor = torch.from_numpy(value.astype(np.float32))
-            # Add channel dimension if missing: (H, W) -> (1, H, W)
-            if tensor.dim() == 2:
-                tensor = tensor.unsqueeze(0)
-            return tensor
+
         else:
             # Default conversion
             return torch.from_numpy(value)
@@ -264,7 +257,6 @@ class TrainingDataCollator:
                 "target_types",
                 "biome_patch",
                 "heightmap_patch",
-                "river_patch",
             ]:  # Stack tensor arrays
                 if isinstance(values[0], torch.Tensor):
                     stacked = torch.stack(values)

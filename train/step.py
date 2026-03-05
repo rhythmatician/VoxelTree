@@ -51,7 +51,6 @@ def perform_training_step(
         parent_voxel=batch_device["parent_voxel"],
         biome_patch=batch_device["biome_patch"],
         heightmap_patch=batch_device["heightmap_patch"],
-        river_patch=batch_device["river_patch"],
         y_index=batch_device["y_index"],
         lod=batch_device["lod"],
     )

@@ -154,7 +154,6 @@ def train_epoch(
             "parent_voxel": batch["parent_voxel"].to(device),
             "biome_patch": batch["biome_patch"].to(device),
             "heightmap_patch": batch["heightmap_patch"].to(device),
-            "river_patch": batch["river_patch"].to(device),
             "y_index": batch["y_index"].to(device),
             "lod": batch["lod"].to(device),
         }
@@ -231,7 +230,6 @@ def validate_epoch(
                 "parent_voxel": batch["parent_voxel"].to(device),
                 "biome_patch": batch["biome_patch"].to(device),
                 "heightmap_patch": batch["heightmap_patch"].to(device),
-                "river_patch": batch["river_patch"].to(device),
                 "y_index": batch["y_index"].to(device),
                 "lod": batch["lod"].to(device),
             }

@@ -89,7 +89,6 @@ def create_lod_training_pairs(
     labels16: np.ndarray,
     biome_patch: np.ndarray,
     heightmap_patch: np.ndarray,
-    river_patch: Optional[np.ndarray] = None,
     y_index: int = 0,
     air_id: int = 0,
 ) -> List[Dict]:
@@ -100,21 +99,17 @@ def create_lod_training_pairs(
         labels16: (16, 16, 16) array of block IDs
         biome_patch: (16, 16) array of biome IDs
         heightmap_patch: (16, 16) array of heights
-        river_patch: Optional (16, 16) array of river data
         y_index: Y-level index for this chunk
         air_id: ID of air blocks
 
     Returns:
         List of training samples for different LOD transitions
     """
-    if river_patch is None:
-        river_patch = np.zeros((16, 16), dtype=np.float32)
-
     # Create occupancy data
     occ16 = create_occupancy_from_blocks(labels16, air_id)
 
     # Generate all LOD levels by downsampling
-    lod_data = {}
+    lod_data: Dict[int, Dict[str, np.ndarray | int]] = {}
 
     # LOD 0 (target resolution)
     lod_data[0] = {"blocks": labels16, "occupancy": occ16, "size": 16}
@@ -131,7 +126,7 @@ def create_lod_training_pairs(
         lod_data[lod_level] = {"blocks": blocks_down, "occupancy": occ_down, "size": size}
 
     # Create training pairs for each LOD transition
-    training_pairs = []
+    training_pairs: List[Dict] = []
 
     for lod_level in [4, 3, 2, 1]:  # Parent LOD levels
         target_lod = lod_level - 1  # Target LOD level
@@ -140,9 +135,9 @@ def create_lod_training_pairs(
         target_data = lod_data[target_lod]
 
         # Prepare input data
-        parent_occupancy = parent_data["occupancy"].astype(np.float32)
-        target_blocks = target_data["blocks"]
-        target_occupancy = target_data["occupancy"]
+        parent_occupancy = np.asarray(parent_data["occupancy"]).astype(np.float32)
+        target_blocks = np.asarray(target_data["blocks"])
+        target_occupancy = np.asarray(target_data["occupancy"])
 
         # Add batch and channel dimensions
         parent_voxel = parent_occupancy[None, None, ...]  # (1, 1, S, S, S)
@@ -158,14 +153,11 @@ def create_lod_training_pairs(
         heightmap_norm = heightmap_patch.astype(np.float32) / 256.0  # Normalize
         heightmap_tensor = heightmap_norm[None, None, ..., None]  # (1, 1, 16, 16, 1)
 
-        river_tensor = river_patch[None, None, ..., None]  # (1, 1, 16, 16, 1)
-
         training_pair = {
             # Inputs
             "parent_voxel": parent_voxel,
             "biome_patch": biome_tensor,
             "heightmap_patch": heightmap_tensor,
-            "river_patch": river_tensor,
             "y_index": np.array([y_index], dtype=np.int64),
             "lod": np.array([lod_level], dtype=np.int64),
             # Targets
@@ -223,7 +215,7 @@ class MultiLODDataset:
         print(f"Found {len(self.npz_files)} NPZ files for {split} split")
 
         # Pre-generate all training pairs (memory permitting)
-        self.training_pairs = []
+        self.training_pairs: List[Dict] = []
         self._generate_all_pairs()
 
     def _generate_all_pairs(self):
@@ -238,15 +230,11 @@ class MultiLODDataset:
                 labels16 = data["labels16"]  # (16, 16, 16)
                 biome16 = data.get("biome16", np.zeros((16, 16), dtype=np.int32))
                 height16 = data.get("height16", np.zeros((1, 16, 16), dtype=np.float32))
-                river16 = data.get("river16", np.zeros((1, 16, 16), dtype=np.float32))
+                # river removed from contract
 
                 # Handle different height formats
                 if height16.ndim == 3:
                     height16 = height16[0]  # Take first channel
-
-                # Handle different river formats
-                if river16.ndim == 3:
-                    river16 = river16[0]  # Take first channel
 
                 # Generate Y-index (could be extracted from filename or data)
                 y_index = 64  # Default Y-level, could be randomized or extracted
@@ -256,7 +244,6 @@ class MultiLODDataset:
                     labels16=labels16,
                     biome_patch=biome16,
                     heightmap_patch=height16,
-                    river_patch=river16,
                     y_index=y_index,
                 )
 
@@ -305,7 +292,6 @@ class MultiLODDataset:
             "parent_voxel": torch.from_numpy(pair["parent_voxel"]),
             "biome_patch": torch.from_numpy(pair["biome_patch"]),
             "heightmap_patch": torch.from_numpy(pair["heightmap_patch"]),
-            "river_patch": torch.from_numpy(pair["river_patch"]),
             "y_index": torch.from_numpy(pair["y_index"]),
             "lod": torch.from_numpy(pair["lod"]),
             "target_blocks": torch.from_numpy(pair["target_blocks"]).long(),  # Convert to int64
@@ -322,7 +308,7 @@ def collate_multi_lod_batch(samples: List[Dict]) -> Dict:
     Groups samples by LOD transition type.
     """
     # Group samples by LOD transition
-    grouped = {}
+    grouped: Dict[str, List[Dict]] = {}
     for sample in samples:
         transition = sample["lod_transition"]
         if transition not in grouped:
@@ -335,12 +321,12 @@ def collate_multi_lod_batch(samples: List[Dict]) -> Dict:
     transition_samples = grouped[transition_type]
 
     # Standard batching for samples of the same transition type
-    batch = {}
+    # Use a general dict for mixed types (tensors + metadata string)
+    batch: Dict[str, object] = {}
     for key in [
         "parent_voxel",
         "biome_patch",
         "heightmap_patch",
-        "river_patch",
         "y_index",
         "lod",
         "target_blocks",

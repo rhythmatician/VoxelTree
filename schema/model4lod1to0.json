@@ -1,10 +1,11 @@
 {
     "modelName": "lodiffusion_lod1_to_lod0",
     "version": "1.0.0",
+    "description": "LOD1 → LOD0 refinement (8×8×8 → 16×16×16)",
     "inputs": {
         "x_parent_prev": [
             1,
-            1104,
+            1,
             8,
             8,
             8

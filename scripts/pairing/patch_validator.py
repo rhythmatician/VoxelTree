@@ -53,7 +53,6 @@ class PatchValidator:
             "target_types",
             "biome_patch",
             "heightmap_patch",
-            "river_patch",
             "y_index",
             "chunk_x",
             "chunk_z",
@@ -67,7 +66,6 @@ class PatchValidator:
             "target_types": (16, 16, 16),
             "biome_patch": (16, 16),
             "heightmap_patch": (16, 16),
-            "river_patch": (16, 16),
         }
 
         # Expected dtypes for each key
@@ -77,7 +75,6 @@ class PatchValidator:
             "target_types": [np.uint8],
             "biome_patch": [np.uint8],
             "heightmap_patch": [np.uint16],
-            "river_patch": [np.float32],
             "y_index": [int, np.integer],
             "chunk_x": [int, np.integer],
             "chunk_z": [int, np.integer],
@@ -90,7 +87,6 @@ class PatchValidator:
             "lod": (1, 4),  # Valid LOD levels
             "target_types": (0, 255),  # Block type IDs
             "biome_patch": (0, 255),  # Biome IDs
-            "river_patch": (-10.0, 10.0),  # River noise range (with some tolerance)
         }
 
     def validate_training_example(self, example: Dict[str, Any]) -> bool:

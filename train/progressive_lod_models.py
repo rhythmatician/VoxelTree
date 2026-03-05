@@ -307,9 +307,13 @@ class ProgressiveLODModel(nn.Module):
 
         # Parent processing (for all progressive stages >= 2 we have a parent)
         if self.output_size >= 2:
-            # Encode parent occupancy; upsampling will be handled dynamically in forward
+            # Encode parent block logits [B, C, P, P, P] where C=block_vocab_size.
+            # Use 1x1 to reduce channel dimension aggressively, then a 3x3 refine.
             self.parent_pre = nn.Sequential(
-                nn.Conv3d(1, config.base_channels, 3, padding=1),
+                nn.Conv3d(self.config.block_vocab_size, config.base_channels, 1),
+                nn.BatchNorm3d(config.base_channels),
+                nn.ReLU(inplace=True),
+                nn.Conv3d(config.base_channels, config.base_channels, 3, padding=1),
                 nn.BatchNorm3d(config.base_channels),
                 nn.ReLU(inplace=True),
             )
@@ -354,7 +358,9 @@ class ProgressiveLODModel(nn.Module):
         x_chunk_pos: torch.Tensor,  # [1,2]
         x_lod: torch.Tensor,  # [1,1]
         # Parent input (required for stages with output_size >= 2; e.g., LOD4→LOD3 uses 1³ parent)
-        x_parent_prev: Optional[torch.Tensor] = None,  # [1,1,parent_size,parent_size,parent_size]
+        x_parent_prev: Optional[
+            torch.Tensor
+        ] = None,  # [B,C,parent,parent,parent] C=block_vocab_size
         # Optional inputs
         x_barrier: Optional[torch.Tensor] = None,  # [1,1,1,16,16]
         x_aquifer3: Optional[torch.Tensor] = None,  # [1,3,1,16,16]

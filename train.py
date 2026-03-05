@@ -311,7 +311,6 @@ def export_model(config: Dict[str, Any], checkpoint_path: Path) -> None:
         torch.randn(1, 1, 8, 8, 8),  # parent_voxel
         torch.randint(0, config["model"].get("biome_vocab_size", 256), (1, 16, 16)),  # biome_patch
         torch.randn(1, 1, 16, 16),  # heightmap_patch
-        torch.randn(1, 1, 16, 16),  # river_patch
         torch.randint(0, 24, (1,)),  # y_index
         torch.randint(1, 5, (1,)),  # lod
     )
@@ -326,17 +325,16 @@ def export_model(config: Dict[str, Any], checkpoint_path: Path) -> None:
             super().__init__()
             self.model = model
 
-        def forward(self, parent_voxel, biome_patch, heightmap_patch, river_patch, y_index, lod):
-            air_mask_logits, block_type_logits = self.model(
-                {
-                    "parent_voxel": parent_voxel,
-                    "biome_patch": biome_patch,
-                    "heightmap_patch": heightmap_patch,
-                    "river_patch": river_patch,
-                    "y_index": y_index,
-                    "lod": lod,
-                }
+        def forward(self, parent_voxel, biome_patch, heightmap_patch, y_index, lod):
+            outputs = self.model(
+                parent_voxel=parent_voxel,
+                biome_patch=biome_patch,
+                heightmap_patch=heightmap_patch,
+                y_index=y_index,
+                lod=lod,
             )
+            air_mask_logits = outputs["air_mask_logits"]
+            block_type_logits = outputs["block_type_logits"]
             # Return in new contract order: block logits first, then air mask
             return block_type_logits, air_mask_logits
 
@@ -350,14 +348,7 @@ def export_model(config: Dict[str, Any], checkpoint_path: Path) -> None:
         export_params=True,
         opset_version=opset,
         do_constant_folding=True,
-        input_names=[
-            "parent_voxel",
-            "biome_patch",
-            "heightmap_patch",
-            "river_patch",
-            "y_index",
-            "lod",
-        ],
+        input_names=["parent_voxel", "biome_patch", "heightmap_patch", "y_index", "lod"],
         output_names=["block_logits", "air_mask"],
         dynamic_axes=None,  # Static for simpler runtime integration
     )
@@ -387,9 +378,8 @@ def export_model(config: Dict[str, Any], checkpoint_path: Path) -> None:
                 "parent_voxel": dummy_input[0].numpy(),
                 "biome_patch": dummy_input[1].numpy(),
                 "heightmap_patch": dummy_input[2].numpy(),
-                "river_patch": dummy_input[3].numpy(),
-                "y_index": dummy_input[4].numpy(),
-                "lod": dummy_input[5].numpy(),
+                "y_index": dummy_input[3].numpy(),
+                "lod": dummy_input[4].numpy(),
             }
 
             onnx_output = ort_session.run(None, onnx_input)
