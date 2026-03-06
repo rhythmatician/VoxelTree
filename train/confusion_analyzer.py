@@ -16,14 +16,15 @@ Features:
 
 import logging
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import seaborn as sns
 import torch
-from sklearn.metrics import confusion_matrix
+from matplotlib.figure import Figure
+from sklearn.metrics import confusion_matrix as sk_confusion_matrix
 
 logger = logging.getLogger(__name__)
 
@@ -112,7 +113,7 @@ class ConfusionAnalyzer:
         target_np = targets.cpu().numpy()
 
         # Update accumulated confusion matrix
-        batch_confusion = confusion_matrix(target_np, pred_np, labels=range(self.n_classes))
+        batch_confusion = sk_confusion_matrix(target_np, pred_np, labels=range(self.n_classes))
         self.accumulated_confusion += batch_confusion
         self.total_samples += len(pred_np)
 
@@ -164,7 +165,9 @@ class ConfusionAnalyzer:
         confused_pairs.sort(key=lambda x: x[2], reverse=True)
         return confused_pairs[:k]
 
-    def analyze_block_groups(self) -> Dict[str, Dict[str, float]]:
+    def analyze_block_groups(
+        self,
+    ) -> dict[str, dict[str, Any | float | np.floating]]:
         """Analyze accuracy by block groups (stone, dirt, ores, etc.)."""
         group_stats = {}
 
@@ -190,7 +193,7 @@ class ConfusionAnalyzer:
 
         return group_stats
 
-    def get_worst_performing_blocks(self, k: int = 50) -> List[Tuple[int, float, int]]:
+    def get_worst_performing_blocks(self, k: int = 50) -> list[tuple[int, float, np.int64]]:
         """
         Get the K worst performing block types.
 
@@ -213,8 +216,10 @@ class ConfusionAnalyzer:
         return valid_blocks[:k]
 
     def visualize_confusion_matrix(
-        self, blocks_to_show: Optional[List[int]] = None, title: str = "Confusion Matrix"
-    ) -> plt.Figure:
+        self,
+        blocks_to_show: Optional[Sequence[int]] = None,
+        title: str = "Confusion Matrix",
+    ) -> Figure:
         """
         Create confusion matrix visualization.
 

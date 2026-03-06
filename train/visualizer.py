@@ -15,14 +15,9 @@ import numpy as np
 import torch
 from matplotlib.animation import FuncAnimation
 from torch import Tensor
+from torch.utils.tensorboard import SummaryWriter
 
-# Try to import TensorBoard
-try:
-    from torch.utils.tensorboard import SummaryWriter
-
-    TENSORBOARD_AVAILABLE = True
-except ImportError:
-    TENSORBOARD_AVAILABLE = False
+TENSORBOARD_AVAILABLE = True
 
 logger = logging.getLogger(__name__)
 
