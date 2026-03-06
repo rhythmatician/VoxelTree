@@ -14,6 +14,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 from matplotlib.animation import FuncAnimation
+from matplotlib.figure import Figure
 from torch import Tensor
 from torch.utils.tensorboard import SummaryWriter
 
@@ -449,7 +450,7 @@ class VoxelVisualizer:
         pred_voxel: Union[np.ndarray, Tensor],
         target_voxel: Union[np.ndarray, Tensor],
         return_figure: bool = False,
-    ) -> Optional[plt.Figure]:
+    ) -> Optional[Figure]:
         """
         Create a comparison visualization of input, prediction, and target voxels.
 
@@ -580,4 +581,6 @@ class VoxelVisualizer:
         else:
             r, g, b = v, p, q
 
+        return r, g, b, 1.0  # RGBA
+        return r, g, b, 1.0  # RGBA
         return r, g, b, 1.0  # RGBA
