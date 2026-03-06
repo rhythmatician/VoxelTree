@@ -3,6 +3,7 @@ Training logging utilities for VoxelTree.
 """
 
 import csv
+import json
 import time
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -15,12 +16,13 @@ except ImportError:
 
 
 class TrainingLogger:
-    """Handles CSV and TensorBoard logging for training metrics."""
+    """Handles CSV, JSONL, and TensorBoard logging for training metrics."""
 
     def __init__(self, log_dir: Path, use_tensorboard: bool = False):
         self.log_dir = Path(log_dir)
         self.log_dir.mkdir(parents=True, exist_ok=True)
         self.csv_path = self.log_dir / "training_log.csv"
+        self.json_path = self.log_dir / "training_log.jsonl"
 
         self.use_tensorboard = use_tensorboard
         self.writer = None
@@ -43,7 +45,7 @@ class TrainingLogger:
                 writer.writerow(["timestamp", "epoch", "loss", "lr", "epoch_time", "global_step"])
 
     def log_metrics(self, metrics: Dict[str, Any], step: Optional[int] = None):
-        """Log metrics to CSV and optionally TensorBoard."""
+        """Log metrics to CSV, JSONL, and optionally TensorBoard."""
         timestamp = time.time()
 
         # Add timestamp to metrics
@@ -51,6 +53,9 @@ class TrainingLogger:
 
         # Log to CSV
         self._log_to_csv(metrics_with_time)
+
+        # Log to JSONL
+        self._log_to_jsonl(metrics_with_time)
 
         # Log to TensorBoard if available
         if self.use_tensorboard and self.writer is not None:
@@ -66,8 +71,14 @@ class TrainingLogger:
                 metrics.get("loss", ""),
                 metrics.get("lr", ""),
                 metrics.get("epoch_time", ""),
+                metrics.get("global_step", ""),
             ]
             writer.writerow(row)
+
+    def _log_to_jsonl(self, metrics: Dict[str, Any]):
+        """Log metrics to JSONL file."""
+        with open(self.json_path, "a") as f:
+            f.write(json.dumps(metrics) + "\n")
 
     def _log_to_tensorboard(self, metrics: Dict[str, Any], step: Optional[int]):
         """Log metrics to TensorBoard."""
