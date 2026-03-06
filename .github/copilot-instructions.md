@@ -3,13 +3,6 @@
 > **Purpose:** This file guides GitHub Copilot (and human contributors) to build VoxelTree
 > consistently. It encodes our LOD-first design, data pipeline rules, training strategy,
 > acceptance criteria, and CI checks.
->
-> **Terminal quirk workaround:** Whenever you run a command in the terminal, pipe the output to
-> `output.txt` and **overwrite** each time (not append). Copilot reads from that file.
->
-> ```bash
-> <your command> > output.txt 2>&1
-> ```
 
 ---
 
