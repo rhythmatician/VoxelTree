@@ -18,7 +18,7 @@ This document summarizes what has been implemented as part of executing the LODi
 - Risk mitigation strategies
 
 ✅ **Dependency Matrix** (`docs/DEPENDENCIES.md`)
-- Pinned dependency structure for Minecraft 1.21.5
+- Pinned dependency structure for Minecraft 1.21.11
 - Java toolchain, mod stack, ML runtime, Python training stack
 - Version locking strategy
 
@@ -176,7 +176,7 @@ VoxelTree/
 
 2. **Java Mod Code**: Design specs complete, but implementation requires:
    - Fabric mod project setup
-   - Minecraft 1.21.5 API familiarity
+   - Minecraft 1.21.11 API familiarity
    - DJL integration
 
 3. **Model Training**: Pipeline ready, but needs:

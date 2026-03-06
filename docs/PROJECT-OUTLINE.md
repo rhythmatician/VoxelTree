@@ -144,7 +144,7 @@ All models share these deterministic signals derived from vanilla noise:
 
 ## 3. Dependencies & Environment
 
-### 3.1 Pinned Dependency Matrix (Minecraft 1.21.5)
+### 3.1 Pinned Dependency Matrix (Minecraft 1.21.11)
 
 **Java Toolchain:**
 
@@ -152,11 +152,12 @@ All models share these deterministic signals derived from vanilla noise:
 
 **Mod Stack:**
 
-- Minecraft: 1.21.5
-- Fabric Loader: (pinned version TBD)
-- Fabric API: (pinned version TBD)
-- Voxy: (pinned commit/branch TBD)
-- Carpet Mod: (pinned version TBD)
+- Minecraft: 1.21.11
+- Fabric Loader: 0.18.4
+- Fabric API: 0.141.3+1.21.11
+- Voxy: 0.2.11-alpha
+- Carpet Mod: 1.4.194+v251223
+- Chunky: 1.4.55
 - LODiffusion mod: (ours)
 
 **ML Runtime Stack:**
@@ -421,7 +422,7 @@ All models share these deterministic signals derived from vanilla noise:
 
 ### Milestone 1: Plumbing & Infrastructure
 
-- [ ] Mod stack launches on 1.21.5
+- [ ] Mod stack launches on 1.21.11
 - [ ] Voxy renders synthetic LOD terrain (no ML yet)
 - [ ] Freeze + pregen pipeline works
 - [ ] Anchor computation + caching functional
@@ -545,7 +546,7 @@ VoxelTree/
 
 ## 14. Next Steps (Immediate)
 
-1. **Lock dependency matrix:** Pin MC 1.21.5 + Fabric + Voxy + Carpet versions
+1. **Lock dependency matrix:** Pin MC 1.21.11 + Fabric + Voxy + Carpet versions
 2. **Implement NoiseTap interface:** One-call capture per chunk for anchors
 3. **Implement FeatureBundle cache:** LRU + optional disk sidecar
 4. **Draft 5 model_config.json stubs:** Define exact I/O shapes for all models

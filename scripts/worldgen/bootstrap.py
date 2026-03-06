@@ -410,7 +410,7 @@ class WorldGenBootstrap:
             shutil.copy2(chunky_jar, chunky_dest)
 
             # Copy Fabric API (required by Chunky)
-            fabric_api_jar = Path("tools/fabric-server/runtime/mods/fabric-api-0.125.3+1.21.5.jar")
+            fabric_api_jar = Path("tools/fabric-server/runtime/mods/fabric-api-0.141.3+1.21.11.jar")
             if fabric_api_jar.exists():
                 fabric_api_dest = mods_dir / fabric_api_jar.name
                 shutil.copy2(fabric_api_jar, fabric_api_dest)
@@ -491,7 +491,9 @@ class WorldGenBootstrap:
         """Monitor server output for status messages."""
         if not self.server_process:
             return
-
+        if self.server_process.stdout is None:
+            self.logger.error("Server process has no stdout to monitor")
+            return
         try:
             for line in iter(self.server_process.stdout.readline, ""):
                 if not line:
@@ -764,8 +766,11 @@ class WorldGenBootstrap:
             self.logger.info("Stopping Fabric server...")
 
             # Try graceful shutdown first
-            self.server_process.stdin.write("stop\n")
-            self.server_process.stdin.flush()
+            if self.server_process.stdin is not None:
+                self.server_process.stdin.write("stop\n")
+                self.server_process.stdin.flush()
+            else:
+                self.logger.warning("Server stdin is not available for graceful shutdown")
 
             # Wait for graceful shutdown
             try:

@@ -42,3 +42,4 @@ TensorBoard
 optuna
 threadpoolctl
 scikit-learn
+deepdiff

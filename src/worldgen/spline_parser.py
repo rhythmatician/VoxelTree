@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Union
 
 # ----------------------------
-# Load JSON from 1.21.5 file
+# Load JSON from noise settings file
 # ----------------------------
 
 

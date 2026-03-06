@@ -1,7 +1,7 @@
 # NoiseTap Interface Specification
 
 **Status:** Design Phase  
-**Target:** Minecraft 1.21.5 + Fabric  
+**Target:** Minecraft 1.21.11 + Fabric  
 **Purpose:** One-call anchor capture per chunk for LODiffusion
 
 ## Overview

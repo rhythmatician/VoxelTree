@@ -1,7 +1,7 @@
 # LODiffusion Dependency Matrix
 
-**Target:** Minecraft 1.21.5  
-**Last Updated:** 2025-01-XX  
+**Target:** Minecraft 1.21.11  
+**Last Updated:** 2026-03-05  
 **Status:** Pinned for Phase 1 development
 
 ## Java Toolchain
@@ -10,17 +10,18 @@
 - **Gradle:** (TBD - check Fabric template)
 - **Kotlin:** (TBD - if used in mod)
 
-## Mod Stack (Minecraft 1.21.5)
+## Mod Stack (Minecraft 1.21.11)
 
 ### Core Dependencies
 
 | Component | Version | Source | Notes |
 |-----------|---------|--------|-------|
-| **Minecraft** | 1.21.5 | Mojang | Target version |
-| **Fabric Loader** | TBD | [FabricMC](https://fabricmc.net/) | Check latest for 1.21.5 |
-| **Fabric API** | TBD | [FabricMC](https://modrinth.com/mod/fabric-api) | Check latest for 1.21.5 |
-| **Voxy** | TBD | [MCRcortex/voxy](https://github.com/MCRcortex/voxy) | Pin commit/branch for 1.21.5 |
-| **Carpet Mod** | TBD | [gnembon/fabric-carpet](https://github.com/gnembon/fabric-carpet) | For world freeze + pregen |
+| **Minecraft** | 1.21.11 | Mojang | Target version |
+| **Fabric Loader** | 0.18.4 | [FabricMC](https://fabricmc.net/) | Pinned |
+| **Fabric API** | 0.141.3+1.21.11 | [FabricMC](https://modrinth.com/mod/fabric-api) | Pinned |
+| **Voxy** | 0.2.11-alpha | [MCRcortex/voxy](https://github.com/MCRcortex/voxy) | Pinned |
+| **Carpet Mod** | 1.4.194+v251223 | [gnembon/fabric-carpet](https://github.com/gnembon/fabric-carpet) | For world freeze + pregen |
+| **Chunky** | 1.4.55 | [pop4959/Chunky](https://github.com/pop4959/Chunky) | Chunk pregeneration |
 
 ### LODiffusion Mod
 
@@ -56,8 +57,8 @@ See `requirements.txt` for complete Python dependency list.
 
 | Component | Version | Source | Notes |
 |-----------|---------|--------|-------|
-| **Carpet Mod** | TBD | [gnembon/fabric-carpet](https://github.com/gnembon/fabric-carpet) | World freeze + pregen |
-| **Chunky** | TBD | [pop4959/Chunky](https://github.com/pop4959/Chunky) | Optional: chunk pregeneration |
+| **Carpet Mod** | 1.4.194+v251223 | [gnembon/fabric-carpet](https://github.com/gnembon/fabric-carpet) | World freeze + pregen |
+| **Chunky** | 1.4.55 | [pop4959/Chunky](https://github.com/pop4959/Chunky) | Chunk pregeneration |
 | **anvil-parser2** | Latest | PyPI | Python .mca reading |
 
 ## Excluded Dependencies (Demo Milestone)
@@ -78,21 +79,22 @@ See `requirements.txt` for complete Python dependency list.
 
 ## Next Steps
 
-1. [ ] Research and pin Fabric Loader version for 1.21.5
-2. [ ] Research and pin Fabric API version for 1.21.5
-3. [ ] Research and pin Voxy commit/branch for 1.21.5
-4. [ ] Research and pin Carpet Mod version for 1.21.5
-5. [ ] Research and pin DJL version (latest stable)
-6. [ ] Research and pin ONNX Runtime version (CPU backend)
-7. [ ] Create `mods.lock.json` or equivalent for Java dependencies
-8. [ ] Update `requirements.txt` with pinned Python versions
+1. [x] Pin Fabric Loader version for 1.21.11 → 0.18.4
+2. [x] Pin Fabric API version for 1.21.11 → 0.141.3+1.21.11
+3. [x] Pin Voxy version for 1.21.11 → 0.2.11-alpha
+4. [x] Pin Carpet Mod version for 1.21.11 → 1.4.194+v251223
+5. [x] Pin Chunky version for 1.21.11 → 1.4.55
+6. [ ] Research and pin DJL version (latest stable)
+7. [ ] Research and pin ONNX Runtime version (CPU backend)
+8. [ ] Create `mods.lock.json` or equivalent for Java dependencies
+9. [ ] Update `requirements.txt` with pinned Python versions
 
 ## Compatibility Notes
 
 - **Java 21** is required for modern Minecraft + Fabric ecosystem
 - **ONNX 1.12+** required for static shape support
 - **DJL** must support ONNX Runtime CPU backend
-- All versions must be compatible with **Minecraft 1.21.5**
+- All versions must be compatible with **Minecraft 1.21.11**
 
 ## References
 

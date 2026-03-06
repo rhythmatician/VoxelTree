@@ -118,9 +118,9 @@ class TestWorldGenIntegration:
         """
         # Check that required Java tools exist
         fabric_jar = Path(
-            "tools/fabric-server/fabric-server-mc.1.21.5-loader.0.16.14-launcher.1.0.3.jar"
+            "tools/fabric-server/fabric-server-mc.1.21.11-loader.0.18.4-launcher.1.1.1.jar"
         )
-        chunky_jar = Path("tools/fabric-server/runtime/mods/Chunky-Fabric-1.4.36.jar")
+        chunky_jar = Path("tools/fabric-server/runtime/mods/Chunky-Fabric-1.4.55.jar")
 
         # Skip test if tools not available (CI environment)
         if not fabric_jar.exists() or not chunky_jar.exists():
@@ -161,9 +161,9 @@ class TestWorldGenIntegration:
 
         # Skip if tools not available
         fabric_jar = Path(
-            "tools/fabric-server/fabric-server-mc.1.21.5-loader.0.16.14-launcher.1.0.3.jar"
+            "tools/fabric-server/fabric-server-mc.1.21.11-loader.0.18.4-launcher.1.1.1.jar"
         )
-        chunky_jar = Path("tools/fabric-server/runtime/mods/Chunky-Fabric-1.4.36.jar")
+        chunky_jar = Path("tools/fabric-server/runtime/mods/Chunky-Fabric-1.4.55.jar")
 
         if not fabric_jar.exists() or not chunky_jar.exists():
             pytest.skip("Fabric server or Chunky mod not available")
@@ -177,6 +177,8 @@ class TestWorldGenIntegration:
         world_dir = self.bootstrap.generate_region_batch(
             x_range=(0, 1), z_range=(0, 1)  # Single chunk at origin
         )
+        if world_dir is None:
+            pytest.fail("World generation failed, cannot validate chunk data")
 
         # Get generated .mca file
         generated_mca = world_dir / "region" / "r.0.0.mca"

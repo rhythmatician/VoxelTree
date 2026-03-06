@@ -1,5 +1,5 @@
 # compare_noise_versions.py
-# Compares each overworld.json file in data/noise_settings/*/ to the 1.21.5 reference
+# Compares each overworld.json file in data/noise_settings/*/ to the 1.21.11 reference
 
 import json
 from pathlib import Path
@@ -16,7 +16,7 @@ for filename in [
     "floating_islands.json",
     "nether.json",
 ]:
-    reference_file = base_path / "1.21.5" / filename
+    reference_file = base_path / "1.21.11" / filename
 
     # Load reference JSON
     with open(reference_file, "r", encoding="utf-8") as f:
@@ -24,7 +24,7 @@ for filename in [
 
     # Compare each other overworld.json file
     for version_dir in base_path.iterdir():
-        if not version_dir.is_dir() or version_dir.name == "1.21.5":
+        if not version_dir.is_dir() or version_dir.name == "1.21.11":
             continue
 
         target_file = version_dir / filename

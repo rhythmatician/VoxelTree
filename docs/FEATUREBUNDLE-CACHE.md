@@ -1,7 +1,7 @@
 # FeatureBundle Cache Specification
 
 **Status:** Design Phase  
-**Target:** Minecraft 1.21.5 + Fabric  
+**Target:** Minecraft 1.21.11 + Fabric  
 **Purpose:** LRU cache with optional disk sidecar for anchor channels
 
 ## Overview

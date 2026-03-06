@@ -11,7 +11,7 @@ from typing import Dict, List, Set
 
 def load_blocks() -> List[Dict]:
     """Load all Minecraft blocks from JSON."""
-    blocks_file = Path("scripts/extraction/blocks/1.21.5.json")
+    blocks_file = Path("scripts/extraction/blocks/1.21.11.json")
     with open(blocks_file) as f:
         return json.load(f)
 
@@ -368,7 +368,7 @@ def analyze_terrain_blocks(blocks: List[Dict]) -> Dict[str, Set[str]]:
 
 def main():
     """Run comprehensive terrain analysis."""
-    print("Loading Minecraft 1.21.5 blocks...")
+    print("Loading Minecraft 1.21.11 blocks...")
     blocks = load_blocks()
     print(f"Total blocks in game: {len(blocks)}")
 

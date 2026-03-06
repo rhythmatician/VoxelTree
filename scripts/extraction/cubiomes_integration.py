@@ -20,7 +20,7 @@ class CubiomesManager:
 
     def __init__(self, cubiomes_exe: Path):
         self.cubiomes_exe = cubiomes_exe
-        self.minecraft_version = "1.21.5"
+        self.minecraft_version = "1.21.11"
 
     def find_biome_coordinates(
         self, biome: str, seed: str = "VoxelTree", radius: int = 10000, count: int = 50
