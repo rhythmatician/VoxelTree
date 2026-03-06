@@ -93,18 +93,24 @@ class TestParentChildPairAssembly:
             assert "chunk_z" in pair
 
     def test_downsample_to_parent_voxel(self, temp_data_dir):
-        """RED: Fails if downsampling logic is incorrect."""
+        """Downsampling via Voxy Mipper returns (labels, occ) both shaped (8,8,8)."""
         pairer = PatchPairer()
 
-        # Create a 16x16x16 target subchunk
-        target_data = np.random.choice([True, False], size=(16, 16, 16))
+        # Create a 16x16x16 block-type array (integer IDs; 0 = air)
+        rng = np.random.default_rng(0)
+        block_types = rng.integers(0, 10, size=(16, 16, 16), dtype=np.int64)
 
-        parent_voxel = pairer.downsample_to_parent(target_data)
+        labels, occ = pairer.downsample_to_parent(block_types)
 
-        # Should be downsampled to 8x8x8
-        assert parent_voxel.shape == (8, 8, 8)
-        # Should use max pooling (most common block in 2x2x2 region)
-        assert parent_voxel.dtype == target_data.dtype
+        # Both outputs should be 8^3
+        assert labels.shape == (8, 8, 8), f"labels shape {labels.shape} != (8,8,8)"
+        assert occ.shape == (8, 8, 8), f"occ shape {occ.shape} != (8,8,8)"
+        # Occupancy is 0/1 (uint8 or bool); both are valid
+        assert np.issubdtype(occ.dtype, np.unsignedinteger) or np.issubdtype(occ.dtype, np.bool_)
+        # All-solid input → all occupied
+        solid = np.ones((16, 16, 16), dtype=np.int64)
+        _, solid_occ = pairer.downsample_to_parent(solid)
+        assert solid_occ.all()
 
     def test_slice_chunk_into_subchunks(self, temp_data_dir):
         """RED: Fails if chunk slicing is misaligned."""

@@ -96,8 +96,8 @@ class PackSDataset:
                     if parent_size < 1:
                         continue
 
-                    # Create parent voxel by downsampling occupancy
-                    parent_voxel = self._create_parent_voxel(target_occupancy, parent_size)
+                    # Create parent voxel via Voxy Mipper (opacity-biased block selection)
+                    parent_voxel = self._create_parent_voxel(target_blocks, parent_size)
 
                     # Generate Pack S features
                     pack_s_features = self._generate_pack_s_features(
@@ -127,35 +127,25 @@ class PackSDataset:
 
         return training_pairs
 
-    def _create_parent_voxel(self, occupancy: np.ndarray, parent_size: int) -> np.ndarray:
-        """Create parent voxel by downsampling occupancy."""
-        if parent_size == 8:
-            # Simple 2x2x2 pooling: 16³ → 8³
-            parent = np.zeros((8, 8, 8), dtype=np.float32)
-            for i in range(8):
-                for j in range(8):
-                    for k in range(8):
-                        # OR-pool from 2x2x2 region
-                        region = occupancy[
-                            i * 2 : (i + 1) * 2, j * 2 : (j + 1) * 2, k * 2 : (k + 1) * 2
-                        ]
-                        parent[i, j, k] = np.any(region)
-            return parent[None, ...]  # Add channel dimension
-        else:
-            # For smaller sizes, recursively downsample
-            current = occupancy
-            while current.shape[0] > parent_size:
-                next_size = current.shape[0] // 2
-                next_vol = np.zeros((next_size, next_size, next_size), dtype=np.float32)
-                for i in range(next_size):
-                    for j in range(next_size):
-                        for k in range(next_size):
-                            region = current[
-                                i * 2 : (i + 1) * 2, j * 2 : (j + 1) * 2, k * 2 : (k + 1) * 2
-                            ]
-                            next_vol[i, j, k] = np.any(region)
-                current = next_vol
-            return current[None, ...]  # Add channel dimension
+    def _create_parent_voxel(self, target_blocks: np.ndarray, parent_size: int) -> np.ndarray:
+        """Create parent voxel by Mipper-downsampling block-type labels.
+
+        Args:
+            target_blocks: (16, 16, 16) integer array of block IDs.
+            parent_size:   Target size (8, 4, 2, or 1).
+
+        Returns:
+            Float32 occupancy array of shape (1, S, S, S) where S = parent_size.
+        """
+        from scripts.mipper import build_opacity_table, mip_volume_numpy
+
+        factor = 16 // parent_size
+        if factor < 1 or (factor & (factor - 1)) != 0:
+            raise ValueError(f"Invalid parent_size {parent_size} for 16³ input")
+
+        tbl = build_opacity_table(max(int(target_blocks.max()) + 2, 16))
+        _, coarse_occ = mip_volume_numpy(target_blocks.astype(np.int64), factor, tbl)
+        return coarse_occ.astype(np.float32)[None, ...]  # Add channel dimension
 
     def _generate_pack_s_features(
         self, heightmap: np.ndarray, biomes: np.ndarray, chunk_x: int, chunk_z: int, y_index: int
@@ -289,7 +279,7 @@ class PackSDataset:
         return sample
 
 
-def collate_pack_s_batch(samples: List[Dict]) -> Dict:
+def collate_pack_s_batch(samples: List[Dict]) -> Dict[str, torch.Tensor | list]:
     """
     Collate function for Pack S batches.
     Groups samples by LOD transition type.
@@ -298,7 +288,7 @@ def collate_pack_s_batch(samples: List[Dict]) -> Dict:
         return {}
 
     # Group by LOD transition
-    grouped_samples = {}
+    grouped_samples: Dict[str, List[Dict]] = {}
     for sample in samples:
         transition = sample["lod_transition"]
         if transition not in grouped_samples:
@@ -311,7 +301,7 @@ def collate_pack_s_batch(samples: List[Dict]) -> Dict:
     transition_samples = grouped_samples[first_transition]
 
     # Stack tensors
-    batch = {}
+    batch: Dict[str, torch.Tensor | list] = {}
     for key in transition_samples[0].keys():
         if isinstance(transition_samples[0][key], torch.Tensor):
             batch[key] = torch.stack([sample[key] for sample in transition_samples])

@@ -17,58 +17,17 @@ from typing import Dict, List, Optional
 import numpy as np
 import torch
 
+from scripts.mipper import build_opacity_table, mip_volume_numpy
 
-def downsample_voxels_3d(voxels: np.ndarray, factor: int, method: str = "max_pool") -> np.ndarray:
-    """
-    Downsample 3D voxel data by the given factor.
+# Module-level opacity table (lazy)
+_OPACITY_TABLE: np.ndarray | None = None
 
-    Args:
-        voxels: (H, W, D) array of voxel data
-        factor: Downsampling factor (2, 4, 8, 16)
-        method: "max_pool" for occupancy, "mode" for block types
 
-    Returns:
-        Downsampled voxel array
-    """
-    if factor == 1:
-        return voxels
-
-    h, w, d = voxels.shape
-    new_h, new_w, new_d = h // factor, w // factor, d // factor
-
-    if method == "max_pool":
-        # For occupancy data - use max pooling (OR operation)
-        downsampled = np.zeros((new_h, new_w, new_d), dtype=voxels.dtype)
-        for i in range(new_h):
-            for j in range(new_w):
-                for k in range(new_d):
-                    window = voxels[
-                        i * factor : (i + 1) * factor,
-                        j * factor : (j + 1) * factor,
-                        k * factor : (k + 1) * factor,
-                    ]
-                    downsampled[i, j, k] = np.max(window)
-        return downsampled
-
-    elif method == "mode":
-        # For block types - use most frequent block in each window
-        downsampled = np.zeros((new_h, new_w, new_d), dtype=voxels.dtype)
-        for i in range(new_h):
-            for j in range(new_w):
-                for k in range(new_d):
-                    window = voxels[
-                        i * factor : (i + 1) * factor,
-                        j * factor : (j + 1) * factor,
-                        k * factor : (k + 1) * factor,
-                    ]
-                    # Get most frequent non-zero value, fallback to most frequent overall
-                    unique, counts = np.unique(window, return_counts=True)
-                    most_frequent_idx = np.argmax(counts)
-                    downsampled[i, j, k] = unique[most_frequent_idx]
-        return downsampled
-
-    else:
-        raise ValueError(f"Unknown downsampling method: {method}")
+def _get_opacity_table(max_id: int = 4096) -> np.ndarray:
+    global _OPACITY_TABLE
+    if _OPACITY_TABLE is None or len(_OPACITY_TABLE) < max_id + 1:
+        _OPACITY_TABLE = build_opacity_table(max(max_id + 1, 4096))
+    return _OPACITY_TABLE
 
 
 def create_occupancy_from_blocks(block_data: np.ndarray, air_id: int = 0) -> np.ndarray:
@@ -119,9 +78,9 @@ def create_lod_training_pairs(
         factor = 2**lod_level  # 2, 4, 8, 16
         size = 16 // factor  # 8, 4, 2, 1
 
-        # Downsample blocks and occupancy
-        blocks_down = downsample_voxels_3d(labels16, factor, method="mode")
-        occ_down = downsample_voxels_3d(occ16, factor, method="max_pool")
+        # Downsample blocks using Voxy Mipper (opacity-biased corner selection)
+        tbl = _get_opacity_table(int(labels16.max()))
+        blocks_down, occ_down = mip_volume_numpy(labels16, factor, tbl)
 
         lod_data[lod_level] = {"blocks": blocks_down, "occupancy": occ_down, "size": size}
 

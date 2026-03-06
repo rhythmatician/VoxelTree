@@ -14,6 +14,19 @@ import numpy as np
 import yaml
 from tqdm import tqdm
 
+from scripts.mipper import build_opacity_table, mip_once_numpy
+
+# Lazy-initialised opacity table (built on first use)
+_OPACITY_TABLE: np.ndarray | None = None
+
+
+def _get_opacity_table() -> np.ndarray:
+    global _OPACITY_TABLE
+    if _OPACITY_TABLE is None:
+        _OPACITY_TABLE = build_opacity_table(n_blocks=4096)
+    return _OPACITY_TABLE
+
+
 logger = logging.getLogger(__name__)
 
 
@@ -135,28 +148,28 @@ class PatchPairer:
 
         return subchunks
 
-    def downsample_to_parent(self, target_data: np.ndarray) -> np.ndarray:
-        """
-        Downsample 16x16x16 target data to 8x8x8 parent voxel using max pooling.
+    def downsample_to_parent(
+        self, block_types: np.ndarray, target_mask: np.ndarray | None = None
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Downsample 16×16×16 block-type labels to 8×8×8 parent using Voxy Mipper.
+
+        Implements the opacity-biased corner-selection algorithm from ``Mipper.java``:
+        for each 2×2×2 window, the most-opaque non-air voxel wins; among equal opacity
+        the I111 corner (highest y, x, z) takes priority.
 
         Args:
-            target_data: (16, 16, 16) array to downsample
+            block_types: (16, 16, 16) integer array of block IDs.  ID 0 = air.
+            target_mask:  Ignored (kept for backwards compatibility).  Occupancy is
+                          derived from the Mipper output.
 
         Returns:
-            (8, 8, 8) downsampled array
+            ``(parent_labels, parent_occ)`` — both (8, 8, 8).
+            ``parent_occ`` is uint8 (0 or 1).
         """
-        # Reshape to enable 2x2x2 pooling
-        reshaped = target_data.reshape(8, 2, 8, 2, 8, 2)
-
-        # Use max pooling (most common value in each 2x2x2 block)
-        if target_data.dtype == bool:
-            # For boolean data, use logical OR (any True becomes True)
-            pooled = np.any(reshaped, axis=(1, 3, 5))
-        else:
-            # For other data types, use actual max
-            pooled = np.max(reshaped, axis=(1, 3, 5))
-
-        return pooled
+        tbl = _get_opacity_table()
+        labels = np.asarray(block_types, dtype=np.int64)
+        coarse_labels, coarse_occ = mip_once_numpy(labels, tbl)
+        return coarse_labels, coarse_occ
 
     def create_training_pair(self, subchunk: Dict[str, Any], lod_level: int) -> Dict[str, Any]:
         """
@@ -172,11 +185,12 @@ class PatchPairer:
         target_mask = subchunk["target_mask"]
         target_types = subchunk["target_types"]
 
-        # Create parent voxel by downsampling the target
-        parent_voxel = self.downsample_to_parent(target_mask)
+        # Create parent voxel by Mipper-downsampling block types (Voxy-compatible)
+        parent_labels, parent_occ = self.downsample_to_parent(target_types, target_mask)
 
         pair = {
-            "parent_voxel": parent_voxel,
+            "parent_voxel": parent_occ.astype(np.float32),  # binary occupancy for model input
+            "parent_labels": parent_labels,  # block IDs for richer parent conditioning if needed
             "target_mask": target_mask,
             "target_types": target_types,
             "y_index": subchunk["y_index"],

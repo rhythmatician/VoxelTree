@@ -16,7 +16,20 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
+from scripts.mipper import build_opacity_table, mip_volume_torch
+
 logger = logging.getLogger(__name__)
+
+# Lazy opacity table for LOD pyramid (PyTorch)
+_LOD_OPACITY_TABLE: "torch.Tensor | None" = None
+
+
+def _get_lod_opacity_table() -> "torch.Tensor":
+    global _LOD_OPACITY_TABLE
+    if _LOD_OPACITY_TABLE is None:
+        tbl = build_opacity_table(n_blocks=4096)
+        _LOD_OPACITY_TABLE = torch.from_numpy(tbl).long()
+    return _LOD_OPACITY_TABLE
 
 
 class LODPyramidGenerator:
@@ -46,15 +59,21 @@ class LODPyramidGenerator:
             logger.warning(f"Parent size {parent_size} != 8 may not work with current model")
 
     def generate_parent_pyramid(self, target_mask: torch.Tensor, factor: int) -> torch.Tensor:
-        """
-        Generate parent voxel from target using specified coarsening factor.
+        """Generate parent voxel from target using Voxy Mipper coarsening.
 
         Args:
-            target_mask: (B, C, D, H, W) target occupancy mask (0/1 floats)
+            target_mask: (B, C, D, H, W) target occupancy mask used *only* for shape validation.
+                         Block labels from ``target_types`` (if available in caller) should be
+                         passed via :meth:`generate_parent_pyramid_from_labels`.
             factor: Coarsening factor in [1, 2, 4, 8, 16]
 
         Returns:
-            Parent voxel (B, C, parent_size, parent_size, parent_size)
+            Parent voxel (B, C, parent_size, parent_size, parent_size) as float32 occupancy.
+
+        .. note::
+            This overload accepts an occupancy mask for backwards compatibility but
+            falls back to OR-pooling (not Mipper) because block types are unavailable.
+            Prefer :meth:`generate_parent_pyramid_from_labels` when block-type labels exist.
         """
         if factor not in self.valid_factors:
             raise ValueError(f"Factor {factor} not in valid factors {self.valid_factors}")
@@ -65,28 +84,49 @@ class LODPyramidGenerator:
                 f"Expected target shape (..., {self.target_size}³), got {target_mask.shape}"
             )
 
-        # Apply coarsening via max pooling
         if factor == 1:
-            # No coarsening, just resize to parent size
             coarse = target_mask
         else:
-            # Divide target into factor³ blocks and max pool
-            assert self.target_size % factor == 0, f"Factor {factor} must divide {self.target_size}"
-
-            # Reshape to expose factor blocks: (B, C, D//f, f, H//f, f, W//f, f)
             k = factor
             reshaped = target_mask.view(B, C, D // k, k, H // k, k, W // k, k)
+            coarse = reshaped.amax(dim=(3, 5, 7))  # OR-pool (fallback, no block labels)
 
-            # Max pool over factor dimensions
-            coarse = reshaped.amax(dim=(3, 5, 7))  # (B, C, D//f, H//f, W//f)
-
-        # Resize coarse to canonical parent size using nearest neighbor
         if coarse.shape[2:] != (self.parent_size, self.parent_size, self.parent_size):
             parent = F.interpolate(
                 coarse, size=(self.parent_size, self.parent_size, self.parent_size), mode="nearest"
             )
         else:
             parent = coarse
+
+        return parent.float()
+
+    def generate_parent_pyramid_from_labels(
+        self, target_labels: torch.Tensor, factor: int
+    ) -> torch.Tensor:
+        """Generate parent occupancy using Voxy Mipper from integer block-type labels.
+
+        Args:
+            target_labels: (B, D, H, W) long tensor of block IDs (0 = air).
+            factor: Coarsening factor in [1, 2, 4, 8, 16]
+
+        Returns:
+            Parent occupancy (B, 1, parent_size, parent_size, parent_size) float32.
+        """
+        if factor not in self.valid_factors:
+            raise ValueError(f"Factor {factor} not in valid factors {self.valid_factors}")
+
+        tbl = _get_lod_opacity_table().to(target_labels.device)
+        _, coarse_occ = mip_volume_torch(target_labels.long(), factor, tbl)
+        coarse_occ = coarse_occ.unsqueeze(1)  # (B, 1, D//f, H//f, W//f)
+
+        if coarse_occ.shape[2:] != (self.parent_size, self.parent_size, self.parent_size):
+            parent = F.interpolate(
+                coarse_occ,
+                size=(self.parent_size, self.parent_size, self.parent_size),
+                mode="nearest",
+            )
+        else:
+            parent = coarse_occ
 
         return parent.float()
 
@@ -139,7 +179,7 @@ class LODPyramidGenerator:
         Returns:
             Statistics dictionary
         """
-        stats = {
+        stats: Dict[str, Any] = {
             "target_occupancy": float(target_mask.mean()),
             "target_volume": int(target_mask.sum()),
             "pyramid_occupancies": {},
@@ -154,10 +194,14 @@ class LODPyramidGenerator:
             # Measure how well coarsening preserves occupancy
             preservation = parent_occupancy / max(target_occupancy, 1e-8)
             stats["occupancy_preservation"][factor] = preservation
-        target_occupancy = target_mask.mean()
+        target_occupancy = (
+            target_mask.mean()  # FIXME: Incompatible types in assignment (expression has type "Tensor", variable has type "float")
+        )
 
         for factor, parent in pyramid.items():
-            parent_occupancy = parent.mean()
+            parent_occupancy = (
+                parent.mean()  # FIXME: Incompatible types in assignment (expression has type "Tensor", variable has type "float")
+            )
             stats["pyramid_occupancies"][factor] = float(parent_occupancy)  # noqa
 
             # Measure how well coarsening preserves occupancy
@@ -278,7 +322,11 @@ def demo_pyramid_generation():
 
         # Reverse lookup factor from lod
         lod_to_factor = {0: 1, 1: 2, 2: 4, 3: 8, 4: 16}
-        factor_used = lod_to_factor.get(lod_used, "unknown")
+        factor_used = (
+            lod_to_factor.get(  # FIXME: No overloads for "get" match the provided arguments
+                lod_used, "unknown"
+            )
+        )
 
         parent_occ = aug_batch["parent_voxel"].mean()
         logger.info(

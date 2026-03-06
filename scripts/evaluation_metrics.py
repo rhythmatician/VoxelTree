@@ -498,7 +498,12 @@ class RolloutEvaluator:
 
                 # Prepare next parent (downsample current prediction)
                 if step < max_steps - 1:
-                    # Simple 2x2x2 max pooling to create next parent
+                    # Rollout provides only air_pred probabilities, not block IDs, so we
+                    # cannot call the Mipper algorithm here (Mipper requires integer block
+                    # types for opacity-biased corner selection).  OR-pooling via max_pool3d
+                    # is the correct fallback for a probability occupancy tensor.
+                    # TODO(milestone-5): thread argmax(block_logits) through rollout so
+                    # this step can use mip_volume_torch instead.
                     next_parent = F.max_pool3d(air_pred, kernel_size=2, stride=2)
                     # Resize to canonical 8³ if needed
                     if next_parent.shape[2:] != (8, 8, 8):

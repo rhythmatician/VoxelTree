@@ -108,19 +108,22 @@ river16:   float32      (1,16,16) [optional]
 
 ## 🔁 Building the LOD Pyramid (Targets)
 
-From `labels16` build coarser labels purely for **metrics** and optional heads:
+From `labels16` build coarser labels using the **Voxy Mipper algorithm** (not OR-pool or
+probability pooling).
 
-* **Occupancy**: `occ8 = OR_pool(occ16, 2×2×2)`; repeat to get 4³, 2³, 1³.
-* **Blocks**: probability pooling preferred (smoother):
-
-  1. one‑hot `labels16` → `[N_blocks,16,16,16]`
-  2. `avg_2x2x2` → `[N_blocks,8,8,8]` (and further)
-  3. `argmax` per voxel → integer IDs at coarse scale.
+* **Single source of truth**: `scripts/mipper.py` — `mip_once_numpy`, `mip_volume_numpy`,
+  `mip_volume_torch`.
+* **Opacity tiers**: air = 0, water/lava/glass/leaves/etc. = 1, all other solids = 15.
+* **Selection rule**: score = `(opacity << 4) | corner_priority` — highest score wins.
+  When all 8 corners are identical opacity the **I₁₁₁ corner** (axis-order: x=1,z=1,y=1)
+  always wins (priority 7).
+* **Occupancy**: derived automatically from the Mipper output (non-air ⇒ occupied).
 
 **Invariant tests** (unit):
 
-* OR‑pooled occupancy monotonicity
-* Pooled class probs sum ≈ 1.0
+* Mipper occupancy is ≤ OR-pool occupancy (it can only be equal or denser, never more)
+* All-air input → all-air output
+* Single opaque voxel in a 2³ window → that voxel wins
 
 ---
 
@@ -129,9 +132,10 @@ From `labels16` build coarser labels purely for **metrics** and optional heads:
 * Always predict **16³** from an **8³** parent.
 * Randomly draw **coarsening factor** `f ∈ {1,2,4,8,16}` per sample:
 
-  * `parent_f = OR_pool(occ16, window=f)`  → nearest‑upsample back to **8³**
+  * `parent_f = mip_volume_numpy(labels16, f)` → nearest‑upsample to **8³** if needed
   * `lod = log2(f)+1`
-* **Scheduled sampling** (anti‑drift): with p≈0.1→0.3, derive `occ16` (and `parent_f`) from the model’s **previous** pred (downsampled) instead of truth.
+* **Scheduled sampling** (anti‑drift): with p≈0.1→0.3, derive the parent from the model's
+  **previous** pred (run argmax on logits, then `mip_volume_torch`) instead of truth.
 * **Loss**: `CE(block_logits, labels16) + λ_air * BCEWithLogits(air_mask, air_target)`; start `λ_air=0.25`.
 * **Metrics**: per‑step (by f) and **full rollout** LOD5→…→LOD0 (self‑fed).
 
@@ -228,25 +232,35 @@ occ8 = (
 )
 ```
 
-**Probability pooling (class‑wise avg):**
+**Voxy Mipper (canonical LOD coarsening):**
 
 ```python
-# logits_onehot: [C,16,16,16] one‑hot from labels
-pooled = (
-  logits_onehot[:,0::2,0::2,0::2] + logits_onehot[:,1::2,0::2,0::2] +
-  logits_onehot[:,0::2,1::2,0::2] + logits_onehot[:,1::2,1::2,0::2] +
-  logits_onehot[:,0::2,0::2,1::2] + logits_onehot[:,1::2,0::2,1::2] +
-  logits_onehot[:,0::2,1::2,1::2] + logits_onehot[:,1::2,1::2,1::2]
-) / 8.0
-ids8 = pooled.argmax(0)
+from scripts.mipper import build_opacity_table, mip_volume_numpy, mip_volume_torch
+
+# NumPy (data pipeline, extraction)
+tbl = build_opacity_table(n_blocks=4096)          # air=0, transparent=1, solid=15
+labels8, occ8 = mip_volume_numpy(labels16, 2, tbl)  # 16³ → 8³
+labels4, occ4 = mip_volume_numpy(labels16, 4, tbl)  # 16³ → 4³  (recursive inside)
+
+# PyTorch (training, inference)
+tbl_t = torch.from_numpy(tbl).long().to(device)
+labels8_t, occ8_t = mip_volume_torch(labels16_t.long(), 2, tbl_t)  # (B,D,H,W), (B,D//2,H//2,W//2)
 ```
 
 **Coarsen‑factor sampling in dataset:**
 
 ```python
-f = random.choice([1,2,4,8,16])
-parent_f = or_pool(occ16, f)      # shape: (8//f, 8//f, 8//f)
-parent_8 = nearest_upsample(parent_f, out_shape=(8,8,8))
+from scripts.mipper import build_opacity_table, mip_volume_numpy
+import math, random, numpy as np
+
+tbl = build_opacity_table(n_blocks=4096)
+f = random.choice([1, 2, 4, 8, 16])
+parent_labels, parent_occ = mip_volume_numpy(labels16, f, tbl)  # shape: (16//f,)³
+# Nearest-upsample to canonical 8³ for model input
+parent_8 = np.repeat(np.repeat(np.repeat(
+    parent_occ, 8 // (16 // f), axis=0),
+    8 // (16 // f), axis=1),
+    8 // (16 // f), axis=2)
 lod = int(math.log2(f)) + 1
 ```
 

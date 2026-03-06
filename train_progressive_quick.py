@@ -17,12 +17,9 @@ from torch.utils.data import DataLoader
 # Add train directory to path
 sys.path.append(str(Path(__file__).parent / "train"))
 
-from train.multi_lod_dataset import (  # noqa: E402
-    MultiLODDataset,
-    collate_multi_lod_batch,
-)
-from train.progressive_lod_models import (  # noqa: E402
-    ProgressiveLODModel,
+from train.multi_lod_dataset import MultiLODDataset, collate_multi_lod_batch  # noqa: E402
+from train.progressive_lod_models import (
+    ProgressiveLODModel,  # noqa: E402
     ProgressiveLODModel0_Initial,
 )
 from train.unet3d import SimpleFlexibleConfig  # noqa: E402
@@ -100,9 +97,10 @@ class ProgressiveLODLoss(nn.Module):
 
 
 def _downsample_targets(blocks: torch.Tensor, occ: torch.Tensor, out_size: int):
-    """Downsample 16^3 targets to out_size^3 via window mode (blocks) and OR (occ)."""
+    """Downsample 16³ targets to ``out_size``³ using Voxy Mipper (blocks) and OR (occ)."""
+    from scripts.mipper import build_opacity_table, mip_volume_torch
+
     if blocks.dim() == 4:
-        # [B,16,16,16]
         B, H, W, D = blocks.shape
     else:
         raise ValueError("Expected blocks shape [B,16,16,16]")
@@ -113,21 +111,15 @@ def _downsample_targets(blocks: torch.Tensor, occ: torch.Tensor, out_size: int):
     factor = 16 // out_size
     if 16 % out_size != 0:
         raise ValueError(f"out_size {out_size} must divide 16")
+    if (factor & (factor - 1)) != 0:
+        raise ValueError(f"factor {factor} must be a power of 2")
 
-    # Reshape into windows
-    def reshape_windows(x):
-        return x.view(B, out_size, factor, out_size, factor, out_size, factor)
+    # Build opacity table lazily
+    tbl = torch.from_numpy(build_opacity_table(n_blocks=4096)).long().to(blocks.device)
 
-    # Occupancy OR across window dims
-    occ_w = reshape_windows(occ)
-    occ_ds = occ_w.amax(dim=(2, 4, 6))  # [B,out,out,out]
-
-    # Blocks: pick mode within each window; fallback to max if tie handling is tricky
-    blk_w = reshape_windows(blocks)
-    blk_w_flat = blk_w.permute(0, 1, 3, 5, 2, 4, 6).reshape(B, out_size, out_size, out_size, -1)
-    # mode along last dim
-    blk_mode, _ = torch.mode(blk_w_flat, dim=-1)
-    return blk_mode, occ_ds
+    # Mipper: opacity-biased block selection
+    coarse_blks, coarse_occ = mip_volume_torch(blocks.long(), factor, tbl)
+    return coarse_blks, coarse_occ
 
 
 def _build_parent_logits_from_targets(blocks16: torch.Tensor, parent_size: int, num_classes: int):

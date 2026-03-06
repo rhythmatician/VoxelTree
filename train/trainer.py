@@ -14,10 +14,26 @@ import torch
 import torch.nn.functional as F
 import torch.optim as optim
 
+# Mipper for Voxy-compatible LOD coarsening
+from scripts.mipper import build_opacity_table
+from scripts.mipper import mip_volume_torch as _mip_volume_torch
+
 from .confusion_analyzer import create_confusion_analyzer
 from .losses import voxel_loss_fn
 from .unet3d import SimpleFlexibleConfig, SimpleFlexibleUNet3D
 from .visualizer import TensorBoardLogger
+
+_OPACITY_TABLE_TORCH: "torch.Tensor | None" = None  # noqa: F821
+
+
+def _get_opacity_table_torch() -> "torch.Tensor":  # noqa: F821
+    global _OPACITY_TABLE_TORCH
+    if _OPACITY_TABLE_TORCH is None:
+        import torch as _torch
+
+        tbl = build_opacity_table(n_blocks=4096)
+        _OPACITY_TABLE_TORCH = _torch.from_numpy(tbl).long()
+    return _OPACITY_TABLE_TORCH
 
 
 class VoxelTrainer:
@@ -102,30 +118,26 @@ class VoxelTrainer:
                     self._log_model_graph_pending = False
 
         # Optionally replace parent voxel with dynamically generated multi-LOD parent
-        if self.multi_lod_enabled and "target_mask" in batch:
+        if self.multi_lod_enabled and "target_types" in batch:
             factor = random.choice(self.multi_lod_factors)
             # Map factor -> lod index (powers of two) 1->0,2->1,4->2,8->3,16->4
             lod_index = {1: 0, 2: 1, 4: 2, 8: 3, 16: 4}[factor]
-            target_mask = batch["target_mask"]  # (B,1,16,16,16)
+            target_types = batch["target_types"]  # (B, 16, 16, 16) integer block IDs
+            if target_types.dim() == 5:
+                target_types = target_types.squeeze(1)  # (B, 16, 16, 16)
             with torch.no_grad():
-                # Coarsen target occupancy by max pooling across factor blocks
-                if factor == 1:
-                    coarse = target_mask
+                # Coarsen using Voxy Mipper (opacity-biased, I111 tie-break)
+                tbl = _get_opacity_table_torch().to(target_types.device)
+                coarse_labels, coarse_occ = _mip_volume_torch(
+                    target_types.long(), factor, tbl
+                )  # (B, 16/f, 16/f, 16/f)
+                coarse_occ = coarse_occ.unsqueeze(1)  # (B, 1, 16/f, 16/f, 16/f)
+                # Upsample to canonical 8³ parent size if needed
+                if coarse_occ.shape[2:] != (8, 8, 8):
+                    coarse_up = F.interpolate(coarse_occ, size=(8, 8, 8), mode="nearest")
                 else:
-                    B, C, D, H, W = target_mask.shape
-                    assert D == 16 and H == 16 and W == 16, "Expected 16^3 target volume"
-                    assert 16 % factor == 0, "Factor must divide 16"
-                    k = factor
-                    view = target_mask.view(B, C, D // k, k, H // k, k, W // k, k)
-                    # max over the k dimensions
-                    coarse = view.amax(dim=(3, 5, 7))  # (B,1,16/f,16/f,16/f)
-                # Upsample / downsample coarse to 8^3 canonical parent size
-                if coarse.shape[2:] != (8, 8, 8):
-                    # Use nearest interpolation for occupancy
-                    coarse_up = F.interpolate(coarse, size=(8, 8, 8), mode="nearest")  # (B,1,8,8,8)
-                else:
-                    coarse_up = coarse
-                # Scheduled sampling: optionally mix previous prediction to reduce teacher forcing
+                    coarse_up = coarse_occ
+                # Scheduled sampling: optionally blend with previous model prediction
                 if self.sched_enabled and self.current_epoch >= self.sched_warmup_epochs:
                     progress = min(
                         1.0,
@@ -489,4 +501,6 @@ class VoxelTrainer:
                 "end_prob": self.sched_end,
                 "warmup_epochs": self.sched_warmup_epochs,
             }
+        return prov
+        return prov
         return prov
