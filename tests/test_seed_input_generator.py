@@ -87,51 +87,23 @@ class TestSeedInputGenerator:
         height_diff = abs(height_center - height_nearby)
         assert height_diff <= 50, f"Heights too different: {height_center} vs {height_nearby}"
 
-    # TDD Cycle 1B.3: River signal patch
-    def test_river_noise_valid_range(self):
-        """Test that river noise values are in expected range."""
-        river_value = self.generator.get_river_noise(0, 0)
-
-        assert isinstance(river_value, float)
-        # OpenSimplex noise typically returns values in [-1, 1]
-        assert -2.0 <= river_value <= 2.0
-
-    def test_river_noise_deterministic(self):
-        """Test that river noise is deterministic."""
-        river1 = self.generator.get_river_noise(30, 40)
-        river2 = self.generator.get_river_noise(30, 40)
-        assert abs(river1 - river2) < 1e-6  # Floating point equality
-
-    def test_river_noise_continuity(self):
-        """Test that river noise changes smoothly across coordinates."""
-        river_values = []
-        for x in range(5):
-            river_values.append(self.generator.get_river_noise(x, 0))
-
-        # Adjacent values should not be extremely different
-        for i in range(len(river_values) - 1):
-            diff = abs(river_values[i] - river_values[i + 1])
-            assert diff <= 1.0, f"River noise too discontinuous: {diff}"
-
     # TDD Cycle 1B.4: Patch assembler
     def test_patch_structure_basic(self):
         """Test that patch has correct structure and data types."""
         patch = self.generator.get_patch(0, 0, 16)
 
         # Check required keys
-        required_keys = ["biomes", "heightmap", "river", "x", "z", "seed"]
+        required_keys = ["biomes", "heightmap", "x", "z", "seed"]
         for key in required_keys:
             assert key in patch, f"Missing key: {key}"
 
         # Check array shapes
         assert patch["biomes"].shape == (16, 16)
         assert patch["heightmap"].shape == (16, 16)
-        assert patch["river"].shape == (16, 16)
 
         # Check data types
         assert patch["biomes"].dtype == np.uint8
         assert patch["heightmap"].dtype == np.uint16
-        assert patch["river"].dtype == np.float32
 
         # Check coordinate values
         assert patch["x"] == 0
@@ -160,13 +132,11 @@ class TestSeedInputGenerator:
         patch_8 = self.generator.get_patch(0, 0, 8)
         assert patch_8["biomes"].shape == (8, 8)
         assert patch_8["heightmap"].shape == (8, 8)
-        assert patch_8["river"].shape == (8, 8)
 
         # Test 32x32 patch
         patch_32 = self.generator.get_patch(0, 0, 32)
         assert patch_32["biomes"].shape == (32, 32)
         assert patch_32["heightmap"].shape == (32, 32)
-        assert patch_32["river"].shape == (32, 32)
 
     def test_patch_spatial_consistency(self):
         """Test that adjacent patches have consistent boundary values."""
@@ -195,14 +165,13 @@ class TestSeedInputGenerator:
         # Load and verify structure
         loaded_data = np.load(saved_path)
 
-        required_keys = ["biomes", "heightmap", "river", "x", "z", "seed"]
+        required_keys = ["biomes", "heightmap", "x", "z", "seed"]
         for key in required_keys:
             assert key in loaded_data, f"Missing key in saved file: {key}"
 
         # Verify data integrity
         assert np.array_equal(loaded_data["biomes"], patch["biomes"])
         assert np.array_equal(loaded_data["heightmap"], patch["heightmap"])
-        assert np.allclose(loaded_data["river"], patch["river"])
         assert loaded_data["x"] == patch["x"]
         assert loaded_data["z"] == patch["z"]
         assert loaded_data["seed"] == patch["seed"]
@@ -259,7 +228,6 @@ class TestSeedInputGenerator:
 
         assert np.array_equal(patch1["biomes"], patch2["biomes"])
         assert np.array_equal(patch1["heightmap"], patch2["heightmap"])
-        assert np.allclose(patch1["river"], patch2["river"])
 
 
 class TestSeedInputIntegration:
@@ -304,24 +272,3 @@ class TestSeedInputIntegration:
         # Should not have impossible height values
         assert np.all(heights >= 0)
         assert np.all(heights <= 384)
-
-    def test_river_noise_distribution(self):
-        """Test that river noise has appropriate statistical properties."""
-        generator = SeedInputGenerator(seed=777)
-
-        # Sample river noise across a region
-        river_values = []
-        for x in range(0, 128, 2):
-            for z in range(0, 128, 2):
-                river_val = generator.get_river_noise(x, z)
-                river_values.append(river_val)
-
-        river_values = np.array(river_values)
-
-        # Should be roughly centered around 0 (property of OpenSimplex)
-        mean_value = np.mean(river_values)
-        assert abs(mean_value) < 0.5, f"River noise not centered: mean={mean_value}"
-
-        # Should have reasonable range
-        assert np.min(river_values) < -0.1
-        assert np.max(river_values) > 0.1

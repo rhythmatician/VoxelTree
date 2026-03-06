@@ -130,6 +130,8 @@ class TestWorldGenIntegration:
         world_dir = self.bootstrap.generate_region_batch(
             x_range=(0, 2), z_range=(0, 2)  # 2 chunks wide  # 2 chunks deep
         )
+        if world_dir is None:
+            pytest.fail("World generation failed, no world directory returned")
 
         # Verify .mca files were created
         region_dir = world_dir / "region"

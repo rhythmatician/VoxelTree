@@ -12,9 +12,12 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 import numpy as np
+import pytest
 
-from scripts.extraction.chunk_extractor import ChunkExtractor
-from scripts.worldgen.config import load_config
+anvil = pytest.importorskip("anvil", reason="anvil-parser not installed")
+
+from scripts.extraction.chunk_extractor import ChunkExtractor  # noqa: E402
+from scripts.worldgen.config import load_config  # noqa: E402
 
 
 class TestChunkExtractor:

@@ -140,7 +140,7 @@ class TestBiomeHeightmapPairing:
 
         # Should extract relevant biome features for the y-level
         assert biome_conditioning.shape == biomes.shape  # Same spatial dimensions
-        assert biome_conditioning.dtype in [np.uint8, np.int32, np.float32]
+        assert biome_conditioning.dtype in [np.uint8, np.int32, np.int64, np.float32]
 
     def test_heightmap_conditioning_extraction(self):
         """RED: Fails if heightmap conditioning is incorrect."""

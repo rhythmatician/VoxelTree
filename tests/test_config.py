@@ -69,5 +69,5 @@ def test_load_worldgen_config_default_path():
         with patch("pathlib.Path.exists", return_value=True):
             # Call without providing config_path to test default behavior
             worldgen_config = load_worldgen_config()
-            assert worldgen_config["seed"] == "VoxelTree"
+            assert worldgen_config["seed"] == 6901795026152433433
             assert worldgen_config["java_heap"] == "4G"

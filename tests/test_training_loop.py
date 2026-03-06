@@ -17,7 +17,6 @@ import pytest
 import torch
 
 
-
 class TestTrainingLoop:
     """Test basic training loop functionality (Phase 5.1)"""
 
@@ -51,7 +50,7 @@ class TestTrainingLoop:
         from train.trainer import VoxelTrainer
 
         config = {
-            "model": {"base_channels": 32, "depth": 3},
+            "model": {"base_channels": 32},
             "training": {"batch_size": 2, "learning_rate": 1e-4},
         }
 
@@ -72,7 +71,6 @@ class TestTrainingLoop:
             "parent_voxel": torch.randn(2, 1, 8, 8, 8),
             "biome_patch": torch.randint(0, 50, (2, 16, 16)),
             "heightmap_patch": torch.randint(50, 100, (2, 1, 16, 16)).float(),
-            "river_patch": torch.randn(2, 1, 16, 16),
             "y_index": torch.randint(0, 24, (2,)),
             "lod": torch.randint(0, 5, (2,)),
             "target_mask": torch.randint(0, 2, (2, 1, 16, 16, 16)).float(),

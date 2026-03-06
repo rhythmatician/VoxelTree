@@ -15,7 +15,14 @@ import numpy as np
 import pytest
 import yaml
 
-from scripts.generate_corpus import check_disk_space, load_config, parse_seed_range, split_dataset
+psutil = pytest.importorskip("psutil", reason="psutil not installed")
+
+from scripts.generate_corpus import (  # noqa: E402
+    check_disk_space,
+    load_config,
+    parse_seed_range,
+    split_dataset,
+)
 
 sys.path.append(str(Path(__file__).resolve().parent.parent))
 

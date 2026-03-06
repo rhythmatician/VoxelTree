@@ -28,7 +28,10 @@ class TestTensorBoardLogger:
     @pytest.fixture
     def mock_tensorboard(self):
         """Mock TensorBoard SummaryWriter to avoid actual file I/O."""
-        with patch("train.visualizer.SummaryWriter") as mock_writer:
+        with (
+            patch("train.visualizer.TENSORBOARD_AVAILABLE", True),
+            patch("train.visualizer.SummaryWriter") as mock_writer,
+        ):
             yield mock_writer
 
     @pytest.fixture
@@ -38,7 +41,6 @@ class TestTensorBoardLogger:
             "parent_voxel": torch.rand(2, 1, 8, 8, 8),
             "biome_patch": torch.randint(0, 256, (2, 256, 16, 16)),
             "heightmap_patch": torch.rand(2, 1, 16, 16),
-            "river_patch": torch.rand(2, 1, 16, 16),
             "y_index": torch.randint(0, 10, (2,)),
             "lod": torch.randint(1, 5, (2,)),
             "target_mask": torch.randint(0, 2, (2, 1, 16, 16, 16), dtype=torch.bool),
@@ -396,7 +398,10 @@ class TestVoxelVisualizationIntegration:
         predictions = torch.rand(1, 1, 16, 16, 16)
         targets = torch.randint(0, 2, (1, 1, 16, 16, 16), dtype=torch.float32)
 
-        with patch("train.visualizer.SummaryWriter") as mock_writer_class:
+        with (
+            patch("train.visualizer.TENSORBOARD_AVAILABLE", True),
+            patch("train.visualizer.SummaryWriter") as mock_writer_class,
+        ):
             mock_writer = Mock()
             mock_writer_class.return_value = mock_writer
 
@@ -414,7 +419,10 @@ class TestVoxelVisualizationIntegration:
 
     def test_error_handling_in_visualization(self, tmp_path):
         """Test error handling in visualization logging."""
-        with patch("train.visualizer.SummaryWriter") as mock_writer_class:
+        with (
+            patch("train.visualizer.TENSORBOARD_AVAILABLE", True),
+            patch("train.visualizer.SummaryWriter") as mock_writer_class,
+        ):
             mock_writer = Mock()
             mock_writer_class.return_value = mock_writer
 

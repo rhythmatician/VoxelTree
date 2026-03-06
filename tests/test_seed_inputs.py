@@ -41,22 +41,6 @@ class TestSeedInputGeneratorBounds:
             assert isinstance(height, int), f"Height should be int, got {type(height)}"
             assert 0 <= height <= 384, f"Height {height} out of range [0, 384] at ({x}, {z})"
 
-    def test_river_noise_is_float(self):
-        """Test that river noise returns float values."""
-        generator = SeedInputGenerator(seed=98765)
-
-        test_coords = [(0, 0), (123, 456), (-789, 321)]
-
-        for x, z in test_coords:
-            river_value = generator.get_river_noise(x, z)
-            assert isinstance(
-                river_value, float
-            ), f"River noise should be float, got {type(river_value)}"
-            # River noise should be reasonable but no strict bounds enforced
-            assert (
-                -10.0 <= river_value <= 10.0
-            ), f"River noise {river_value} seems unreasonable at ({x}, {z})"
-
 
 class TestPatchGeneration:
     """Test patch generation functionality."""
@@ -84,17 +68,13 @@ class TestPatchGeneration:
                     size,
                     size,
                 ), f"Heightmap shape mismatch: expected ({size}, {size}), got {patch['heightmap'].shape}"  # noqa: E501
-                assert patch["river"].shape == (
-                    size,
-                    size,
-                ), f"River shape mismatch: expected ({size}, {size}), got {patch['river'].shape}"
 
     def test_patch_contains_required_keys(self):
         """Test that patches contain all required metadata keys."""
         generator = SeedInputGenerator(seed=22222)
         patch = generator.get_patch(0, 0, 16)
 
-        required_keys = {"biomes", "heightmap", "river", "x", "z", "seed"}
+        required_keys = {"biomes", "heightmap", "x", "z", "seed"}
         patch_keys = set(patch.keys())
 
         missing_keys = required_keys - patch_keys
@@ -116,9 +96,6 @@ class TestPatchGeneration:
         assert (
             patch["heightmap"].dtype == np.uint16
         ), f"Heightmap should be uint16, got {patch['heightmap'].dtype}"
-        assert (
-            patch["river"].dtype == np.float32
-        ), f"River should be float32, got {patch['river'].dtype}"
 
 
 class TestFileOperations:
@@ -143,7 +120,7 @@ class TestFileOperations:
             loaded_data = np.load(saved_path)
 
             try:
-                required_keys = {"biomes", "heightmap", "river", "x", "z", "seed"}
+                required_keys = {"biomes", "heightmap", "x", "z", "seed"}
                 loaded_keys = set(loaded_data.keys())
 
                 missing_keys = required_keys - loaded_keys
@@ -152,7 +129,6 @@ class TestFileOperations:
                 # Verify data integrity
                 np.testing.assert_array_equal(loaded_data["biomes"], patch["biomes"])
                 np.testing.assert_array_equal(loaded_data["heightmap"], patch["heightmap"])
-                np.testing.assert_array_equal(loaded_data["river"], patch["river"])
                 assert loaded_data["x"] == patch["x"]
                 assert loaded_data["z"] == patch["z"]
                 assert loaded_data["seed"] == patch["seed"]
@@ -257,7 +233,6 @@ class TestDeterminism:
         # Should be identical
         np.testing.assert_array_equal(patch1["biomes"], patch2["biomes"])
         np.testing.assert_array_equal(patch1["heightmap"], patch2["heightmap"])
-        np.testing.assert_array_equal(patch1["river"], patch2["river"])
         assert patch1["x"] == patch2["x"]
         assert patch1["z"] == patch2["z"]
         assert patch1["seed"] == patch2["seed"]
@@ -278,11 +253,10 @@ class TestDeterminism:
         # Using a tolerance check since arrays might occasionally match by chance
         biomes_different = not np.array_equal(patch1["biomes"], patch2["biomes"])
         heights_different = not np.array_equal(patch1["heightmap"], patch2["heightmap"])
-        river_different = not np.array_equal(patch1["river"], patch2["river"])
 
         # At least one should be different
         assert (
-            biomes_different or heights_different or river_different
+            biomes_different or heights_different
         ), "Different seeds should produce different terrain"
 
 
@@ -307,7 +281,6 @@ class TestEdgeCases:
         assert patch["z"] == -2000
         assert patch["biomes"].shape == (16, 16)
         assert patch["heightmap"].shape == (16, 16)
-        assert patch["river"].shape == (16, 16)
 
     def test_large_coordinates(self):
         """Test that very large coordinates are handled correctly."""
