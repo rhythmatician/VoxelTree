@@ -29,7 +29,7 @@ class WorldGenBootstrap:
 
     def __init__(
         self,
-        seed: Optional[str] = None,
+        seed: Optional[str | int] = None,
         java_heap: Optional[str] = None,
         temp_world_dir: Optional[Path] = None,
         config_path: Optional[Path] = None,
