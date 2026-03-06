@@ -37,3 +37,6 @@ onnx_export/
 models/
 *.pt
 *.onnx
+
+# External repos for reference
+reference-code/
