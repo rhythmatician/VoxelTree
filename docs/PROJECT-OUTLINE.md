@@ -325,6 +325,9 @@ All models share these deterministic signals derived from vanilla noise:
 
 ### 5.3 Voxy Integration
 
+> **Authoritative reference:** `docs/VOXY-FORMAT.md` (audited from `MCRcortex/voxy` source).
+> All details below are ground-truth, not assumptions.
+
 **Requirements:**
 
 - Generate LOD sections compatible with Voxy's 32³ section format
@@ -332,18 +335,43 @@ All models share these deterministic signals derived from vanilla noise:
 - Ensure seam stability
 - Support reload persistence
 
-**Voxy section format:**
+**Voxy section format (verified):**
 
-- 32×32×32 blocks per section
-- Keyed by `(lvl, x, y, z)` in 64-bit key
-- Storage: RocksDB with "world_sections" column family
-- Serialization: palette + 16-bit indices + metadata
+- `32×32×32` voxels per WorldSection, indexed as `(y<<10)|(z<<5)|x`
+- **64-bit key** encoding: `(lvl<<60)|(y8<<52)|(z24<<28)|(x24<<4)` — 4 spare low bits
+- Storage: **RocksDB + ZSTD** (default); LMDB/Redis/in-memory backends also present
+- On-disk serialization per section:
+  1. `key` (8 B) + `metadata` (8 B, low byte = `nonEmptyChildren` bitmask)
+  2. `lutLen` (4 B) — number of unique voxel values
+  3. LUT: `lutLen × 8 B` — each entry is the **full 64-bit voxel long** (block+biome+light)
+  4. Indices: `32³ × 2 B = 65,536 B` — 16-bit LUT indices in **Morton (z-curve) order**
+  5. `hash` (8 B)
+- **Per-voxel `long` encoding:** bits 56–63 = light (sky<<4|block), bits 47–55 = biome ID
+  (9-bit, Voxy-internal), bits 27–46 = block state ID (20-bit, **Voxy-internal mapped ID**,
+  NOT the MC registry ID), bits 0–26 unused
+- **Block ID mapping** is world-specific: persisted as a separate entry in the same RocksDB
+  store; must be read before decoding any voxel data
+- **LOD downsampling** (Mipper): opacity-biased corner selection, **not majority vote**.
+  Each 2×2×2 group → pick the most-opaque non-air voxel (tie-break by I111 corner priority).
+  If all air, average light values.
+
+**LOD levels vs. vanilla chunk sections:**
+
+- Voxy LOD 0: each 32³ WorldSection covers `32` world-blocks per axis (= two 16-block
+  vanilla sections per axis, so 8 vanilla chunk sections compose one WorldSection)
+- Voxy LOD n: each 32³ WorldSection covers `32 × 2ⁿ` world-blocks per axis
+- During ingestion, `VoxelizedSection` holds a 5-level pyramid (16³+8³+4³+2³+1) for one
+  vanilla chunk section, before assembly into the spanning WorldSection
 
 **Integration approach:**
 
-- Generate our LOD patches (16³ or 32³)
-- Assemble into Voxy sections
-- Write to Voxy's cache format (or adapter layer)
+- To feed our model outputs into Voxy: pack each 16³ predicted patch into the correct
+  octant of a LOD-0 WorldSection (8 patches share one section key), encode each voxel
+  long using `(light<<56)|(biome<<47)|(voxy_block_id<<27)`, build LUT,
+  Morton-sort indices, write with correct key
+- The Voxy block ID mapping must be exported alongside the model's `model_config.json`
+  (or translated via a shared `block_vocab.json` ↔ Voxy-ID table at inference time)
+- See `docs/VOXY-FORMAT.md` §9 for a Python decoding/encoding recipe
 
 ### 5.4 Seam Strategy
 
