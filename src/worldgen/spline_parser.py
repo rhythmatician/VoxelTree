@@ -65,7 +65,7 @@ def parse_expr(expr: dict) -> Union[Spline, Constant]:
             val = parse_expr(point["value"])
             der = point.get("derivative", None)
             points.append((loc, val, der))
-        return Spline(coord, [(l, v.evaluate({coord: l}), d) for l, v, d in points])
+        return Spline(coord, [(le, v.evaluate({coord: le}), d) for le, v, d in points])
 
     else:
         raise NotImplementedError(f"Unsupported type: {t}")

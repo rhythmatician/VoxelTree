@@ -83,11 +83,11 @@ def create_lod_training_pairs(
 
     # Conditioning tensors (shared across all pairs from this chunk)
     biome_onehot = np.eye(256, dtype=np.float32)[biome_patch]  # (16,16,256)
-    biome_tensor = biome_onehot.transpose(2, 0, 1)[None, ...]  # (1,256,16,16)
+    biome_tensor = biome_onehot.transpose(2, 0, 1)  # (256,16,16)
     heightmap_norm = (heightmap_patch.astype(np.float32) - heightmap_patch.min()) / (
         max(heightmap_patch.max() - heightmap_patch.min(), 1e-6)
     )  # normalise to [0,1]
-    heightmap_tensor = heightmap_norm[None, None, ...]  # (1,1,16,16)
+    heightmap_tensor = heightmap_norm[None, ...]  # (1,16,16)
 
     training_pairs: List[Dict] = []
 
@@ -113,14 +113,14 @@ def create_lod_training_pairs(
         training_pairs.append(
             {
                 # --- model inputs ---
-                "parent_voxel": coarse_occ_8[None, None, ...],  # (1,1,8,8,8)
-                "biome_patch": biome_tensor,  # (1,256,16,16)
-                "heightmap_patch": heightmap_tensor,  # (1,1,16,16)
+                "parent_voxel": coarse_occ_8[None, ...],  # (1,8,8,8)
+                "biome_patch": biome_tensor,  # (256,16,16)
+                "heightmap_patch": heightmap_tensor,  # (1,16,16)
                 "y_index": np.array([y_index], dtype=np.int64),
                 "lod": np.array([lod_token], dtype=np.int64),
                 # --- targets (always 16³) ---
-                "target_mask": occ16[None, None, ...],  # (1,1,16,16,16)
-                "target_types": labels16[None, ...].astype(np.int64),  # (1,16,16,16)
+                "target_mask": occ16[None, ...],  # (1,16,16,16)
+                "target_types": labels16.astype(np.int64),  # (16,16,16)
                 # --- metadata ---
                 "lod_transition": f"lod{lod_token}to0",
                 "parent_size": 8,

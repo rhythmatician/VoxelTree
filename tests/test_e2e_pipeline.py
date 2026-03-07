@@ -153,10 +153,10 @@ class TestNpzDatasetPipeline:
 
         ds = MultiLODDataset(tmp_npz_dir, split="train")
         item = ds[0]
-        # parent_voxel must be (1, 1, S, S, S) for some S
+        # parent_voxel must be (1, S, S, S) — channel + spatial (no batch dim yet)
         pv = item["parent_voxel"]
-        assert pv.ndim == 5, "parent_voxel must be 5-D"
-        assert pv.shape[1] == 1, "parent_voxel channel must be 1"
+        assert pv.ndim == 4, f"parent_voxel must be 4-D (C,D,H,W), got {pv.ndim}-D"
+        assert pv.shape[0] == 1, "parent_voxel channel must be 1"
 
     def test_dataset_item_to_training_step(self, tmp_npz_dir: Path):
         """Adapt a MultiLODDataset item to the batch format and run a training step."""
@@ -165,24 +165,24 @@ class TestNpzDatasetPipeline:
         ds = MultiLODDataset(tmp_npz_dir, split="train")
         item = ds[0]
 
-        # parent_voxel is already (1,1,8,8,8) after the in-dataset upsampling
-        pv = torch.from_numpy(np.array(item["parent_voxel"], dtype=np.float32))
-        if pv.shape[2:] != (8, 8, 8):
-            pv = torch.nn.functional.interpolate(pv, size=(8, 8, 8), mode="nearest")
-
-        # target_mask is (1,1,16,16,16), target_types is (1,16,16,16) — both 16³
-        tm = torch.from_numpy(np.array(item["target_mask"], dtype=np.float32))
-        # voxel_loss_fn expects (B,1,16,16,16) — keep as-is
-        tt = torch.from_numpy(np.array(item["target_types"], dtype=np.int64))  # (1,16,16,16)
+        # Dataset now produces tensors WITHOUT the batch dim; DataLoader adds it.
+        # Here we manually unsqueeze(0) to simulate a batch of 1.
+        pv = item["parent_voxel"].unsqueeze(0).float()  # (1,1,8,8,8)
+        tm = item["target_mask"].unsqueeze(0).float()    # (1,1,16,16,16)
+        tt = item["target_types"].unsqueeze(0).long()    # (1,16,16,16)
+        bp = item["biome_patch"].unsqueeze(0)             # (1,256,16,16)
+        hp = item["heightmap_patch"].unsqueeze(0)         # (1,1,16,16)
+        yi = item["y_index"]                              # (1,) already
+        lo = item["lod"]                                  # (1,) already
 
         batch = {
-            "parent_voxel": pv,  # (1,1,8,8,8)
-            "biome_patch": torch.randint(0, 50, (1, 16, 16)),
-            "heightmap_patch": torch.randn(1, 1, 16, 16),
-            "y_index": torch.tensor([0], dtype=torch.long),
-            "lod": torch.tensor([1], dtype=torch.long),
-            "target_mask": tm,  # (1,16,16,16)
-            "target_types": tt,  # (1,16,16,16)
+            "parent_voxel": pv,
+            "biome_patch": bp,
+            "heightmap_patch": hp,
+            "y_index": yi,
+            "lod": lo,
+            "target_mask": tm,
+            "target_types": tt,
         }
 
         trainer = _make_trainer()

@@ -1,20 +1,25 @@
-"""voxy_writer.py — Scaffold for encoding VoxelTree output into Voxy's on-disk format.
+"""voxy_writer.py — Encode VoxelTree output into Voxy's on-disk format.
 
-Voxy stores each subchunk section as a flat array of 64-bit "voxel longs", packed in a
-Z-order (Morton) traversal of the 8×8×8 block grid.  Each long encodes:
+Voxy stores each VoxelizedSection as 16×16×16 blocks in linear YZX order
+(y-major, z-middle, x-minor), plus a mip pyramid (8³+4³+2³+1 = 585 extra
+entries, total 4681 longs per section).
 
-    bits 63-24  block-state ID  (40 bits, Voxy internal ID)
-    bits 23-16  biome ID        (8 bits)
-    bits  7- 4  sky light       (4 bits)
-    bits  3- 0  block light     (4 bits)
+Each voxel is a 64-bit long packed as:
 
-Section keys pack (level, x, y, z) into a single long.
+    bits 63-56  light           (8 bits: upper 4 = blockLight, lower 4 = skyLight)
+    bits 55-47  biome ID        (9 bits)
+    bits 46-27  block-state ID  (20 bits, Voxy internal ID)
+    bits 26- 0  unused          (27 bits, zero)
 
-Status:  **SCAFFOLD** — function signatures and bit-level recipes are correct per
-         docs/VOXY-FORMAT.md; the wire-up to DJL / the LODiffusion mod is deferred to
-         Milestone 5 (integration).
+Section keys pack (level, y, z, x) into a 64-bit long:
 
-TODO(milestone-5): implement pack_patches_to_section() body and connect to mod.
+    bits 63-60  level  (4 bits)
+    bits 59-52  y      (8 bits, signed)
+    bits 51-28  z      (24 bits, signed)
+    bits 27- 4  x      (24 bits, signed)
+    bits  3- 0  spare  (4 bits, zero)
+
+Blocks within a section are indexed as: y*256 + z*16 + x  (linear YZX).
 """
 
 from __future__ import annotations
@@ -23,16 +28,18 @@ import struct
 from typing import Dict, Sequence
 
 # ---------------------------------------------------------------------------
-# Bit-field layout (from Voxy source — ColumnDataPoint)
+# Bit-field layout (from Voxy source — Mapper.composeMappingId)
 # ---------------------------------------------------------------------------
-_BLOCK_ID_SHIFT = 24
-_BIOME_SHIFT = 16
-_SKY_LIGHT_SHIFT = 4
-_BLOCK_LIGHT_SHIFT = 0
+_BLOCK_ID_SHIFT = 27
+_BLOCK_ID_BITS = 20
+_BLOCK_ID_MASK = (1 << _BLOCK_ID_BITS) - 1  # 20 bits = 0xFFFFF
 
-_BLOCK_ID_MASK = (1 << 40) - 1  # 40 bits
-_BIOME_MASK = 0xFF  # 8 bits
-_LIGHT_MASK = 0xF  # 4 bits
+_BIOME_ID_SHIFT = 47
+_BIOME_ID_BITS = 9
+_BIOME_ID_MASK = (1 << _BIOME_ID_BITS) - 1  # 9 bits = 0x1FF
+
+_LIGHT_SHIFT = 56
+_LIGHT_MASK = 0xFF  # 8 bits
 
 
 def encode_voxel_long(
@@ -45,98 +52,63 @@ def encode_voxel_long(
 
     Args:
         block_id:    Voxy internal block-state ID (0 = air).
-        biome_id:    Vanilla biome ID, 0–255.
-        sky_light:   Sky-light level 0–15.
-        block_light: Block-light level 0–15.
+        biome_id:    Biome ID, 0–511 (9-bit).
+        sky_light:   Sky-light level 0–15 (lower nibble of light byte).
+        block_light: Block-light level 0–15 (upper nibble of light byte).
 
     Returns:
         Unsigned 64-bit integer ready to be written to a Voxy section blob.
     """
+    light = ((block_light & 0xF) << 4) | (sky_light & 0xF)
     return (
-        ((block_id & _BLOCK_ID_MASK) << _BLOCK_ID_SHIFT)
-        | ((biome_id & _BIOME_MASK) << _BIOME_SHIFT)
-        | ((sky_light & _LIGHT_MASK) << _SKY_LIGHT_SHIFT)
-        | ((block_light & _LIGHT_MASK) << _BLOCK_LIGHT_SHIFT)
+        (light << _LIGHT_SHIFT)
+        | ((biome_id & _BIOME_ID_MASK) << _BIOME_ID_SHIFT)
+        | ((block_id & _BLOCK_ID_MASK) << _BLOCK_ID_SHIFT)
     )
 
 
 def make_section_key(level: int, x: int, y: int, z: int) -> int:
     """Encode a Voxy section coordinate into a 64-bit map key.
 
-    Voxy places sections at LOD-dependent granularity.  The key packs:
+    Layout (from Voxy WorldEngine.getWorldSectionId):
         bits 63-60  level (4 bits)
-        bits 59-40  x     (20 bits, signed via two's-complement in range)
-        bits 39-20  y     (20 bits)
-        bits 19- 0  z     (20 bits)
+        bits 59-52  y     (8 bits, signed via mask)
+        bits 51-28  z     (24 bits, signed via mask)
+        bits 27- 4  x     (24 bits, signed via mask)
+        bits  3- 0  spare (zero)
 
     Args:
-        level: LOD level (0 = full resolution, 1 = 2× coarser, …).
+        level: LOD level (0 = full resolution, up to 4).
         x, y, z: Section coordinates in section-space (not block-space).
 
     Returns:
         Unsigned 64-bit section key.
     """
-    # Mask to 20 bits each (handles negative coords via Python's arbitrary int)
-    _20 = (1 << 20) - 1
-    return ((level & 0xF) << 60) | ((x & _20) << 40) | ((y & _20) << 20) | (z & _20)
+    return (
+        ((level & 0xF) << 60)
+        | ((y & 0xFF) << 52)
+        | ((z & ((1 << 24) - 1)) << 28)
+        | ((x & ((1 << 24) - 1)) << 4)
+    )
 
 
 # ---------------------------------------------------------------------------
-# Z-order (Morton) helpers for the 8×8×8 traversal
+# Linear YZX indexing for 16×16×16 sections
 # ---------------------------------------------------------------------------
 
 
-def _part1by2(n: int) -> int:
-    """Spread the low 10 bits of n to every 3rd bit (for 3-D Morton interleave)."""
-    n &= 0x3FF  # keep 10 bits
-    n = (n | (n << 16)) & 0x30000FF
-    n = (n | (n << 8)) & 0x300F00F
-    n = (n | (n << 4)) & 0x30C30C3
-    n = (n | (n << 2)) & 0x9249249
-    return n
+def l0_index(x: int, y: int, z: int) -> int:
+    """Get the linear index for a block in a 16³ VoxelizedSection (level-0).
 
-
-def lin2z(idx: int) -> int:
-    """Convert a linear block index (0–511 inside an 8³ section) to Morton code.
-
-    Voxy iterates 8³ sections in Z-order: the Morton index is used as the array
-    offset inside each section blob.
+    Ordering: y-major, z-middle, x-minor (YZX).
 
     Args:
-        idx: Linear index = x*64 + z*8 + y  (x outer, y inner — Voxy convention).
+        x, y, z: Block coordinates within the section (0–15 each).
 
     Returns:
-        Morton (Z-order) index 0–511.
+        Array index (0–4095).
     """
-    x = (idx >> 6) & 0x7
-    z = (idx >> 3) & 0x7
-    y = idx & 0x7
-    return _part1by2(x) | (_part1by2(y) << 1) | (_part1by2(z) << 2)
-
-
-def _compact1by2(n: int) -> int:
-    """Inverse of _part1by2: extract every 3rd bit back to a contiguous value."""
-    n &= 0x9249249
-    n = (n | (n >> 2)) & 0x30C30C3
-    n = (n | (n >> 4)) & 0x300F00F
-    n = (n | (n >> 8)) & 0x300FF
-    n = (n | (n >> 16)) & 0x3FF
-    return n
-
-
-def z2lin(morton: int) -> int:
-    """Inverse of :func:`lin2z`: convert Morton code back to linear index.
-
-    Args:
-        morton: Z-order index 0–511.
-
-    Returns:
-        Linear index = x*64 + z*8 + y.
-    """
-    x = _compact1by2(morton)
-    y = _compact1by2(morton >> 1)
-    z = _compact1by2(morton >> 2)
-    return x * 64 + z * 8 + y
+    return (y << 8) | (z << 4) | x
 
 
 # ---------------------------------------------------------------------------
@@ -144,56 +116,100 @@ def z2lin(morton: int) -> int:
 # ---------------------------------------------------------------------------
 
 
-def pack_patches_to_section(
-    patches_8x: "dict[str, object]",
+def pack_blocks_to_section(
+    block_ids_16: "object",
     voxy_id_map: Dict[int, int],
     biome_grid: "Sequence[int] | None" = None,
     default_sky_light: int = 15,
 ) -> bytes:
-    """Pack an 8³ block-type array into a Voxy section blob (Morton-ordered longs).
+    """Pack a 16³ block-type array into a Voxy VoxelizedSection blob.
+
+    The output contains 4681 longs:
+      - 4096 entries for L0 (16×16×16)
+      - 512 entries for L1 mip (8×8×8)
+      - 64 entries for L2 mip (4×4×4)
+      - 8 entries for L3 mip (2×2×2)
+      - 1 entry for L4 mip (1×1×1)
+
+    Mip entries use opacity-biased selection (most opaque child in each 2³
+    group).  For simplicity, this implementation uses the first non-air child.
 
     Args:
-        patches_8x:    Dict containing at least ``"block_ids"`` — a (8,8,8) int array
-                       in (x, z, y_local) axis order matching the NPZ convention.
-        voxy_id_map:   Mapping from VoxelTree block ID → Voxy internal block-state ID.
-                       Block IDs absent from the map are treated as air (0).
-        biome_grid:    Optional flat 64-element sequence of biome IDs in (x,z) order
-                       (used to fill the biome field; defaults to 0).
+        block_ids_16: A (16,16,16) int array in (X, Y, Z) or (X, Z, Y) axis
+                      order.  Will be accessed as [x][y][z] in linear YZX order.
+        voxy_id_map:  Mapping from VoxelTree block ID → Voxy internal block-state ID.
+                      Block IDs absent from the map are treated as air (0).
+        biome_grid:   Optional 256-element sequence of biome IDs in (x,z) order
+                      (used to fill the biome field; defaults to 0).
         default_sky_light: Sky-light level to write for all blocks (0–15).
 
     Returns:
-        Raw bytes: 512 × 8 = 4096 bytes, little-endian unsigned 64-bit longs in
-        Morton traversal order, ready to be stored in a Voxy database entry.
-
-    .. note::
-        TODO(milestone-5): This is a scaffold.  The body is implemented; wire-up to
-        the DJL inference harness and the LODiffusion mod is deferred.
+        Raw bytes: 4681 × 8 = 37448 bytes, little-endian unsigned 64-bit longs
+        in linear YZX order, ready to be stored in a Voxy database entry.
     """
     import numpy as np
 
-    _raw = patches_8x["block_ids"]  # (8, 8, 8) int array: axes (x, z, y_local)
-    # Accept numpy arrays or PyTorch tensors.
+    _raw = block_ids_16
     if type(_raw).__name__ == "Tensor":
-        import torch as _torch  # local import to avoid hard dependency
+        import torch as _torch
 
-        _cpu = _torch.as_tensor(_raw).detach().cpu()  # type: ignore[arg-type]
+        _cpu = _torch.as_tensor(_raw).detach().cpu()
         block_ids: np.ndarray = np.asarray(_cpu, dtype=np.int64)
     else:
         block_ids = np.asarray(_raw, dtype=np.int64)
-    assert block_ids.shape == (8, 8, 8), f"Expected (8,8,8), got {block_ids.shape}"
+    assert block_ids.shape == (16, 16, 16), f"Expected (16,16,16), got {block_ids.shape}"
 
-    biomes: "Sequence[int]" = biome_grid if biome_grid is not None else [0] * 64
+    biomes: "Sequence[int]" = biome_grid if biome_grid is not None else [0] * 256
+    total_entries = 16**3 + 8**3 + 4**3 + 2**3 + 1  # 4681
+    longs = [0] * total_entries
 
-    longs = bytearray(512 * 8)
-    for lin in range(512):
-        x = lin >> 6
-        z = (lin >> 3) & 0x7
-        y = lin & 0x7
-        bid_vt = int(block_ids[x, z, y])
-        bid_voxy = voxy_id_map.get(bid_vt, 0)
-        biome = int(biomes[x * 8 + z])
-        vlong = encode_voxel_long(bid_voxy, biome, default_sky_light, 0)
-        morton = lin2z(lin)
-        struct.pack_into("<Q", longs, morton * 8, vlong)
+    # Fill L0: 16×16×16 in YZX order
+    for y in range(16):
+        for z in range(16):
+            for x in range(16):
+                bid_vt = int(block_ids[x, y, z])
+                bid_voxy = voxy_id_map.get(bid_vt, 0)
+                biome = int(biomes[x * 16 + z]) if (x * 16 + z) < len(biomes) else 0
+                vlong = encode_voxel_long(bid_voxy, biome, default_sky_light, 0)
+                longs[l0_index(x, y, z)] = vlong
 
-    return bytes(longs)
+    # Fill mip levels with opacity-biased selection
+    _fill_mip_pyramid(longs)
+
+    # Serialize to little-endian bytes
+    out = bytearray(total_entries * 8)
+    for i, v in enumerate(longs):
+        struct.pack_into("<Q", out, i * 8, v)
+    return bytes(out)
+
+
+def _fill_mip_pyramid(longs: list) -> None:
+    """Fill mip levels 1–4 from the L0 data using first-non-air selection."""
+    offsets = [0, 4096, 4096 + 512, 4096 + 512 + 64, 4096 + 512 + 64 + 8]
+    sizes = [16, 8, 4, 2, 1]
+
+    for level in range(1, 5):
+        parent_off = offsets[level - 1]
+        child_off = offsets[level]
+        parent_size = sizes[level - 1]
+        child_size = sizes[level]
+
+        for cy in range(child_size):
+            for cz in range(child_size):
+                for cx in range(child_size):
+                    # Take first non-air from the 2×2×2 parent group
+                    best = 0
+                    for dy in range(2):
+                        for dz in range(2):
+                            for dx in range(2):
+                                px = cx * 2 + dx
+                                py = cy * 2 + dy
+                                pz = cz * 2 + dz
+                                pidx = parent_off + (
+                                    py * parent_size * parent_size + pz * parent_size + px
+                                )
+                                v = longs[pidx]
+                                if best == 0 and v != 0:
+                                    best = v
+                    cidx = child_off + (cy * child_size * child_size + cz * child_size + cx)
+                    longs[cidx] = best

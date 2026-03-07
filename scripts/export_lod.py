@@ -3,22 +3,24 @@
 
 Exports a trained VoxelTree model to the strict LODiffusion runtime contract:
 Inputs (static batch=1):
-  x_parent : [1,1,8,8,8] float32 (0/1 occupancy)
-  x_biome  : [1,N_biomes,8,8,1] float32 (one-hot)
-  x_height : [1,1,8,8,1] float32 (normalized 0..1)
-  x_lod    : [1,1] float32 (LOD scalar in [1,4])
+  x_parent : [1,1,8,8,8]          float32 (0/1 occupancy)
+  x_biome  : [1,N_biomes,16,16,1] float32 (one-hot, 16x16 chunk grid)
+  x_height : [1,1,16,16,1]        float32 (normalized 0..1, 16x16 chunk grid)
+  x_lod    : [1,1]                float32 (LOD scalar in [1,4])
 
 Outputs:
   block_logits : [1,N_blocks,16,16,16]
   air_mask     : [1,1,16,16,16]
 
-The adapter internally converts these tensors to the model's current internal
-conditioning format (biome ids @16x16, heightmap @16x16, river zeros, fixed y_index=12).
+The adapter squeezes the trailing dim from 2D inputs (biome, height), converts
+one-hot biome to integer IDs, and passes everything to SimpleFlexibleUNet3D with
+fixed y_index=12 and integer lod.
 """
 
 from __future__ import annotations
 
 import argparse
+import inspect
 import json
 import logging
 import subprocess
@@ -30,7 +32,7 @@ import torch
 import torch.nn.functional as F
 import yaml
 
-from train.unet3d import UNet3DConfig, VoxelUNet3D
+from train.unet3d import SimpleFlexibleConfig, SimpleFlexibleUNet3D
 
 LOGGER = logging.getLogger("export_lod")
 
@@ -91,52 +93,51 @@ def embed_block_mapping(model_config: Dict) -> Dict:
 
 
 class LODiffusionAdapter(torch.nn.Module):
-    """Wraps VoxelUNet3D to expose the LODiffusion input contract."""
+    """Wraps SimpleFlexibleUNet3D to expose the LODiffusion input contract.
 
-    def __init__(self, model: VoxelUNet3D, biome_vocab_size: int):
+    Input contract (static batch=1):
+      x_parent : (1,1,8,8,8)          float32  0/1 occupancy
+      x_biome  : (1,N_biomes,16,16,1) float32  one-hot biome per cell
+      x_height : (1,1,16,16,1)        float32  normalized 0..1
+      x_lod    : (1,1)                float32  LOD scalar 1..4
+
+    Output contract:
+      block_logits : (1,N_blocks,16,16,16)
+      air_mask     : (1,1,16,16,16)
+    """
+
+    def __init__(self, model: SimpleFlexibleUNet3D, biome_vocab_size: int):
         super().__init__()
         self.model = model
         self.biome_vocab_size = biome_vocab_size
 
     def forward(self, x_parent, x_biome, x_height, x_lod):  # type: ignore
-        # Shapes:
         # x_parent: (1,1,8,8,8)
-        # x_biome:  (1,N_biomes,8,8,1) one-hot
-        # x_height: (1,1,8,8,1)
+        # x_biome:  (1,N_biomes,16,16,1) one-hot  → squeeze → (1,N_biomes,16,16)
+        # x_height: (1,1,16,16,1)                 → squeeze → (1,1,16,16)
         # x_lod:    (1,1)
-        # Remove trailing singleton dim from spatial 2D inputs
-        x_biome = x_biome.squeeze(-1)  # (1,N_biomes,8,8)
-        x_height = x_height.squeeze(-1)  # (1,1,8,8)
 
-        # Convert one-hot biome to indices then upscale to 16x16
-        biome_ids = torch.argmax(x_biome, dim=1)  # (1,8,8)
-        biome_ids_up = (
-            F.interpolate(biome_ids.unsqueeze(1).float(), size=(16, 16), mode="nearest")
-            .squeeze(1)
-            .long()
-        )  # (1,16,16)
+        x_biome = x_biome.squeeze(-1)  # (1, N_biomes, 16, 16)
+        x_height = x_height.squeeze(-1)  # (1, 1, 16, 16)
 
-        # Upscale heightmap to 16x16 bilinear
-        height_up = F.interpolate(x_height, size=(16, 16), mode="bilinear", align_corners=False)
-        # River patch zeros (not provided in contract yet)
-        river_patch = torch.zeros_like(height_up)
+        # One-hot → integer biome IDs, already at 16×16 resolution
+        biome_patch = torch.argmax(x_biome, dim=1).long()  # (1, 16, 16)
 
-        # y_index fixed midpoint (12) for now; could be parameterized later
+        # y_index fixed to midpoint slab 12
         batch = x_parent.shape[0]
         y_index = torch.full((batch,), 12, device=x_parent.device, dtype=torch.long)
 
-        # LOD -> integer index (round & clamp 1..4)
-        lod = torch.clamp(torch.round(x_lod.squeeze(-1)).long(), 1, 4)
+        # LOD float → integer index, clamped 1..4
+        lod = torch.clamp(torch.round(x_lod.squeeze(-1)).long(), 1, 4)  # (B,)
 
         outputs = self.model(
-            x_parent,
-            biome_ids_up,
-            height_up,
-            river_patch,
-            y_index,
-            lod,
+            parent_voxel=x_parent,
+            biome_patch=biome_patch,
+            heightmap_patch=x_height,
+            y_index=y_index,
+            lod=lod,
         )
-        # Reorder to contract (block_logits, air_mask)
+        # Return (block_logits, air_mask) to match contract output ordering
         return outputs["block_type_logits"], outputs["air_mask_logits"]
 
 
@@ -145,33 +146,18 @@ def load_config(path: Path) -> Dict:
         return yaml.safe_load(f)
 
 
-def build_model(cfg: Dict) -> VoxelUNet3D:
-    mcfg = cfg["model"]
-    model = VoxelUNet3D(
-        UNet3DConfig(
-            input_channels=mcfg.get("input_channels", 1),
-            output_channels=2,
-            base_channels=mcfg.get("base_channels", 64),
-            depth=mcfg.get("depth", 2),
-            biome_vocab_size=mcfg.get("biome_vocab_size", 256),
-            biome_embed_dim=mcfg.get("biome_embed_dim", 16),
-            heightmap_channels=mcfg.get("heightmap_channels", 1),
-            river_channels=mcfg.get("river_channels", 1),
-            y_embed_dim=mcfg.get("y_embed_dim", 8),
-            lod_embed_dim=mcfg.get("lod_embed_dim", 32),
-            dropout_rate=mcfg.get("dropout_rate", 0.1),
-            use_batch_norm=mcfg.get("use_batch_norm", True),
-            activation=mcfg.get("activation", "gelu"),
-            air_mask_channels=1,
-            block_type_channels=mcfg.get("block_type_channels", 1104),
-        )
-    )
-    return model
+def build_model(cfg: Dict) -> SimpleFlexibleUNet3D:
+    """Build model from config, passing only fields known to SimpleFlexibleConfig."""
+    mcfg = cfg.get("model", {})
+    valid_fields = set(inspect.signature(SimpleFlexibleConfig).parameters.keys())
+    filtered = {k: v for k, v in mcfg.items() if k in valid_fields}
+    model_cfg = SimpleFlexibleConfig(**filtered)
+    return SimpleFlexibleUNet3D(model_cfg)
 
 
-def load_checkpoint(model: VoxelUNet3D, checkpoint: Path):
-    ckpt = torch.load(checkpoint, map_location="cpu")
-    state_dict = ckpt.get("model_state", ckpt)
+def load_checkpoint(model: SimpleFlexibleUNet3D, checkpoint: Path):
+    ckpt = torch.load(checkpoint, map_location="cpu", weights_only=False)
+    state_dict = ckpt.get("model_state_dict", ckpt.get("model_state", ckpt))
     model.load_state_dict(state_dict, strict=False)
     LOGGER.info("Loaded checkpoint: %s", checkpoint)
 
