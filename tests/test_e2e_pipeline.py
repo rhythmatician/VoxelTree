@@ -165,10 +165,15 @@ class TestNpzDatasetPipeline:
         ds = MultiLODDataset(tmp_npz_dir, split="train")
         item = ds[0]
 
-        pv = torch.from_numpy(np.array(item["parent_voxel"], dtype=np.float32))  # (1,1,S,S,S)
-        # Interpolate parent to canonical 8³ if needed
+        # parent_voxel is already (1,1,8,8,8) after the in-dataset upsampling
+        pv = torch.from_numpy(np.array(item["parent_voxel"], dtype=np.float32))
         if pv.shape[2:] != (8, 8, 8):
             pv = torch.nn.functional.interpolate(pv, size=(8, 8, 8), mode="nearest")
+
+        # target_mask is (1,1,16,16,16), target_types is (1,16,16,16) — both 16³
+        tm = torch.from_numpy(np.array(item["target_mask"], dtype=np.float32))
+        # voxel_loss_fn expects (B,1,16,16,16) — keep as-is
+        tt = torch.from_numpy(np.array(item["target_types"], dtype=np.int64))  # (1,16,16,16)
 
         batch = {
             "parent_voxel": pv,  # (1,1,8,8,8)
@@ -176,18 +181,9 @@ class TestNpzDatasetPipeline:
             "heightmap_patch": torch.randn(1, 1, 16, 16),
             "y_index": torch.tensor([0], dtype=torch.long),
             "lod": torch.tensor([1], dtype=torch.long),
-            "target_mask": torch.from_numpy(
-                np.array(item["target_occupancy"], dtype=np.float32)  # (1, S, S, S)
-            ).unsqueeze(1)[
-                :, :, :16, :16, :16
-            ],  # -> (1, 1, S, S, S)
-            "target_types": torch.randint(0, 16, (1, 16, 16, 16)).long(),
+            "target_mask": tm,  # (1,16,16,16)
+            "target_types": tt,  # (1,16,16,16)
         }
-        # Pad/crop target_mask to (1,1,16,16,16)
-        if batch["target_mask"].shape[2] != 16:
-            batch["target_mask"] = torch.nn.functional.interpolate(
-                batch["target_mask"].float(), size=(16, 16, 16), mode="nearest"
-            )
 
         trainer = _make_trainer()
         loss = trainer.training_step(batch)

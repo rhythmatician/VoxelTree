@@ -42,8 +42,12 @@ class VoxelTrainer:
     def __init__(self, config: Dict[str, Any]):
         self.config = config
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        # Initialize model
-        model_config = SimpleFlexibleConfig(**config.get("model", {}))
+        # Initialize model — filter config to known SimpleFlexibleConfig parameters
+        import inspect as _inspect
+
+        _valid = set(_inspect.signature(SimpleFlexibleConfig.__init__).parameters) - {"self"}
+        model_kwargs = {k: v for k, v in config.get("model", {}).items() if k in _valid}
+        model_config = SimpleFlexibleConfig(**model_kwargs)
         self.model = SimpleFlexibleUNet3D(model_config).to(self.device)
         self.model.train()  # Ensure model is in training mode
 

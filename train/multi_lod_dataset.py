@@ -10,6 +10,7 @@ The downsampling process simulates what would happen during progressive
 refinement, allowing the model to learn to reverse the process.
 """
 
+import math
 import random
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -53,83 +54,79 @@ def create_lod_training_pairs(
     air_id: int = 0,
 ) -> List[Dict]:
     """
-    Create training pairs for all LOD transitions from a single 16³ chunk.
+    Create training pairs for all LOD coarsening levels from a single 16³ chunk.
+
+    The model*always* predicts 16³ from an 8³ parent.  The parent is the Voxy
+    Mipper output of `labels16` downsampled by `f`, then nearest-upsampled to
+    the canonical 8³ input size.  The target is always `labels16` (16³).
+
+    Coarsening factors and resulting LOD token:
+        f=2   → 8³ parent, lod=1  (native LOD1→LOD0 transition)
+        f=4   → 4³→8³ parent, lod=2  (simulated LOD2→LOD0)
+        f=8   → 2³→8³ parent, lod=3  (simulated LOD3→LOD0)
+        f=16  → 1³→8³ parent, lod=4  (simulated LOD4→LOD0)
 
     Args:
-        labels16: (16, 16, 16) array of block IDs
-        biome_patch: (16, 16) array of biome IDs
-        heightmap_patch: (16, 16) array of heights
-        y_index: Y-level index for this chunk
-        air_id: ID of air blocks
+        labels16: (16, 16, 16) int array of block IDs at LOD0
+        biome_patch: (16, 16) int array of biome IDs
+        heightmap_patch: (16, 16) float array of heights
+        y_index: Y-level slab index for this chunk
+        air_id: block ID that represents air (default 0)
 
     Returns:
-        List of training samples for different LOD transitions
+        List of training-sample dicts, one per coarsening factor.
     """
-    # Create occupancy data
-    occ16 = create_occupancy_from_blocks(labels16, air_id)
+    tbl = _get_opacity_table(int(labels16.max()) + 1)
 
-    # Generate all LOD levels by downsampling
-    lod_data: Dict[int, Dict[str, np.ndarray | int]] = {}
+    # Ground-truth 16³ occupancy (used as target for all LOD levels)
+    occ16 = create_occupancy_from_blocks(labels16, air_id).astype(np.float32)
 
-    # LOD 0 (target resolution)
-    lod_data[0] = {"blocks": labels16, "occupancy": occ16, "size": 16}
+    # Conditioning tensors (shared across all pairs from this chunk)
+    biome_onehot = np.eye(256, dtype=np.float32)[biome_patch]  # (16,16,256)
+    biome_tensor = biome_onehot.transpose(2, 0, 1)[None, ...]  # (1,256,16,16)
+    heightmap_norm = (heightmap_patch.astype(np.float32) - heightmap_patch.min()) / (
+        max(heightmap_patch.max() - heightmap_patch.min(), 1e-6)
+    )  # normalise to [0,1]
+    heightmap_tensor = heightmap_norm[None, None, ...]  # (1,1,16,16)
 
-    # LOD 1, 2, 3, 4 (progressively coarser)
-    for lod_level in [1, 2, 3, 4]:
-        factor = 2**lod_level  # 2, 4, 8, 16
-        size = 16 // factor  # 8, 4, 2, 1
-
-        # Downsample blocks using Voxy Mipper (opacity-biased corner selection)
-        tbl = _get_opacity_table(int(labels16.max()))
-        blocks_down, occ_down = mip_volume_numpy(labels16, factor, tbl)
-
-        lod_data[lod_level] = {"blocks": blocks_down, "occupancy": occ_down, "size": size}
-
-    # Create training pairs for each LOD transition
     training_pairs: List[Dict] = []
 
-    for lod_level in [4, 3, 2, 1]:  # Parent LOD levels
-        target_lod = lod_level - 1  # Target LOD level
+    for f in (2, 4, 8, 16):
+        # Coarsen labels16 by factor f using the Voxy Mipper
+        coarse_labels, coarse_occ = mip_volume_numpy(labels16, f, tbl)
+        # shape: (16//f, 16//f, 16//f)
 
-        parent_data = lod_data[lod_level]
-        target_data = lod_data[target_lod]
+        # Nearest-neighbour upsample to canonical 8³
+        coarse_size = coarse_labels.shape[0]  # 8, 4, 2, or 1
+        if coarse_size != 8:
+            scale = 8 // coarse_size
+            coarse_occ_8 = np.repeat(
+                np.repeat(np.repeat(coarse_occ.astype(np.float32), scale, axis=0), scale, axis=1),
+                scale,
+                axis=2,
+            )
+        else:
+            coarse_occ_8 = coarse_occ.astype(np.float32)
 
-        # Prepare input data
-        parent_occupancy = np.asarray(parent_data["occupancy"]).astype(np.float32)
-        target_blocks = np.asarray(target_data["blocks"])
-        target_occupancy = np.asarray(target_data["occupancy"])
+        lod_token = int(math.log2(f))  # 1, 2, 3, 4
 
-        # Add batch and channel dimensions
-        parent_voxel = parent_occupancy[None, None, ...]  # (1, 1, S, S, S)
-
-        # Add batch dimensions to targets
-        target_blocks = target_blocks[None, ...]  # (1, H, W, D)
-        target_occupancy = target_occupancy[None, ...]  # (1, H, W, D)
-
-        # Prepare conditioning data
-        biome_onehot = np.eye(256, dtype=np.float32)[biome_patch]  # (16, 16, 256)
-        biome_tensor = biome_onehot.transpose(2, 0, 1)[None, ...]  # (1, 256, 16, 16)
-
-        heightmap_norm = heightmap_patch.astype(np.float32) / 256.0  # Normalize
-        heightmap_tensor = heightmap_norm[None, None, ..., None]  # (1, 1, 16, 16, 1)
-
-        training_pair = {
-            # Inputs
-            "parent_voxel": parent_voxel,
-            "biome_patch": biome_tensor,
-            "heightmap_patch": heightmap_tensor,
-            "y_index": np.array([y_index], dtype=np.int64),
-            "lod": np.array([lod_level], dtype=np.int64),
-            # Targets
-            "target_blocks": target_blocks,
-            "target_occupancy": target_occupancy,
-            "target_size": target_data["size"],
-            # Metadata
-            "lod_transition": f"lod{lod_level}to{target_lod}",
-            "parent_size": parent_data["size"],
-        }
-
-        training_pairs.append(training_pair)
+        training_pairs.append(
+            {
+                # --- model inputs ---
+                "parent_voxel": coarse_occ_8[None, None, ...],  # (1,1,8,8,8)
+                "biome_patch": biome_tensor,  # (1,256,16,16)
+                "heightmap_patch": heightmap_tensor,  # (1,1,16,16)
+                "y_index": np.array([y_index], dtype=np.int64),
+                "lod": np.array([lod_token], dtype=np.int64),
+                # --- targets (always 16³) ---
+                "target_mask": occ16[None, None, ...],  # (1,1,16,16,16)
+                "target_types": labels16[None, ...].astype(np.int64),  # (1,16,16,16)
+                # --- metadata ---
+                "lod_transition": f"lod{lod_token}to0",
+                "parent_size": 8,
+                "target_size": 16,
+            }
+        )
 
     return training_pairs
 
@@ -159,10 +156,10 @@ class MultiLODDataset(Dataset):
         # Default sampling weights (can emphasize certain LOD levels)
         if lod_sampling_weights is None:
             self.lod_sampling_weights = {
-                "lod4to3": 0.2,  # Coarsest level
-                "lod3to2": 0.25,
-                "lod2to1": 0.25,
-                "lod1to0": 0.3,  # Finest level (most important)
+                "lod4to0": 0.2,  # Coarsest parent (simulated)
+                "lod3to0": 0.25,
+                "lod2to0": 0.25,
+                "lod1to0": 0.3,  # Native LOD1→LOD0 (most important)
             }
         else:
             self.lod_sampling_weights = lod_sampling_weights
@@ -186,18 +183,43 @@ class MultiLODDataset(Dataset):
             try:
                 data = np.load(npz_file)
 
-                # Extract required fields
-                labels16 = data["labels16"]  # (16, 16, 16)
-                biome16 = data.get("biome16", np.zeros((16, 16), dtype=np.int32))
-                height16 = data.get("height16", np.zeros((1, 16, 16), dtype=np.float32))
+                # Extract required fields — support both canonical and legacy key names
+                if "labels16" in data:
+                    labels16 = data["labels16"]
+                elif "target_types" in data:
+                    labels16 = data["target_types"].astype(np.int32)
+                else:
+                    print(f"Skipping {npz_file}: no labels16 or target_types key")
+                    continue
+
+                biome16 = (
+                    data["biome16"]
+                    if "biome16" in data
+                    else (
+                        data["biome_patch"]
+                        if "biome_patch" in data
+                        else np.zeros((16, 16), dtype=np.int32)
+                    )
+                )
+
+                height16 = (
+                    data["height16"]
+                    if "height16" in data
+                    else (
+                        data["heightmap_patch"]
+                        if "heightmap_patch" in data
+                        else np.zeros((16, 16), dtype=np.float32)
+                    )
+                )
+
                 # river removed from contract
 
                 # Handle different height formats
                 if height16.ndim == 3:
                     height16 = height16[0]  # Take first channel
 
-                # Generate Y-index (could be extracted from filename or data)
-                y_index = 64  # Default Y-level, could be randomized or extracted
+                # Generate Y-index — prefer the value stored in the NPZ
+                y_index = int(data["y_index"]) if "y_index" in data else 64
 
                 # Create training pairs for all LOD transitions
                 pairs = create_lod_training_pairs(
@@ -254,8 +276,8 @@ class MultiLODDataset(Dataset):
             "heightmap_patch": torch.from_numpy(pair["heightmap_patch"]),
             "y_index": torch.from_numpy(pair["y_index"]),
             "lod": torch.from_numpy(pair["lod"]),
-            "target_blocks": torch.from_numpy(pair["target_blocks"]).long(),  # Convert to int64
-            "target_occupancy": torch.from_numpy(pair["target_occupancy"]),
+            "target_mask": torch.from_numpy(pair["target_mask"]),
+            "target_types": torch.from_numpy(pair["target_types"]),
             "lod_transition": pair["lod_transition"],
         }
 
@@ -289,8 +311,8 @@ def collate_multi_lod_batch(samples: List[Dict]) -> Dict:
         "heightmap_patch",
         "y_index",
         "lod",
-        "target_blocks",
-        "target_occupancy",
+        "target_mask",
+        "target_types",
     ]:
         if key in transition_samples[0]:
             # Use cat instead of stack since our samples already have batch dimension

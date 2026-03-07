@@ -234,7 +234,8 @@ class ChunkExtractor:
 
         # Process chunk sections (16x16x16 blocks each)
         try:
-            if hasattr(chunk, "sections") and chunk.sections:
+            _sections_ok = hasattr(chunk, "sections") and chunk.sections
+            if _sections_ok:
                 for section in chunk.sections:
                     if section is None:
                         continue
@@ -295,7 +296,11 @@ class ChunkExtractor:
                                             # Try to get block directly
                                             block = chunk.get_block(x, y_global, z)
                                             if block:
-                                                block_name = str(block)
+                                                block_name = (
+                                                    block.name()
+                                                    if callable(getattr(block, "name", None))
+                                                    else str(block)
+                                                )
                                                 block_id = self.get_block_id(block_name)
                                                 block_types[x, z, y_global] = block_id
                                                 air_mask[x, z, y_global] = block_id == 0
@@ -322,6 +327,26 @@ class ChunkExtractor:
                                         grass_id = self.get_block_id("minecraft:grass_block")
                                         block_types[x, z, y] = grass_id
                                         air_mask[x, z, y] = False
+            else:
+                # Sections API returned nothing; fall back to the per-block API
+                # (anvil-parser2 ≥ 0.10 / new chunk format).
+                logger.debug("chunk.sections empty – using per-block fallback")
+                for x in range(16):
+                    for z in range(16):
+                        for y_global in range(384):
+                            try:
+                                block = chunk.get_block(x, y_global, z)
+                                if block is not None:
+                                    block_name = (
+                                        block.name()
+                                        if callable(getattr(block, "name", None))
+                                        else str(block)
+                                    )
+                                    block_id = self.get_block_id(block_name)
+                                    block_types[x, z, y_global] = block_id
+                                    air_mask[x, z, y_global] = block_id == 0
+                            except Exception:
+                                pass  # keep default air
         except Exception as e:
             logger.warning(f"Failed to process chunk sections: {e}")
             # Keep default air-filled arrays
@@ -636,6 +661,10 @@ class ChunkExtractor:
             "invalid_files": invalid_files,
             "total_chunks": len(npz_files),
         }
+
+        logger.info(f"Validation complete: {len(valid_files)}/{len(npz_files)} files valid")
+        return validation_result
+        return validation_result
 
         logger.info(f"Validation complete: {len(valid_files)}/{len(npz_files)} files valid")
         return validation_result

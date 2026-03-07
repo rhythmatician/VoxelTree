@@ -25,7 +25,6 @@ mc-wiki-strongholds.txt
 mc-wiki-strongholdgeneration.txt
 training_run.txt
 test_metrics_report.json
-Hephaistos/
 
 # Python cache files
 *.pyc

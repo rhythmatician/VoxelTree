@@ -33,14 +33,23 @@ class TestConditioning:
 
     @pytest.fixture
     def base_inputs(self):
-        """Base input tensors for testing."""
+        """Base input tensors for testing.
+
+        Uses a fixed seed so that the random values are stable across the full
+        suite.  The explicit values also guarantee they differ from the
+        per-test modifier targets (biome=42, heightmap=200.0, lod=3).
+        """
+        torch.manual_seed(0)
         batch_size = 2
         return {
             "parent_voxel": torch.randn(batch_size, 1, 8, 8, 8),
-            "biome_patch": torch.randint(0, 50, (batch_size, 16, 16), dtype=torch.long),
+            # Use biomes 1–10 so they're clearly != 42
+            "biome_patch": torch.randint(1, 11, (batch_size, 16, 16), dtype=torch.long),
+            # Heights near 0 so they're clearly != 200.0
             "heightmap_patch": torch.randn(batch_size, 1, 16, 16),
             "y_index": torch.randint(0, 24, (batch_size,), dtype=torch.long),
-            "lod": torch.randint(1, 5, (batch_size,), dtype=torch.long),
+            # LOD 1–2 so clearly != 3
+            "lod": torch.randint(1, 3, (batch_size,), dtype=torch.long),
         }
 
     def test_identical_conditioning_produces_identical_output(self, model, base_inputs):
