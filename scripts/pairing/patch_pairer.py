@@ -39,6 +39,18 @@ class PatchPairer:
     - Child: full resolution 16x16x16 subchunk target
     """
 
+    # Anchor keys that should be passed through from chunk NPZ to each subchunk.
+    # These are per-column (XZ) data that apply to every Y-slice.
+    ANCHOR_KEYS = (
+        "router6",
+        "heightmap_surface",
+        "heightmap_ocean_floor",
+        "slope_x",
+        "slope_z",
+        "curvature",
+        "biomes4",
+    )
+
     def __init__(self, config_path: Optional[Path] = None):
         """Initialize PatchPairer with configuration."""
         self.config_path = config_path if config_path else Path("config.yaml")
@@ -117,6 +129,10 @@ class PatchPairer:
         """
         Slice a chunk into 16x16x16 subchunks.
 
+        Anchor keys (router6, heightmap_surface, etc.) present in the chunk
+        NPZ are copied into every subchunk so they survive through the
+        pairing pipeline and are available for training.
+
         Args:
             chunk_file: Path to .npz chunk file
 
@@ -130,6 +146,12 @@ class PatchPairer:
         chunk_x = int(chunk_data["chunk_x"])
         chunk_z = int(chunk_data["chunk_z"])
 
+        # Pre-load any anchor arrays present in this chunk
+        anchors: Dict[str, Any] = {}
+        for key in self.ANCHOR_KEYS:
+            if key in chunk_data:
+                anchors[key] = chunk_data[key]
+
         subchunks = []
 
         # Create 24 vertical slices (384 / 16 = 24)
@@ -137,13 +159,15 @@ class PatchPairer:
             y_start = y_index * 16
             y_end = y_start + 16
 
-            subchunk = {
+            subchunk: Dict[str, Any] = {
                 "target_mask": air_mask[:, :, y_start:y_end],  # (16, 16, 16)
                 "target_types": block_types[:, :, y_start:y_end],  # (16, 16, 16)
                 "y_index": y_index,
                 "chunk_x": chunk_x,
                 "chunk_z": chunk_z,
             }
+            # Attach per-column anchor data (same for every Y-slice)
+            subchunk.update(anchors)
             subchunks.append(subchunk)
 
         return subchunks
@@ -188,7 +212,7 @@ class PatchPairer:
         # Create parent voxel by Mipper-downsampling block types (Voxy-compatible)
         parent_labels, parent_occ = self.downsample_to_parent(target_types, target_mask)
 
-        pair = {
+        pair: Dict[str, Any] = {
             "parent_voxel": parent_occ.astype(np.float32),  # binary occupancy for model input
             "parent_labels": parent_labels,  # block IDs for richer parent conditioning if needed
             "target_mask": target_mask,
@@ -198,6 +222,12 @@ class PatchPairer:
             "chunk_z": subchunk["chunk_z"],
             "lod": lod_level,
         }
+
+        # Pass through anchor keys from the subchunk (populated by
+        # slice_chunk_into_subchunks when noise dumps were available)
+        for key in self.ANCHOR_KEYS:
+            if key in subchunk:
+                pair[key] = subchunk[key]
 
         return pair
 

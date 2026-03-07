@@ -20,6 +20,7 @@ import torch
 from torch.utils.data import Dataset
 
 from scripts.mipper import build_opacity_table, mip_volume_numpy
+from train.anchor_conditioning import approximate_router6_from_biome
 
 # Module-level opacity table (lazy)
 _OPACITY_TABLE: np.ndarray | None = None
@@ -52,6 +53,12 @@ def create_lod_training_pairs(
     heightmap_patch: np.ndarray,
     y_index: int = 0,
     air_id: int = 0,
+    router6: Optional[np.ndarray] = None,
+    heightmap_surface: Optional[np.ndarray] = None,
+    heightmap_ocean_floor: Optional[np.ndarray] = None,
+    slope_x: Optional[np.ndarray] = None,
+    slope_z: Optional[np.ndarray] = None,
+    curvature: Optional[np.ndarray] = None,
 ) -> List[Dict]:
     """
     Create training pairs for all LOD coarsening levels from a single 16³ chunk.
@@ -66,12 +73,22 @@ def create_lod_training_pairs(
         f=8   → 2³→8³ parent, lod=3  (simulated LOD3→LOD0)
         f=16  → 1³→8³ parent, lod=4  (simulated LOD4→LOD0)
 
+    Anchor channels (height_planes, router6) are passed through directly when
+    available from NoiseDumper extraction.  When None, they are approximated
+    from the existing heightmap and biome data.
+
     Args:
-        labels16: (16, 16, 16) int array of block IDs at LOD0
-        biome_patch: (16, 16) int array of biome IDs
-        heightmap_patch: (16, 16) float array of heights
-        y_index: Y-level slab index for this chunk
-        air_id: block ID that represents air (default 0)
+        labels16:            (16, 16, 16) int array of block IDs at LOD0
+        biome_patch:         (16, 16) int array of biome IDs
+        heightmap_patch:     (16, 16) float array of heights
+        y_index:             Y-level slab index for this chunk
+        air_id:              block ID that represents air (default 0)
+        router6:             (6, 16, 16) float32 or None → approximate from biome
+        heightmap_surface:   (16, 16) float32 or None → use heightmap_patch
+        heightmap_ocean_floor:(16, 16) float32 or None → zeros if not available
+        slope_x:             (16, 16) float32 or None → computed from surface height
+        slope_z:             (16, 16) float32 or None → computed from surface height
+        curvature:           (16, 16) float32 or None → computed from surface height
 
     Returns:
         List of training-sample dicts, one per coarsening factor.
@@ -81,13 +98,61 @@ def create_lod_training_pairs(
     # Ground-truth 16³ occupancy (used as target for all LOD levels)
     occ16 = create_occupancy_from_blocks(labels16, air_id).astype(np.float32)
 
-    # Conditioning tensors (shared across all pairs from this chunk)
+    # ------------------------------------------------------------------
+    # Build conditioning tensors
+    # ------------------------------------------------------------------
+    # Biome (legacy one-hot kept for backward compat; also keep index form)
     biome_onehot = np.eye(256, dtype=np.float32)[biome_patch]  # (16,16,256)
     biome_tensor = biome_onehot.transpose(2, 0, 1)  # (256,16,16)
+    biome_idx = biome_patch.astype(np.int64)  # (16,16)  -- for anchor fusion
+
+    # Heightmap: normalise patch to [0,1]
     heightmap_norm = (heightmap_patch.astype(np.float32) - heightmap_patch.min()) / (
         max(heightmap_patch.max() - heightmap_patch.min(), 1e-6)
-    )  # normalise to [0,1]
+    )
     heightmap_tensor = heightmap_norm[None, ...]  # (1,16,16)
+
+    # ------------------------------------------------------------------
+    # Compute height_planes tensor [5, 16, 16]
+    # ------------------------------------------------------------------
+    surf = heightmap_surface if heightmap_surface is not None else heightmap_norm
+    ofloor = heightmap_ocean_floor if heightmap_ocean_floor is not None else np.zeros_like(surf)
+
+    if slope_x is None or slope_z is None or curvature is None:
+        # Compute via central differences
+        _sx = np.gradient(surf, axis=1).astype(np.float32)
+        _sz = np.gradient(surf, axis=0).astype(np.float32)
+        _lap = np.gradient(_sx, axis=1) + np.gradient(_sz, axis=0)
+        if slope_x is None:
+            slope_x = _sx
+        if slope_z is None:
+            slope_z = _sz
+        if curvature is None:
+            curvature = _lap.astype(np.float32)
+
+    height_planes = np.stack(
+        [
+            surf.astype(np.float32),
+            ofloor.astype(np.float32),
+            slope_x.astype(np.float32),
+            slope_z.astype(np.float32),
+            curvature.astype(np.float32),
+        ],
+        axis=0,
+    )  # (5, 16, 16)
+
+    # ------------------------------------------------------------------
+    # Compute router6 [6, 16, 16] — use real data or approximate
+    # ------------------------------------------------------------------
+    if router6 is not None:
+        router6_tensor = router6.astype(np.float32)  # (6, 16, 16)
+    else:
+        # Approximate from biome + heightmap using PyTorch helper
+        with torch.no_grad():
+            _bx = torch.from_numpy(biome_idx).unsqueeze(0).float()  # (1,16,16)
+            _hx = torch.from_numpy(heightmap_norm[None, None, ...])  # (1,1,16,16)
+            _r6 = approximate_router6_from_biome(_bx, _hx)  # (1,6,16,16)
+        router6_tensor = _r6.squeeze(0).numpy()  # (6, 16, 16)
 
     training_pairs: List[Dict] = []
 
@@ -112,14 +177,17 @@ def create_lod_training_pairs(
 
         training_pairs.append(
             {
-                # --- model inputs ---
-                "parent_voxel": coarse_occ_8[None, ...],  # (1,8,8,8)
-                "biome_patch": biome_tensor,  # (256,16,16)
-                "heightmap_patch": heightmap_tensor,  # (1,16,16)
-                "y_index": np.array([y_index], dtype=np.int64),
-                "lod": np.array([lod_token], dtype=np.int64),
+                # --- model inputs (per-sample shapes, no batch dim) ---
+                "parent_voxel": coarse_occ_8[None, ...],  # (1,8,8,8)  C=1
+                "biome_patch": biome_tensor,  # (256,16,16) legacy one-hot
+                "biome_idx": biome_idx,  # (16,16) integer indices
+                "heightmap_patch": heightmap_tensor,  # (1,16,16)  C=1
+                "height_planes": height_planes,  # (5,16,16)
+                "router6": router6_tensor,  # (6,16,16)
+                "y_index": np.int64(y_index),  # scalar
+                "lod": np.int64(lod_token),  # scalar
                 # --- targets (always 16³) ---
-                "target_mask": occ16[None, ...],  # (1,16,16,16)
+                "target_mask": occ16.astype(np.float32),  # (16,16,16)
                 "target_types": labels16.astype(np.int64),  # (16,16,16)
                 # --- metadata ---
                 "lod_transition": f"lod{lod_token}to0",
@@ -227,6 +295,17 @@ class MultiLODDataset(Dataset):
                     biome_patch=biome16,
                     heightmap_patch=height16,
                     y_index=y_index,
+                    # Load real anchor data when available (from NoiseDumper extraction)
+                    router6=data["router6"] if "router6" in data else None,
+                    heightmap_surface=(
+                        data["heightmap_surface"] if "heightmap_surface" in data else None
+                    ),
+                    heightmap_ocean_floor=(
+                        data["heightmap_ocean_floor"] if "heightmap_ocean_floor" in data else None
+                    ),
+                    slope_x=data["slope_x"] if "slope_x" in data else None,
+                    slope_z=data["slope_z"] if "slope_z" in data else None,
+                    curvature=data["curvature"] if "curvature" in data else None,
                 )
 
                 self.training_pairs.extend(pairs)
@@ -271,13 +350,18 @@ class MultiLODDataset(Dataset):
 
         # Convert to tensors
         sample = {
-            "parent_voxel": torch.from_numpy(pair["parent_voxel"]),
-            "biome_patch": torch.from_numpy(pair["biome_patch"]),
-            "heightmap_patch": torch.from_numpy(pair["heightmap_patch"]),
-            "y_index": torch.from_numpy(pair["y_index"]),
-            "lod": torch.from_numpy(pair["lod"]),
-            "target_mask": torch.from_numpy(pair["target_mask"]),
-            "target_types": torch.from_numpy(pair["target_types"]),
+            "parent_voxel": torch.from_numpy(np.asarray(pair["parent_voxel"])).float(),
+            "biome_patch": torch.from_numpy(np.asarray(pair["biome_patch"])).float(),
+            "biome_idx": torch.from_numpy(np.asarray(pair["biome_idx"])).long(),  # (16,16)
+            "heightmap_patch": torch.from_numpy(np.asarray(pair["heightmap_patch"])).float(),
+            "height_planes": torch.from_numpy(
+                np.asarray(pair["height_planes"])
+            ).float(),  # (5,16,16)
+            "router6": torch.from_numpy(np.asarray(pair["router6"])).float(),  # (6,16,16)
+            "y_index": torch.tensor(int(pair["y_index"]), dtype=torch.long),
+            "lod": torch.tensor(int(pair["lod"]), dtype=torch.long),
+            "target_mask": torch.from_numpy(np.asarray(pair["target_mask"])).float(),
+            "target_types": torch.from_numpy(np.asarray(pair["target_types"])).long(),
             "lod_transition": pair["lod_transition"],
         }
 
@@ -308,15 +392,17 @@ def collate_multi_lod_batch(samples: List[Dict]) -> Dict:
     for key in [
         "parent_voxel",
         "biome_patch",
+        "biome_idx",
         "heightmap_patch",
+        "height_planes",
+        "router6",
         "y_index",
         "lod",
         "target_mask",
         "target_types",
     ]:
         if key in transition_samples[0]:
-            # Use cat instead of stack since our samples already have batch dimension
-            batch[key] = torch.cat([s[key] for s in transition_samples], dim=0)
+            batch[key] = torch.stack([s[key] for s in transition_samples], dim=0)
 
     batch["lod_transition"] = transition_type
     return batch

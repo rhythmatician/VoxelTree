@@ -5,6 +5,7 @@ This module provides the ChunkExtractor class that handles parsing Minecraft
 region files and converting them into compressed numpy arrays.
 """
 
+import json as _json
 import logging
 import multiprocessing
 import struct
@@ -36,12 +37,21 @@ class ChunkExtractor:
     with open(complete_mapping_path) as f:
         VANILLA_BLOCK_MAPPING = json.load(f)
 
-    def __init__(self, config_path: Optional[Path] = None):
+    def __init__(
+        self,
+        config_path: Optional[Path] = None,
+        noise_dump_dir: Optional[Path] = None,
+    ):
         """
         Initialize ChunkExtractor with configuration.
 
         Args:
             config_path: Path to config.yaml file, defaults to "config.yaml"
+            noise_dump_dir: Directory containing JSON noise dumps from
+                ``/dumpnoise`` (one ``chunk_X_Z.json`` per chunk).
+                When provided, anchor channels (router6, heightmap_surface,
+                heightmap_ocean_floor, slope, curvature) are merged into
+                every extracted NPZ.
         """
         # Load configuration
         if config_path is None:
@@ -80,7 +90,25 @@ class ChunkExtractor:
         self.verify_checksums = validation_config.get("verify_checksums", True)
         self.detect_corruption = validation_config.get("detect_corruption", True)
 
-        logger.info(f"ChunkExtractor initialized with output_dir={self.output_dir}")
+        # Noise-dump directory (anchor channels from /dumpnoise)
+        if noise_dump_dir is not None:
+            self.noise_dump_dir: Optional[Path] = Path(noise_dump_dir)
+        else:
+            cfg_path = extraction_config.get("noise_dump_dir")
+            self.noise_dump_dir = Path(cfg_path) if cfg_path else None
+
+        if self.noise_dump_dir and not self.noise_dump_dir.is_dir():
+            logger.warning(
+                "noise_dump_dir %s does not exist — anchor channels will be omitted",
+                self.noise_dump_dir,
+            )
+            self.noise_dump_dir = None
+
+        logger.info(
+            "ChunkExtractor initialized with output_dir=%s, noise_dump_dir=%s",
+            self.output_dir,
+            self.noise_dump_dir,
+        )
 
     def extract_chunk_data(
         self, region_file: Path, chunk_x: int, chunk_z: int
@@ -178,6 +206,15 @@ class ChunkExtractor:
                 "chunk_z": chunk_z,
                 "region_file": str(region_file.name),
             }
+
+            # ---- Merge anchor channels from NoiseDumper JSON (if available) ----
+            if self.noise_dump_dir is not None:
+                global_cx = rx * 32 + chunk_x
+                global_cz = rz * 32 + chunk_z
+                anchor = self.load_noise_dump(self.noise_dump_dir, global_cx, global_cz)
+                if anchor is not None:
+                    chunk_data.update(anchor)
+                    logger.debug("Merged anchor channels for chunk (%d,%d)", global_cx, global_cz)
 
             logger.debug(
                 f"Successfully extracted chunk ({chunk_x}, {chunk_z}) from {region_file.name}"  # noqa: E501
@@ -655,16 +692,118 @@ class ChunkExtractor:
             except Exception as e:
                 corrupted_files.append(f"{npz_file.name} (error: {e})")
 
+        # Count files that include anchor channels
+        anchor_count = 0
+        for vf in valid_files:
+            try:
+                d = np.load(vf)
+                if "router6" in d:
+                    anchor_count += 1
+            except Exception:
+                pass
+
         validation_result = {
             "valid_files": valid_files,
             "corrupted_files": corrupted_files,
             "invalid_files": invalid_files,
             "total_chunks": len(npz_files),
+            "anchor_enriched": anchor_count,
         }
 
-        logger.info(f"Validation complete: {len(valid_files)}/{len(npz_files)} files valid")
-        return validation_result
+        logger.info(
+            "Validation complete: %d/%d files valid (%d with anchor channels)",
+            len(valid_files),
+            len(npz_files),
+            anchor_count,
+        )
         return validation_result
 
-        logger.info(f"Validation complete: {len(valid_files)}/{len(npz_files)} files valid")
-        return validation_result
+    # ------------------------------------------------------------------
+    # Noise-dump integration (anchor channels for v2 training)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def load_noise_dump(
+        noise_dump_dir: Path, chunk_x: int, chunk_z: int
+    ) -> Optional[Dict[str, np.ndarray]]:
+        """Load a ``/dumpnoise`` JSON and return anchor arrays.
+
+        Returns ``None`` (no error) when the file is absent — the chunk simply
+        won't have anchor channels and the training pipeline will approximate.
+
+        When present, the returned dict contains:
+
+        * ``router6``              — ``(6, 16, 16)`` float32
+        * ``heightmap_surface``    — ``(16, 16)`` float32
+        * ``heightmap_ocean_floor``— ``(16, 16)`` float32
+        * ``slope_x``             — ``(16, 16)`` float32
+        * ``slope_z``             — ``(16, 16)`` float32
+        * ``curvature``           — ``(16, 16)`` float32
+        * ``biomes4``             — ``(4, 4, 4)`` int32 (biome lattice)
+        """
+        json_path = noise_dump_dir / f"chunk_{chunk_x}_{chunk_z}.json"
+        if not json_path.exists():
+            return None
+
+        try:
+            with open(json_path) as f:
+                dump = _json.load(f)
+        except Exception as exc:
+            logger.warning("Failed to parse noise dump %s: %s", json_path, exc)
+            return None
+
+        result: Dict[str, np.ndarray] = {}
+
+        # --- heightmaps (always present) --------------------------------
+        hm_surface = np.array(dump["heightmap_surface"], dtype=np.float32).reshape(16, 16)
+        hm_ocean = np.array(dump["heightmap_ocean_floor"], dtype=np.float32).reshape(16, 16)
+        result["heightmap_surface"] = hm_surface
+        result["heightmap_ocean_floor"] = hm_ocean
+
+        # Terrain derivatives
+        sx, sz, curv = ChunkExtractor.compute_terrain_derivatives(hm_surface)
+        result["slope_x"] = sx
+        result["slope_z"] = sz
+        result["curvature"] = curv
+
+        # --- router6 (optional — absent when NoiseConfig was unavailable) --
+        if dump.get("router6_available", False) and "router6" in dump:
+            r6 = dump["router6"]
+            field_order = [
+                "temperature",
+                "vegetation",
+                "continents",
+                "erosion",
+                "depth",
+                "ridges",
+            ]
+            channels = []
+            for field_name in field_order:
+                flat = np.array(r6[field_name], dtype=np.float32)
+                # Stored as [x][z][y] flattened (16*16*16 = 4096).
+                # Reduce to 2-D column by averaging over the Y axis.
+                cube = flat.reshape(16, 16, 16)  # (x, z, y)
+                col = cube.mean(axis=2)  # (16, 16)
+                channels.append(col)
+            result["router6"] = np.stack(channels, axis=0)  # (6, 16, 16)
+
+        # --- biomes4 lattice (always present) ----------------------------
+        biomes_flat = np.array(dump["biomes"], dtype=np.int32)
+        result["biomes4"] = biomes_flat.reshape(4, 4, 4)
+
+        return result
+
+    @staticmethod
+    def compute_terrain_derivatives(
+        heightmap: np.ndarray,
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Compute slope and curvature from a (16, 16) heightmap.
+
+        Returns:
+            ``(slope_x, slope_z, curvature)`` — each ``(16, 16)`` float32.
+        """
+        hm = heightmap.astype(np.float32)
+        slope_x = np.gradient(hm, axis=1).astype(np.float32)
+        slope_z = np.gradient(hm, axis=0).astype(np.float32)
+        curvature = (np.gradient(slope_x, axis=1) + np.gradient(slope_z, axis=0)).astype(np.float32)
+        return slope_x, slope_z, curvature

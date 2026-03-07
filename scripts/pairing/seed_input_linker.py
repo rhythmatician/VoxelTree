@@ -24,6 +24,17 @@ class SeedInputLinker:
     biome and heightmap data to create complete training examples.
     """
 
+    # Anchor keys that should be forwarded through the linking step.
+    ANCHOR_KEYS = (
+        "router6",
+        "heightmap_surface",
+        "heightmap_ocean_floor",
+        "slope_x",
+        "slope_z",
+        "curvature",
+        "biomes4",
+    )
+
     def __init__(self, config_path: Optional[Path] = None):
         """Initialize SeedInputLinker with configuration."""
         self.config_path = config_path if config_path else Path("config.yaml")
@@ -229,6 +240,11 @@ class SeedInputLinker:
             "chunk_x": pair_data["chunk_x"],
             "chunk_z": pair_data["chunk_z"],
         }
+
+        # Forward any anchor channels that arrived from the pairing step
+        for key in self.ANCHOR_KEYS:
+            if key in pair_data:
+                linked_example[key] = pair_data[key]
 
         return linked_example
 

@@ -141,6 +141,145 @@ class LODiffusionAdapter(torch.nn.Module):
         return outputs["block_type_logits"], outputs["air_mask_logits"]
 
 
+class LODiffusionAdapterV2(torch.nn.Module):
+    """Wraps SimpleFlexibleUNet3D to expose the LODiffusion v2 input contract.
+
+    v2 drops the legacy one-hot biome and scalar heightmap in favour of:
+      x_parent        : (1, 1,  8,  8,  8)  float32  binary occupancy
+      x_height_planes : (1, 5, 16, 16)      float32  5-plane heightmap
+      x_router6       : (1, 6, 16, 16)      float32  normalised router6
+      x_biome         : (1, 16, 16)         int64    biome integer index
+      x_y_index       : (1,)                int64    y-slab index 0..23
+      x_lod           : (1,)                int64    LOD token 1..4
+
+    Outputs (same as v1):
+      block_logits : (1, N_blocks, 16, 16, 16)
+      air_mask     : (1, 1, 16, 16, 16)
+    """
+
+    def __init__(self, model: SimpleFlexibleUNet3D):
+        super().__init__()
+        self.model = model
+
+    def forward(  # type: ignore
+        self,
+        x_parent: torch.Tensor,  # (1,1,8,8,8) float32
+        x_height_planes: torch.Tensor,  # (1,5,16,16) float32
+        x_router6: torch.Tensor,  # (1,6,16,16) float32
+        x_biome: torch.Tensor,  # (1,16,16)   int64
+        x_y_index: torch.Tensor,  # (1,)        int64
+        x_lod: torch.Tensor,  # (1,)        int64
+    ):
+        # Build a legacy heightmap_patch [1,1,16,16] from height_planes[0] (surface plane)
+        # so the model's fallback biome/height tensors are properly shaped.
+        heightmap_patch = x_height_planes[:, 0:1, :, :]  # (1,1,16,16)
+
+        outputs = self.model(
+            parent_voxel=x_parent,
+            biome_patch=x_biome,  # integer indices expected by forward()
+            heightmap_patch=heightmap_patch,
+            y_index=x_y_index.squeeze(-1),  # (B,)
+            lod=x_lod.squeeze(-1),  # (B,)
+            height_planes=x_height_planes,
+            router6=x_router6,
+        )
+        return outputs["block_type_logits"], outputs["air_mask_logits"]
+
+
+def export_contract_v2(adapter: LODiffusionAdapterV2, cfg: Dict, out_dir: Path):
+    """Export ONNX model+sidecar for the lodiffusion.v2 contract."""
+    out_dir.mkdir(parents=True, exist_ok=True)
+    adapter.eval()
+
+    biome_vocab = cfg["model"].get("biome_vocab_size", 256)
+    block_vocab = cfg["model"].get("block_type_channels", 1104)
+
+    dummy = (
+        torch.rand(1, 1, 8, 8, 8),  # x_parent
+        torch.rand(1, 5, 16, 16),  # x_height_planes
+        torch.rand(1, 6, 16, 16),  # x_router6
+        torch.randint(0, biome_vocab, (1, 16, 16), dtype=torch.long),  # x_biome
+        torch.tensor([12], dtype=torch.long),  # x_y_index
+        torch.tensor([2], dtype=torch.long),  # x_lod
+    )
+
+    onnx_path = out_dir / "model.onnx"
+    torch.onnx.export(
+        adapter,
+        dummy,
+        onnx_path,
+        export_params=True,
+        opset_version=17,
+        do_constant_folding=True,
+        input_names=["x_parent", "x_height_planes", "x_router6", "x_biome", "x_y_index", "x_lod"],
+        output_names=["block_logits", "air_mask"],
+        dynamic_axes=None,
+        dynamo=False,  # Force legacy TorchScript-based exporter
+    )
+    LOGGER.info("Exported v2 ONNX model: %s", onnx_path)
+
+    # Sidecar model_config.json (v2)
+    model_config: Dict[str, Any] = {
+        "version": "2.0.0",
+        "contract": "lodiffusion.v2",
+        "inputs": {
+            "x_parent": [1, 1, 8, 8, 8],
+            "x_height_planes": [1, 5, 16, 16],
+            "x_router6": [1, 6, 16, 16],
+            "x_biome": [1, 16, 16],
+            "x_y_index": [1],
+            "x_lod": [1],
+        },
+        "input_dtypes": {
+            "x_parent": "float32",
+            "x_height_planes": "float32",
+            "x_router6": "float32",
+            "x_biome": "int64",
+            "x_y_index": "int64",
+            "x_lod": "int64",
+        },
+        "outputs": {
+            "block_logits": [1, block_vocab, 16, 16, 16],
+            "air_mask": [1, 1, 16, 16, 16],
+        },
+        "assumptions": {
+            "lod_range": [1, 4],
+            "y_index_range": [0, 23],
+            "height_planes_normalized": True,
+            "router6_normalized": True,
+        },
+        "normalization": {
+            "router6": {
+                "mean": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+                "std": [1.0, 1.0, 1.0, 1.0, 1.0, 1.0],
+            }
+        },
+        "biome_vocab_size": biome_vocab,
+        "block_vocab_size": block_vocab,
+        "provenance": collect_export_provenance(),
+    }
+    model_config = embed_block_mapping(model_config)
+    with open(out_dir / "model_config.json", "w") as f:
+        json.dump(model_config, f, indent=2)
+
+    # Test vectors
+    with torch.no_grad():
+        block_logits, air_mask = adapter(*dummy)
+    np.savez(
+        out_dir / "test_vectors.npz",
+        x_parent=dummy[0].cpu().numpy(),
+        x_height_planes=dummy[1].cpu().numpy(),
+        x_router6=dummy[2].cpu().numpy(),
+        x_biome=dummy[3].cpu().numpy(),
+        x_y_index=dummy[4].cpu().numpy(),
+        x_lod=dummy[5].cpu().numpy(),
+        block_logits=block_logits.cpu().numpy(),
+        air_mask=air_mask.cpu().numpy(),
+    )
+    LOGGER.info("Wrote test vectors: %s", out_dir / "test_vectors.npz")
+    return onnx_path
+
+
 def load_config(path: Path) -> Dict:
     with open(path, "r") as f:
         return yaml.safe_load(f)
@@ -253,8 +392,19 @@ def main():
     cfg = load_config(args.config)
     model = build_model(cfg)
     load_checkpoint(model, args.checkpoint)
-    adapter = LODiffusionAdapter(model, cfg["model"].get("biome_vocab_size", 256))
-    export_contract(adapter, cfg, args.out_dir)
+
+    # Detect contract version from config (export.contract or v2 marker keys)
+    export_cfg = cfg.get("export", {})
+    contract = export_cfg.get("contract", "lodiffusion.v1")
+
+    if contract == "lodiffusion.v2":
+        LOGGER.info("Exporting lodiffusion.v2 contract (anchor channels)")
+        adapter_v2 = LODiffusionAdapterV2(model)
+        export_contract_v2(adapter_v2, cfg, args.out_dir)
+    else:
+        LOGGER.info("Exporting lodiffusion.v1 contract (legacy one-hot)")
+        adapter_v1 = LODiffusionAdapter(model, cfg["model"].get("biome_vocab_size", 256))
+        export_contract(adapter_v1, cfg, args.out_dir)
 
 
 if __name__ == "__main__":  # pragma: no cover

@@ -29,28 +29,35 @@ from train.unet3d import SimpleFlexibleConfig, SimpleFlexibleUNet3D
 class MultiLODLoss(nn.Module):
     """
     Combined loss for air mask and block type prediction across all LOD levels.
+    Optionally includes a surface-consistency term that penalises the model
+    when its predicted top-surface height deviates from the heightmap anchor.
     """
 
-    def __init__(self, air_loss_weight: float = 0.25):
+    def __init__(
+        self,
+        air_loss_weight: float = 0.25,
+        surface_consistency_weight: float = 0.0,
+    ):
         super().__init__()
         self.air_loss_weight = air_loss_weight
+        self.surface_consistency_weight = surface_consistency_weight
         self.block_loss_fn = nn.CrossEntropyLoss()
         self.air_loss_fn = nn.BCEWithLogitsLoss()
 
     def forward(
-        self, predictions: Dict[str, torch.Tensor], targets: Dict[str, torch.Tensor]
+        self,
+        predictions: Dict[str, torch.Tensor],
+        targets: Dict[str, torch.Tensor],
     ) -> Dict[str, torch.Tensor]:
-        """
-        Compute multi-LOD loss.
+        """Compute multi-LOD loss.
 
         Args:
-            predictions: Dict with 'air_mask_logits' and 'block_type_logits'
-            targets: Dict with 'target_blocks' and 'target_occupancy'
-
+            predictions: Dict with 'air_mask_logits' and 'block_type_logits'.
+            targets: Dict with 'target_blocks', 'target_occupancy', and
+                     optionally 'height_planes' (B, 5, 16, 16).
         Returns:
-            Dict with individual and total losses
+            Dict with individual and total losses.
         """
-
         air_mask_logits = predictions["air_mask_logits"]
         block_type_logits = predictions["block_type_logits"]
 
@@ -66,19 +73,43 @@ class MultiLODLoss(nn.Module):
         block_loss = self.block_loss_fn(block_logits_flat, target_blocks_flat)
 
         # Air mask loss (binary cross-entropy)
-        target_air = (target_occupancy == 0).float()  # Convert to air mask
-        if target_air.dim() == 4:  # For (B, H, W, D), add channel dimension
-            target_air = target_air.unsqueeze(1)  # -> (B, 1, H, W, D)
+        target_air = (target_occupancy == 0).float()
+        if target_air.dim() == 4:  # (B, H, W, D) → add channel dim
+            target_air = target_air.unsqueeze(1)  # (B, 1, H, W, D)
 
         air_loss = self.air_loss_fn(air_mask_logits, target_air)
 
+        # Surface consistency loss (optional)
+        # Penalise mismatch between the predicted top-occupancy surface and
+        # the height_planes[0] (normalised WORLD_SURFACE_WG) anchor.
+        surface_loss = block_type_logits.new_zeros(1).squeeze()
+        if self.surface_consistency_weight > 0 and "height_planes" in targets:
+            height_planes = targets["height_planes"]  # (B, 5, 16, 16)
+            surface_anchor = height_planes[:, 0, :, :]  # (B, 16, 16) normalised 0..1
+
+            # Predicted air prob: sigmoid of air_mask_logits, shape (B,1,D,H,W)
+            air_prob = torch.sigmoid(air_mask_logits)  # (B,1,D,H,W)
+            # Top surface = first solid slab from above (dim=2, y-axis)
+            # Approximate as the y-coordinate of maximum solid probability, normalised
+            solid_prob = 1.0 - air_prob.squeeze(1)  # (B, D, H, W)
+            y_weights = torch.linspace(0, 1, D, device=solid_prob.device)
+            # Shape: (B, H, W)  — weighted average y of solid voxels per column
+            predicted_surface = (solid_prob * y_weights[None, :, None, None]).sum(dim=1)  # (B,H,W)
+            predicted_surface = predicted_surface / (solid_prob.sum(dim=1).clamp(min=1e-6))
+            surface_loss = torch.nn.functional.l1_loss(predicted_surface, surface_anchor)
+
         # Combined loss
-        total_loss = block_loss + self.air_loss_weight * air_loss
+        total_loss = (
+            block_loss
+            + self.air_loss_weight * air_loss
+            + self.surface_consistency_weight * surface_loss
+        )
 
         return {
             "total_loss": total_loss,
             "block_loss": block_loss,
             "air_loss": air_loss,
+            "surface_loss": surface_loss,
         }
 
 
@@ -149,18 +180,21 @@ def train_epoch(
     lod_counts = {}
 
     for batch in dataloader:
-        # Move to device
+        # Move to device — include anchor tensors when present
         inputs = {
             "parent_voxel": batch["parent_voxel"].to(device),
-            "biome_patch": batch["biome_patch"].to(device),
+            "biome_patch": batch["biome_idx"].to(device),  # integer indices
             "heightmap_patch": batch["heightmap_patch"].to(device),
             "y_index": batch["y_index"].to(device),
             "lod": batch["lod"].to(device),
+            "height_planes": batch["height_planes"].to(device),
+            "router6": batch["router6"].to(device),
         }
 
         targets = {
-            "target_blocks": batch["target_blocks"].to(device),
-            "target_occupancy": batch["target_occupancy"].to(device),
+            "target_blocks": batch["target_types"].to(device),
+            "target_occupancy": batch["target_mask"].to(device),
+            "height_planes": batch["height_planes"].to(device),
         }
 
         # Track LOD distribution
@@ -225,18 +259,21 @@ def validate_epoch(
 
     with torch.no_grad():
         for batch in dataloader:
-            # Move to device
+            # Move to device — include anchor tensors when present
             inputs = {
                 "parent_voxel": batch["parent_voxel"].to(device),
-                "biome_patch": batch["biome_patch"].to(device),
+                "biome_patch": batch["biome_idx"].to(device),  # integer indices
                 "heightmap_patch": batch["heightmap_patch"].to(device),
                 "y_index": batch["y_index"].to(device),
                 "lod": batch["lod"].to(device),
+                "height_planes": batch["height_planes"].to(device),
+                "router6": batch["router6"].to(device),
             }
 
             targets = {
-                "target_blocks": batch["target_blocks"].to(device),
-                "target_occupancy": batch["target_occupancy"].to(device),
+                "target_blocks": batch["target_types"].to(device),
+                "target_occupancy": batch["target_mask"].to(device),
+                "height_planes": batch["height_planes"].to(device),
             }
 
             lod_transition = batch["lod_transition"]
@@ -313,6 +350,24 @@ def main():
     parser.add_argument("--device", type=str, default="auto", help="Device (auto, cpu, cuda)")
     parser.add_argument("--save-every", type=int, default=10, help="Save checkpoint every N epochs")
     parser.add_argument("--validate-every", type=int, default=5, help="Validate every N epochs")
+    parser.add_argument(
+        "--surface-loss-weight",
+        type=float,
+        default=0.0,
+        help="Weight for surface-consistency loss (0=disabled, 0.1 recommended with anchor data)",
+    )
+    parser.add_argument(
+        "--height-channels",
+        type=int,
+        default=5,
+        help="Height-plane channels for anchor conditioning",
+    )
+    parser.add_argument(
+        "--router6-channels",
+        type=int,
+        default=6,
+        help="Router6 channels for anchor conditioning",
+    )
 
     args = parser.parse_args()
 
@@ -328,11 +383,13 @@ def main():
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Create model
+    # Create model (include anchor-channel dimensions)
     config = SimpleFlexibleConfig(
         base_channels=args.base_channels,
         biome_vocab_size=256,
         block_vocab_size=1104,
+        height_channels=args.height_channels,
+        router6_channels=args.router6_channels,
     )
 
     model = SimpleFlexibleUNet3D(config).to(device)
@@ -379,7 +436,10 @@ def main():
     print(f"Val samples: {len(val_dataset)}")
 
     # Create loss function and optimizer
-    loss_fn = MultiLODLoss(air_loss_weight=args.air_loss_weight)
+    loss_fn = MultiLODLoss(
+        air_loss_weight=args.air_loss_weight,
+        surface_consistency_weight=args.surface_loss_weight,
+    )
     optimizer = optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
 
     # Learning rate scheduler
@@ -442,7 +502,7 @@ def main():
                     },
                     output_dir / "best_model.pt",
                 )
-                print(f"  ✅ New best model saved (val_loss: {best_val_loss:.4f})")
+                print(f"  ** New best model saved (val_loss: {best_val_loss:.4f})")
 
         # Save checkpoint
         if epoch % args.save_every == 0:

@@ -1,0 +1,63 @@
+# Anchor-channel training config (Phase 2)
+# Extends config_multi_lod.yaml with vanilla noise conditioning:
+#   - 5-plane heightmap (surface, ocean_floor, slope_x, slope_z, curvature)
+#   - 6-channel router6  (temperature, vegetation, continents, erosion, depth, ridges)
+#   - biome integer index per 16×16 column
+#   - y-slab embedding
+# Contract: lodiffusion.v2
+
+model:
+  base_channels: 32
+  biome_vocab_size: 256
+  block_type_channels: 1104
+  # Anchor conditioning dimensions
+  height_channels: 5
+  router6_channels: 6
+  biome_embed_dim: 32
+  y_embed_dim: 16
+  # Depth (3+1 block-down stages)
+  num_res_blocks: 2
+
+training:
+  epochs: 100
+  batch_size: 4
+  learning_rate: 1.0e-4
+  weight_decay: 1.0e-4
+  lr_schedule: cosine # CosineAnnealingLR(T_max=epochs)
+  # Loss weights
+  air_loss_weight: 0.25
+  surface_consistency_weight: 0.10 # L1 of predicted top surface vs height_planes[0]
+  # LOD sampling bias — favour fine transitions where anchors matter most
+  lod_sampling_weights:
+    lod4to3: 0.15
+    lod3to2: 0.20
+    lod2to1: 0.30
+    lod1to0: 0.35
+  # Checkpointing
+  save_every: 10
+  validate_every: 5
+
+data:
+  # NPZ keys expected from NoiseDumper extraction (fall back to approximation when absent)
+  anchor_keys:
+    router6: router6 # float32 [6, 16, 16] — 6 CORE router channels
+    heightmap_surface: hmap_surf # float32 [16, 16]    — WORLD_SURFACE_WG
+    heightmap_ocean_floor: hmap_ocean # float32 [16, 16]
+    slope_x: slope_x # float32 [16, 16]    — optional, derived if absent
+    slope_z: slope_z # float32 [16, 16]
+    curvature: curvature # float32 [16, 16]
+
+export:
+  contract: "lodiffusion.v2"
+  opset: 17
+  # v2 static input shapes (batch=1)
+  inputs:
+    x_parent: [1, 1, 8, 8, 8]
+    x_height_planes: [1, 5, 16, 16]
+    x_router6: [1, 6, 16, 16]
+    x_biome: [1, 16, 16] # int64 biome index
+    x_y_index: [1] # int64
+    x_lod: [1] # int64
+  outputs:
+    block_logits: [1, 1104, 16, 16, 16]
+    air_mask: [1, 1, 16, 16, 16]

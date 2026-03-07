@@ -17,11 +17,17 @@ Key Features:
 
 import math
 from dataclasses import dataclass
-from typing import Dict
+from typing import Dict, Optional
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+
+from .anchor_conditioning import (
+    AnchorConditioningFusion,
+    approximate_router6_from_biome,
+    compute_height_planes,
+)
 
 
 def get_timestep_embedding(timesteps: torch.Tensor, embedding_dim: int) -> torch.Tensor:
@@ -57,13 +63,18 @@ def get_timestep_embedding(timesteps: torch.Tensor, embedding_dim: int) -> torch
 
 @dataclass
 class SimpleFlexibleConfig:
-    """Simplified configuration for flexible multi-LOD UNet."""
+    """Configuration for flexible multi-LOD UNet with anchor conditioning."""
 
     # Core architecture
     base_channels: int = 32
     max_channels: int = 128
 
-    # Input conditioning
+    # Anchor conditioning channels
+    height_channels: int = 5  # surface, ocean_floor, slope_x, slope_z, curvature
+    router6_channels: int = 6  # temp, veg, continentalness, erosion, depth, ridges
+    y_embed_dim: int = 16  # Y-slab embedding dimension
+
+    # Input conditioning (kept for backward compat)
     biome_vocab_size: int = 256
     biome_embed_dim: int = 32
     lod_embed_dim: int = 64
@@ -115,7 +126,8 @@ class SimpleFlexibleUNet3D(nn.Module):
     Simplified flexible 3D U-Net that handles all LOD transitions.
 
     Uses a fixed architecture with adaptive input/output processing.
-    This is the current working implementation for multi-LOD training.
+    Conditioning accepts full anchor channels (height_planes, router6, biome, y_index)
+    with automatic fallback when legacy inputs (biome_patch, heightmap_patch) are given.
     """
 
     def __init__(self, config: SimpleFlexibleConfig):
@@ -136,8 +148,15 @@ class SimpleFlexibleUNet3D(nn.Module):
             nn.ReLU(inplace=True),
         )
 
-        # Conditioning fusion
-        self.conditioning_fusion = SimpleConditioningFusion(config)
+        # Anchor conditioning fusion (replaces SimpleConditioningFusion)
+        self.conditioning_fusion = AnchorConditioningFusion(
+            height_channels=config.height_channels,
+            router6_channels=config.router6_channels,
+            biome_vocab_size=config.biome_vocab_size,
+            biome_embed_dim=config.biome_embed_dim,
+            y_embed_dim=config.y_embed_dim,
+            out_channels=config.base_channels,
+        )
 
         # Core architecture - works on 16³ resolution always
         # We'll pad/crop inputs to fit this
@@ -189,21 +208,55 @@ class SimpleFlexibleUNet3D(nn.Module):
         heightmap_patch: torch.Tensor,
         y_index: torch.Tensor,
         lod: torch.Tensor,
+        height_planes: Optional[torch.Tensor] = None,
+        router6: Optional[torch.Tensor] = None,
     ) -> Dict[str, torch.Tensor]:
         """
-        Forward pass with flexible input/output sizes.
+        Forward pass with flexible input/output sizes and anchor conditioning.
 
-        Strategy: Always process at 16³, pad/crop as needed.
+        Legacy inputs (biome_patch, heightmap_patch) are always accepted.
+        If height_planes / router6 are None, they are computed from the legacy
+        inputs so that old training data and the v1 ONNX adapter still work.
+
+        For ONNX export (v2 contract) biome_patch should be int64 indices [B,H,W]
+        and height_planes / router6 should be pre-computed float32 tensors.
         """
         input_size = parent_voxel.shape[-1]
         target_size = input_size * 2
 
-        # Create LOD embeddings and map to feature bias
+        # ------------------------------------------------------------------
+        # Derive anchor tensors from legacy inputs when not provided
+        # ------------------------------------------------------------------
+        # Normalise heightmap to [B, 1, H, W]
+        hm = heightmap_patch
+        if hm.dim() == 5:
+            hm = hm.squeeze(-1)  # drop trailing 1  [B,1,H,W]
+        if hm.dim() == 3:
+            hm = hm.unsqueeze(1)  # [B,1,H,W]
+
+        if height_planes is None:
+            height_planes = compute_height_planes(hm)  # [B,5,H,W]
+
+        # Normalise biome to indices [B,H,W]
+        if biome_patch.dim() == 4 and biome_patch.shape[1] > 16:
+            biome_indices = biome_patch.argmax(dim=1)  # one-hot (B,256,H,W)
+        elif biome_patch.dim() == 5:
+            biome_indices = biome_patch.argmax(dim=1).squeeze(-1)  # (B,N,H,W,1)
+        else:
+            biome_indices = biome_patch  # already (B,H,W)
+
+        if router6 is None:
+            router6 = approximate_router6_from_biome(biome_indices, hm)  # [B,6,H,W]
+
+        # ------------------------------------------------------------------
+        # Conditioning
+        # ------------------------------------------------------------------
         lod_emb = get_timestep_embedding(lod.flatten(), self.lod_embed_dim)
         lod_emb = self.lod_projection(lod_emb)  # (B, D)
 
-        # Get spatial conditioning at 16×16
-        conditioning = self.conditioning_fusion(biome_patch, heightmap_patch, y_index, lod)
+        conditioning = self.conditioning_fusion(
+            height_planes, router6, biome_indices.long(), y_index
+        )  # [B, base_channels, H, W]
 
         # Pad input to 16³ for processing
         processing_size = 16
