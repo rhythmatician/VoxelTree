@@ -4,7 +4,7 @@
 model:
   base_channels: 32
   biome_vocab_size: 256
-  block_vocab_size: 1104
+  block_vocab_size: 1102
   conditioning_dim: 64
 
 # Training configuration

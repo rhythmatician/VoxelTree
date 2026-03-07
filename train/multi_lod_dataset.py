@@ -209,6 +209,7 @@ class MultiLODDataset(Dataset):
         data_dir: Path,
         split: str = "train",
         lod_sampling_weights: Optional[Dict[str, float]] = None,
+        min_solid_fraction: float = 0.02,
     ):
         """
         Initialize multi-LOD dataset.
@@ -217,9 +218,14 @@ class MultiLODDataset(Dataset):
             data_dir: Directory containing NPZ files
             split: "train" or "val"
             lod_sampling_weights: Weights for sampling different LOD transitions
+            min_solid_fraction: Skip chunks with fewer solid voxels than this
+                                fraction (default 0.02 = 2%).  Filters the ~69%
+                                all-air chunks that teach the model nothing
+                                about block types.
         """
         self.data_dir = Path(data_dir)
         self.split = split
+        self.min_solid_fraction = min_solid_fraction
 
         # Default sampling weights (can emphasize certain LOD levels)
         if lod_sampling_weights is None:
@@ -246,6 +252,7 @@ class MultiLODDataset(Dataset):
     def _generate_all_pairs(self):
         """Generate all possible training pairs from NPZ files."""
         print("Generating multi-LOD training pairs...")
+        skipped_air = 0
 
         for npz_file in self.npz_files:
             try:
@@ -258,6 +265,12 @@ class MultiLODDataset(Dataset):
                     labels16 = data["target_types"].astype(np.int32)
                 else:
                     print(f"Skipping {npz_file}: no labels16 or target_types key")
+                    continue
+
+                # Filter out nearly-all-air chunks (nothing to learn from)
+                solid_frac = (labels16 != 0).mean()
+                if solid_frac < self.min_solid_fraction:
+                    skipped_air += 1
                     continue
 
                 biome16 = (
@@ -314,7 +327,10 @@ class MultiLODDataset(Dataset):
                 print(f"Error processing {npz_file}: {e}")
                 continue
 
-        print(f"Generated {len(self.training_pairs)} total training pairs")
+        print(
+            f"Generated {len(self.training_pairs)} total training pairs "
+            f"(skipped {skipped_air} near-empty chunks)"
+        )
 
         # Print distribution by LOD transition
         lod_counts = {}

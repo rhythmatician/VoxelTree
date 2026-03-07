@@ -9,6 +9,7 @@ This script trains a single flexible model that can handle all LOD transitions:
 """
 
 import argparse
+import json
 import sys
 import time
 from pathlib import Path
@@ -24,6 +25,9 @@ sys.path.append(str(Path(__file__).parent / "train"))
 
 from train.multi_lod_dataset import MultiLODDataset, collate_multi_lod_batch
 from train.unet3d import SimpleFlexibleConfig, SimpleFlexibleUNet3D
+
+# Default Voxy vocabulary path
+DEFAULT_VOCAB_PATH = Path("config/voxy_vocab.json")
 
 
 class MultiLODLoss(nn.Module):
@@ -41,8 +45,11 @@ class MultiLODLoss(nn.Module):
         super().__init__()
         self.air_loss_weight = air_loss_weight
         self.surface_consistency_weight = surface_consistency_weight
-        self.block_loss_fn = nn.CrossEntropyLoss()
-        self.air_loss_fn = nn.BCEWithLogitsLoss()
+        # ignore_index=0 → don't train block head on air voxels (75% of data)
+        self.block_loss_fn = nn.CrossEntropyLoss(ignore_index=0)
+        # pos_weight > 1 up-weights the minority class (solid ~25%)
+        # This compensates for the 75/25 air/solid imbalance
+        self.air_loss_fn = nn.BCEWithLogitsLoss(pos_weight=torch.tensor([3.0]))
 
     def forward(
         self,
@@ -73,11 +80,12 @@ class MultiLODLoss(nn.Module):
         block_loss = self.block_loss_fn(block_logits_flat, target_blocks_flat)
 
         # Air mask loss (binary cross-entropy)
-        target_air = (target_occupancy == 0).float()
-        if target_air.dim() == 4:  # (B, H, W, D) → add channel dim
-            target_air = target_air.unsqueeze(1)  # (B, 1, H, W, D)
+        # Polarity: positive logit = SOLID, matching Java runtime convention
+        target_solid = (target_occupancy > 0).float()
+        if target_solid.dim() == 4:  # (B, H, W, D) -> add channel dim
+            target_solid = target_solid.unsqueeze(1)  # (B, 1, H, W, D)
 
-        air_loss = self.air_loss_fn(air_mask_logits, target_air)
+        air_loss = self.air_loss_fn(air_mask_logits, target_solid)
 
         # Surface consistency loss (optional)
         # Penalise mismatch between the predicted top-occupancy surface and
@@ -87,11 +95,12 @@ class MultiLODLoss(nn.Module):
             height_planes = targets["height_planes"]  # (B, 5, 16, 16)
             surface_anchor = height_planes[:, 0, :, :]  # (B, 16, 16) normalised 0..1
 
-            # Predicted air prob: sigmoid of air_mask_logits, shape (B,1,D,H,W)
-            air_prob = torch.sigmoid(air_mask_logits)  # (B,1,D,H,W)
+            # Predicted solid prob: sigmoid of air_mask_logits, shape (B,1,D,H,W)
+            # (positive = solid after polarity fix)
+            solid_prob_5d = torch.sigmoid(air_mask_logits)  # (B,1,D,H,W)
             # Top surface = first solid slab from above (dim=2, y-axis)
             # Approximate as the y-coordinate of maximum solid probability, normalised
-            solid_prob = 1.0 - air_prob.squeeze(1)  # (B, D, H, W)
+            solid_prob = solid_prob_5d.squeeze(1)  # (B, D, H, W)
             y_weights = torch.linspace(0, 1, D, device=solid_prob.device)
             # Shape: (B, H, W)  — weighted average y of solid voxels per column
             predicted_surface = (solid_prob * y_weights[None, :, None, None]).sum(dim=1)  # (B,H,W)
@@ -125,10 +134,10 @@ def compute_metrics(
         target_blocks = targets["target_blocks"]
         target_occupancy = targets["target_occupancy"]
 
-        # Air mask accuracy
+        # Air mask accuracy (positive = solid, matching Java convention)
         air_pred = (torch.sigmoid(air_mask_logits) > 0.5).float()
-        target_air = (target_occupancy == 0).float().unsqueeze(1)
-        air_acc = (air_pred == target_air).float().mean().item()
+        target_solid = (target_occupancy > 0).float().unsqueeze(1)
+        air_acc = (air_pred == target_solid).float().mean().item()
 
         # Block type accuracy (only on solid voxels)
         block_pred = block_type_logits.argmax(dim=1)
@@ -140,12 +149,12 @@ def compute_metrics(
             block_acc = 1.0  # All air, trivially correct
 
         # Overall accuracy
-        # Air voxels: correct if predicted as air
+        # Air voxels: correct if predicted as air (solid logit < 0.5)
         # Solid voxels: correct if block type matches
         air_mask = target_occupancy == 0
         solid_mask = target_occupancy > 0
 
-        air_correct = (air_pred.squeeze(1)[air_mask] > 0.5).sum()
+        air_correct = (air_pred.squeeze(1)[air_mask] < 0.5).sum()
         solid_correct = (block_pred[solid_mask] == target_blocks[solid_mask]).sum()
         total_voxels = target_occupancy.numel()
 
@@ -368,6 +377,12 @@ def main():
         default=6,
         help="Router6 channels for anchor conditioning",
     )
+    parser.add_argument(
+        "--vocab",
+        type=Path,
+        default=DEFAULT_VOCAB_PATH,
+        help="Path to Voxy vocabulary JSON (default: config/voxy_vocab.json)",
+    )
 
     args = parser.parse_args()
 
@@ -379,6 +394,17 @@ def main():
 
     print(f"Using device: {device}")
 
+    # Load Voxy vocabulary for block_vocab_size
+    vocab_path: Path = args.vocab
+    if vocab_path.exists():
+        with open(vocab_path) as f:
+            voxy_vocab = json.load(f)
+        block_vocab_size = len(voxy_vocab)
+        print(f"Voxy vocabulary: {block_vocab_size} block types from {vocab_path}")
+    else:
+        block_vocab_size = 1102  # fallback if no vocab file
+        print(f"Warning: vocab file {vocab_path} not found, using default size {block_vocab_size}")
+
     # Create output directory
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -387,7 +413,7 @@ def main():
     config = SimpleFlexibleConfig(
         base_channels=args.base_channels,
         biome_vocab_size=256,
-        block_vocab_size=1104,
+        block_vocab_size=block_vocab_size,
         height_channels=args.height_channels,
         router6_channels=args.router6_channels,
     )

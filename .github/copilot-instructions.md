@@ -18,7 +18,7 @@ VoxelTree trains a **LOD-aware voxel super‑resolution model** for **vanilla te
 * **Deterministic inference**: same inputs ⇒ same outputs (CPU).
 * **Static ONNX**: opset ≥ 17, **no dynamic axes**, outputs named `block_logits`, `air_mask`.
 * **Disk hygiene**: batch data is deleted after each train iteration; obey high‑watermark.
-* **Truthful labels**: parse `.mca` **palette + bitpacked states**; **no synthetic fallbacks**.
+* **Truthful labels**: extract from **Voxy RocksDB** databases (canonical vocabulary); **no synthetic fallbacks**.
 * **Just‑in‑time**: far LODs avoid the heavy 16³ head; refine only when entering near bands.
 
 ---
@@ -39,21 +39,25 @@ VoxelTree trains a **LOD-aware voxel super‑resolution model** for **vanilla te
 
 ```
 VoxelTree/
+├─ pipeline.py                   # Two-phase orchestrator: extract→train→export→deploy
+├─ train_multi_lod.py            # CLI: multi-LOD training with Voxy vocab
+├─ config_multi_lod.yaml         # Model + training config
+├─ config/
+│  └─ voxy_vocab.json            # Canonical Voxy-native block vocabulary (1102 entries)
 ├─ train/
-│  ├─ train.py            # CLI: train, eval, export
-│  ├─ dataset.py          # Loads NPZ patches; builds multi‑LOD inputs
-│  ├─ unet3d.py           # 8→16 SR UNet (+ heads if enabled)
-│  ├─ exporter.py         # Static ONNX export (opset ≥17)
-│  ├─ loss.py             # CE + air losses
-│  └─ config.yaml         # Model + data config
+│  ├─ multi_lod_dataset.py       # Loads NPZ patches; builds multi‑LOD inputs
+│  ├─ unet3d.py                  # 8→16 SR UNet (SimpleFlexibleUNet3D)
+│  ├─ anchor_conditioning.py     # Height planes + router6 conditioning
+│  ├─ losses.py                  # CE + air losses
+│  └─ metrics.py                 # Per‑step and rollout metrics
 ├─ scripts/
-│  ├─ worldgen/bootstrap.py     # Fabric + Chunky; structures=false
-│  ├─ extraction/chunk_extractor.py
-│  ├─ extraction/palette_decode.py
-│  ├─ extraction/block_vocab.py  # auto‑discover mapping
+│  ├─ extract_voxy_training_data.py  # Voxy RocksDB → NPZ patches
+│  ├─ voxy_reader.py             # RocksDB reader (SaveLoadSystem3 decoder)
+│  ├─ mipper.py                  # Voxy Mipper (canonical LOD coarsening)
+│  ├─ export_lod.py              # Static ONNX export (opset ≥17)
 │  ├─ verify_onnx.py             # export + test_vectors + model_config
-│  ├─ run_eval.py                # per‑step + rollout metrics
-│  └─ generate_corpus.py         # iter: worldgen→extract→pair→split
+│  ├─ extraction/                # Legacy MCA extraction (kept for reference)
+│  └─ worldgen/bootstrap.py      # Fabric + Chunky; structures=false
 ├─ docs/AC.md
 ├─ tests/                        # PyTest (unit + mini E2E)
 ├─ models/                       # checkpoints/onnx (ignored in git)
@@ -63,24 +67,24 @@ VoxelTree/
 
 ---
 
-## 🧠 Model I/O Contract (Phase‑1)
+## 🧠 Model I/O Contract (v2 — Anchor Conditioning)
 
 **Inputs**
 
-* `parent_voxel`: **\[1,1,8,8,8] float32** — binary occupancy (3D OR‑pool from child or prev pred)
-* `biome_patch`: **\[1,16,16] int64** — vanilla biome index per (x,z)
-* `heightmap_patch`: **\[1,1,16,16] float32** — normalized \[0,1] motion‑blocking height
-* `river_patch` *(opt)*: **\[1,1,16,16] float32** — river prior
-* `multinoise_*` *(opt, 6 maps)*: **\[1,1,16,16] float32** — continentalness, erosion, ridge/peaks, weirdness, temperature, humidity (seed‑derived)
-* `y_index`: **\[1] int64** — vertical 16‑slab index
-* `lod`: **\[1] int64** — coarseness token (1 for native 8→16; >1 when parent was coarsened in train)
+* `x_parent`: **\[1,1,8,8,8] float32** — binary occupancy (Mipper-derived from child or prev pred)
+* `x_height_planes`: **\[1,5,16,16] float32** — surface, ocean\_floor, slope\_x, slope\_z, curvature
+* `x_router6`: **\[1,6,16,16] float32** — temperature, vegetation, continents, erosion, depth, ridges
+* `x_biome`: **\[1,16,16] int64** — vanilla biome index per (x,z)
+* `x_y_index`: **\[1] int64** — vertical 16‑slab index
+* `x_lod`: **\[1] int64** — coarseness token (1 for native 8→16; >1 when parent was coarsened in train)
 
 **Outputs**
 
-* `block_logits`: **\[1, N\_blocks, 16,16,16] float32** — full vocab
+* `block_logits`: **\[1, 1102, 16,16,16] float32** — Voxy-native vocab (1102 block types)
 * `air_mask`: **\[1,1,16,16,16] float32** — P(air)
 
 > ONNX: **static shapes only**. No dict inputs/outputs.
+> Block vocabulary: 1102 entries from canonical Voxy vocabulary (`config/voxy_vocab.json`), air=0.
 
 ---
 
@@ -158,31 +162,34 @@ probability pooling).
 ## 🧰 Implementation Guardrails
 
 * Python **3.11+**; use `pathlib.Path`; avoid global state when possible.
-* Multiprocessing for extraction; never block on per‑chunk logging.
+* `rocksdict` + `zstandard` for Voxy RocksDB extraction; `torch` + `numpy` for training.
 * Keep tensors typed/sized exactly as the contract; validate in `dataset.__getitem__`.
 * Limit batch RAM; stream from NPZ; pin shapes in `collate_fn`.
-* Respect disk cap (10–20 GB); delete batch outputs after training unless `--keep`.
+* Respect disk cap (10–20 GB); delete batch outputs after training unless `--keep`.
+* Use `pipeline.py` to orchestrate extract→train→export→deploy.
 
 ---
 
 ## 🧪 Tests (what to write first)
 
-* **Palette decode**: synthetic bitpacked arrays round‑trip to indices.
-* **Downsample invariants**: OR‑pool correctness; prob‑pool vs mode sanity.
+* **Mipper invariants**: all-air→all-air; single opaque voxel wins; occupancy ≤ OR-pool.
+* **Voxy extraction**: round-trip vocab mapping; NPZ shapes/dtypes match contract.
 * **Dataset contract**: shapes/dtypes are exact; raise if not.
-* **Mini E2E**: worldgen(1 region) → extract(≥ 64 chunks) → pair → 1 epoch → export ONNX → onnxruntime forward.
+* **Mini E2E**: extract(Voxy DB, ≥ 64 chunks) → pair → 1 epoch → export ONNX → onnxruntime forward.
 
 ---
 
 ## 🚀 Export & Model Config
 
-* Use `train/exporter.py` to export **static** ONNX (opset ≥ 17): ordered inputs/outputs only.
-* `scripts/verify_onnx.py` also writes `model_config.json` with:
+* Use `scripts/export_lod.py` to export **static** ONNX (opset ≥ 17): ordered inputs/outputs only.
+* Export also writes `model_config.json` with:
 
   * Inputs/outputs (name, dtype, shape, normalization)
-  * `block_id↔name` mapping (frozen for this dataset)
+  * `block_mapping` from `config/voxy_vocab.json` (Voxy-native block→ID)
+  * `block_id_to_name` reverse mapping
   * MC version, git SHA, dataset ID
 * Ship `test_vectors.npz` (inputs + outputs) for DJL verification.
+* LODiffusion's `VoxyBlockMapper` reads `block_mapping` from `model_config.json` at runtime.
 
 ---
 

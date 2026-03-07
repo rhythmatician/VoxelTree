@@ -74,19 +74,23 @@ def collect_export_provenance() -> Dict:
 
 
 def embed_block_mapping(model_config: Dict) -> Dict:
-    """Embed complete block mapping into model config for self-contained export."""
+    """Embed Voxy vocabulary into model config for self-contained export."""
     try:
-        mapping_path = Path("scripts/extraction/complete_block_mapping.json")
-        if mapping_path.exists():
-            with open(mapping_path, "r") as f:
+        # Prefer Voxy-native vocabulary
+        vocab_path = Path("config/voxy_vocab.json")
+        if not vocab_path.exists():
+            # Fallback to legacy VoxelTree mapping
+            vocab_path = Path("scripts/extraction/complete_block_mapping.json")
+
+        if vocab_path.exists():
+            with open(vocab_path, "r") as f:
                 block_mapping = json.load(f)
-            # Embed as both name->id and id->name for convenience
             model_config["block_mapping"] = block_mapping
             id_to_name = {v: k for k, v in block_mapping.items()}
             model_config["block_id_to_name"] = id_to_name
-            LOGGER.info(f"Embedded {len(block_mapping)} block mappings into model config")
+            LOGGER.info(f"Embedded {len(block_mapping)} block mappings from {vocab_path}")
         else:
-            LOGGER.warning(f"Block mapping not found at {mapping_path}")
+            LOGGER.warning("No block vocabulary found")
     except Exception as e:  # pragma: no cover
         LOGGER.warning(f"Failed to embed block mapping: {e}")
     return model_config
@@ -192,7 +196,7 @@ def export_contract_v2(adapter: LODiffusionAdapterV2, cfg: Dict, out_dir: Path):
     adapter.eval()
 
     biome_vocab = cfg["model"].get("biome_vocab_size", 256)
-    block_vocab = cfg["model"].get("block_type_channels", 1104)
+    block_vocab = cfg["model"].get("block_type_channels", 1102)
 
     dummy = (
         torch.rand(1, 1, 8, 8, 8),  # x_parent
@@ -307,7 +311,7 @@ def export_contract(adapter: LODiffusionAdapter, cfg: Dict, out_dir: Path):
     model.eval()
 
     biome_vocab = cfg["model"].get("biome_vocab_size", 256)
-    block_vocab = cfg["model"].get("block_type_channels", 1104)
+    block_vocab = cfg["model"].get("block_type_channels", 1102)
 
     dummy = (
         torch.rand(1, 1, 8, 8, 8),  # x_parent (already 0..1)

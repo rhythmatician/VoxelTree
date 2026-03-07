@@ -74,9 +74,9 @@ The system is successful when:
 | **Training** | Python 3.13+ (PyTorch) | Dataset extraction, model training, ONNX export |
 | **Runtime** | Java 21 (Fabric mod) | Anchor sampling, job scheduling, ONNX inference via DJL |
 | **Model Contract** | ONNX 1.12+ | Static-shape deterministic inference |
-| **LOD Rendering** | Voxy (Rust/Java) | Multi-resolution rendering and caching |
+| **LOD Rendering** | Voxy (Rust/Java) | Multi-resolution rendering, LOD storage (RocksDB) |
+| **Training Data** | Voxy RocksDB | Ground-truth block data extraction (canonical source) |
 | **World Freeze** | Carpet Mod | Deterministic training world generation |
-| **World Parsing** | anvil-parser2 | Reading .mca files for dataset extraction |
 
 ### 2.2 LOD Hierarchy
 
@@ -135,12 +135,13 @@ All models share these deterministic signals derived from vanilla noise:
 - `block_logits`: `[1, N_blocks, D, D, D]` where D is the target resolution
 - `air_mask`: `[1, 1, D, D, D]` probability that a voxel is empty
 
-**Block vocabulary (Phase 1):**
+**Block vocabulary:**
 
-- Terrain-only: Air, Stone, Dirt/Grass, Sand/Gravel, Water
-- Optional: Lava, Snow/Ice
-- Trees/plants excluded for Phase 1
-- Full vocabulary: 1104 Minecraft blocks (for future phases)
+- **Voxy-native canonical vocabulary**: 1102 entries from `config/voxy_vocab.json`
+- Auto-built by scanning all Voxy worlds; air = ID 0, remainder alphabetically sorted
+- Property variants (e.g. `oak_stairs[facing=north]`) collapse to a single canonical ID
+- Per-world Voxy state IDs are mapped to canonical IDs by block name at extraction time
+- LODiffusion's `VoxyBlockMapper` reads `block_mapping` from `model_config.json` at runtime
 
 ## 3. Dependencies & Environment
 
@@ -171,7 +172,8 @@ All models share these deterministic signals derived from vanilla noise:
 - Python: 3.13+
 - PyTorch: >=2.0
 - NumPy, SciPy, PyYAML, tqdm
-- anvil-parser2 (Minecraft .mca parsing)
+- rocksdict (Voxy RocksDB reading)
+- zstandard (ZSTD decompression for Voxy data)
 - ONNX, ONNX Runtime (for export validation)
 
 **What to avoid in demo milestone:**
@@ -205,26 +207,34 @@ All models share these deterministic signals derived from vanilla noise:
 
 ### 3.3 Dataset Extraction Pipeline
 
-**Inputs:**
+**Source:**
 
-- Vanilla-generated world files (.mca)
-- Biome information / heightmaps from engine
-- Anchor cache (optional; nice for reuse)
+- Voxy RocksDB databases (LOD-0 WorldSections)
+- Each Voxy world stores block data at `<saves>/<world>/voxy/<hash>/storage/`
+- Block IDs are per-world sequential; mapped to canonical vocabulary by name
+
+**Extraction tool:** `scripts/extract_voxy_training_data.py`
+
+**Process:**
+
+1. Open Voxy RocksDB via `scripts/voxy_reader.py` (SaveLoadSystem3 decoder)
+2. Iterate LOD-0 sections, decode 32³ WorldSections into 16³ sub-blocks
+3. Map per-world Voxy state IDs → canonical vocabulary IDs via `build_world_lut()`
+4. Compute biome grid (16×16 column-wise majority) and heightmap (normalised max non-air Y)
+5. Filter: skip sections below `--min-solid` threshold
+6. Save as NPZ with keys: `labels16`, `biome_patch`, `heightmap_patch`, `y_index`
 
 **Outputs:**
 
-- Training samples: `(x_parent, anchors...) → y_child`
-- Anchor cache (per region)
-- Evaluation snapshots
-- Dataset manifest with provenance
+- NPZ files (one per 16³ sub-block): `data/voxy/<world>_<x>_<y>_<z>_<sub>.npz`
+- Canonical vocabulary: `config/voxy_vocab.json` (auto-built if missing)
 
 **Provenance tracking:**
 
-- Seed
-- Coordinate bounds
-- Mod list + versions
+- Voxy world path
+- Vocabulary version (1102 entries)
 - Code commit hash
-- Block vocabulary version
+- Extraction parameters (min-solid, max-sections)
 
 ## 4. Training Pipeline
 
@@ -232,11 +242,14 @@ All models share these deterministic signals derived from vanilla noise:
 
 **Process:**
 
-1. Read .mca files using anvil-parser2
-2. Generate parent-child pairs via LOD pyramid (2×2×2 max pooling)
-3. Compute anchors (height, biome, router, etc.) from vanilla noise
-4. Stratified sampling (biome balancing, rare-feature oversampling)
-5. Boundary patches (to teach seam behavior)
+1. Extract LOD-0 data from Voxy RocksDB databases (`scripts/extract_voxy_training_data.py`)
+2. Build LOD pyramid targets using Voxy Mipper algorithm (`scripts/mipper.py`)
+3. Randomly sample coarsening factor per training example
+4. Compute anchor conditioning (height planes, router6) from extracted/cached data
+5. Nearest-upsample coarsened parent to canonical 8³ for model input
+
+**LOD coarsening:** Uses the **Voxy Mipper** (opacity-biased corner selection), not OR-pool
+or majority vote. Source of truth: `scripts/mipper.py`.
 
 **LOD pyramid factors:** [1, 2, 4, 8, 16]
 
@@ -560,26 +573,38 @@ The system is considered **working** when:
 
 ```
 VoxelTree/
-├── train/              # Model definitions, training loop
-├── scripts/             # Data processing, ONNX export, benchmarking
-├── tests/               # Unit tests (PyTest)
-├── models/              # Saved checkpoints + ONNX exports
-├── data/                # Training data, intermediate files
-├── docs/                # Architecture, project outline, reflections
-├── Hephaistos/          # Minecraft world parsing library
-├── schema/              # Model config JSON schemas
-├── config.yaml          # Training configuration
-└── requirements.txt     # Python dependencies
+├── pipeline.py              # Two-phase orchestrator: extract → train → export → deploy
+├── train_multi_lod.py       # Multi-LOD training CLI with Voxy vocab
+├── config_multi_lod.yaml    # Model + training configuration
+├── config/
+│   └── voxy_vocab.json      # Canonical Voxy-native block vocabulary (1102 entries)
+├── train/                   # Model architecture, dataset, losses, metrics
+│   ├── unet3d.py            # SimpleFlexibleUNet3D (8→16 super-resolution)
+│   ├── multi_lod_dataset.py # NPZ dataset with multi-LOD sampling
+│   ├── anchor_conditioning.py # Height planes + router6 conditioning
+│   ├── losses.py            # CE + air losses
+│   └── metrics.py           # Per-step and rollout metrics
+├── scripts/                 # Extraction, export, benchmarking
+│   ├── extract_voxy_training_data.py  # Voxy RocksDB → NPZ patches
+│   ├── voxy_reader.py       # RocksDB reader (SaveLoadSystem3 decoder)
+│   ├── mipper.py            # Voxy Mipper (canonical LOD coarsening)
+│   ├── export_lod.py        # Static ONNX export (opset ≥ 17)
+│   ├── verify_onnx.py       # ONNX + test vector verification
+│   └── extraction/          # Legacy MCA extraction (kept for reference)
+├── tests/                   # Unit tests (PyTest)
+├── models/                  # Saved checkpoints + ONNX exports (git-ignored)
+├── data/                    # Extracted training NPZs (git-ignored)
+├── docs/                    # Architecture, AC, reflections
+└── requirements.txt         # Python dependencies
 ```
 
 ## 14. Next Steps (Immediate)
 
-1. **Lock dependency matrix:** Pin MC 1.21.11 + Fabric + Voxy + Carpet versions
-2. **Implement NoiseTap interface:** One-call capture per chunk for anchors
-3. **Implement FeatureBundle cache:** LRU + optional disk sidecar
-4. **Draft 5 model_config.json stubs:** Define exact I/O shapes for all models
-5. **Build dataset respec:** Read native caches, emit shared inputs, generate LOD targets
-6. **Start Init model:** Train noise → LOD4, verify end-to-end through DJL
+1. **Extract training data:** Run `pipeline.py extract` on all Voxy worlds
+2. **Train model:** Run `pipeline.py train` with Voxy-native vocabulary (1102 blocks)
+3. **Export ONNX:** Run `pipeline.py export` with static shapes
+4. **Deploy to LODiffusion:** Copy ONNX + model_config.json to mod config
+5. **Validate in-game:** Verify terrain renders correctly via Voxy
 
 ---
 

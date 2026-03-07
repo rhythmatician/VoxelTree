@@ -40,42 +40,42 @@ Report **overall** and **frequent‑set** (top ≈50 terrain blocks; air exclude
 
 > If ores are included, track a separate “ore subset” score; otherwise exclude ores from Phase‑1 gates.
 
-## 4) Model I/O Contract (Phase‑1)
+## 4) Model I/O Contract (v2 — Anchor Conditioning)
 
 **Inputs**
 
-* `parent_voxel` **\[1,1,8,8,8] float32** — 3D occupancy (OR‑pooled from child or prior prediction)
-* `biome_patch` **\[1,16,16] int64** — vanilla biome index (surface)
-* `heightmap_patch` **\[1,1,16,16] float32** — normalized motion‑blocking height \[0,1]
-* `river_patch` **\[1,1,16,16] float32** — optional river mask
-* *(optional but recommended)* `multinoise_{continentalness,erosion,ridge,weirdness,temperature,humidity}` **\[1,1,16,16] float32** — seed‑derived 2D maps
-* `y_index` **\[1] int64** — vertical slab index
-* `lod` **\[1] int64** — coarseness token: 1 for native 8→16; >1 when parent was coarsened in train
+* `x_parent` **\[1,1,8,8,8] float32** — binary occupancy (Mipper-derived from child or prior prediction)
+* `x_height_planes` **\[1,5,16,16] float32** — surface, ocean\_floor, slope\_x, slope\_z, curvature
+* `x_router6` **\[1,6,16,16] float32** — temperature, vegetation, continents, erosion, depth, ridges
+* `x_biome` **\[1,16,16] int64** — vanilla biome index per (x,z)
+* `x_y_index` **\[1] int64** — vertical 16‑slab index
+* `x_lod` **\[1] int64** — coarseness token: 1 for native 8→16; >1 when parent was coarsened in train
 
 **Outputs**
 
-* `block_logits` **\[1, N\_blocks, 16,16,16] float32** — full block vocab
+* `block_logits` **\[1, 1102, 16,16,16] float32** — Voxy-native vocabulary (1102 block types)
 * `air_mask` **\[1,1,16,16,16] float32** — P(air)
 
-> (Optional, not Phase‑1 critical) `coarse_logits8 [1,N_coarse,8,8,8]`, `surface_logits [1,N_surface,16,16]` to improve far‑LOD visuals without 16³.
+> Block vocabulary: 1102 entries from canonical Voxy vocabulary (`config/voxy_vocab.json`), air=0.
 
-## 5) Data Pipeline (truthful vanilla labels)
+## 5) Data Pipeline (truthful Voxy labels)
 
-* Worldgen via Fabric in a temp dir; `server.properties` includes `generate-structures=false` and numeric `level-seed`.
-* Extraction parses `.mca` sections (palette + bit‑packed block states). **No synthetic fallbacks.**
-* Full region coverage: iterate **32×32 chunks** per region; skip missing/corrupt chunks.
-* Stable vocab: discovered automatically to `block_vocab.json` (`air` fixed to 0); dataset freezes a copy.
-* Build LOD targets by **2×2×2 pooling**: occupancy=OR; blocks=probability‑pool (or mode).
+* Worldgen via Fabric server; `server.properties` includes `generate-structures=false` and numeric `level-seed`.
+* Use `/voxy import world` to populate Voxy's RocksDB with LOD data.
+* Extraction reads **Voxy RocksDB** databases via `scripts/voxy_reader.py` (SaveLoadSystem3 decoder). **No synthetic fallbacks.**
+* Per-world Voxy state IDs mapped to **canonical vocabulary** (`config/voxy_vocab.json`, 1102 entries, air=0) by block name.
+* Build LOD targets using **Voxy Mipper** (`scripts/mipper.py`): opacity-biased corner selection, not OR-pool or majority vote.
+* Pipeline orchestrator: `pipeline.py extract` → `pipeline.py train` → `pipeline.py export`.
 
 ## 6) Training Strategy (single static model; multi‑LOD capable)
 
 * Always predict **16³** (LOD0) from an **8³** parent.
 * For each sample, randomly choose coarsening factor `f ∈ {1,2,4,8,16}` (relative to 8³):
 
-  * `parent_f = OR_pool(Occ16, window=f)` → upsample to **8³** for input
+  * `parent_f = mip_volume_numpy(labels16, f, tbl)` → nearest-upsample to **8³** for input
   * `lod = log2(f)+1`
   * Targets remain **true 16³** labels (plus air)
-* **Scheduled sampling**: with p≈0.1→0.3, form `Occ16` (and parent) from the model’s own previous prediction to stabilize rollouts.
+* **Scheduled sampling**: with p≈0.1→0.3, form parent from the model's own previous prediction (argmax → Mipper) to stabilize rollouts.
 * **Loss**: `CE(block_logits, labels16) + λ_air * BCEWithLogits(air_mask, air_target)`; start `λ_air=0.25`.
 
 ## 7) Evaluation
@@ -88,10 +88,11 @@ Report **overall** and **frequent‑set** (top ≈50 terrain blocks; air exclude
 
 * Export **static ONNX** (opset ≥17), ordered inputs/outputs:
 
-  * Inputs: `parent_voxel, biome_patch, heightmap_patch, river_patch, (multinoise_*×6), y_index, lod`
+  * Inputs: `x_parent, x_height_planes, x_router6, x_biome, x_y_index, x_lod`
   * Outputs: `block_logits, air_mask`
-* `model_config.json` includes: schemas & dtypes, normalization, `block_id↔name`, MC version, git SHAs, dataset ID, optional‑head flags.
+* `model_config.json` includes: schemas & dtypes, normalization, `block_mapping` from `config/voxy_vocab.json` (Voxy-native), `block_id_to_name` reverse mapping, MC version, git SHAs, dataset ID.
 * `test_vectors.npz` contains at least one realistic sample (inputs + expected outputs) for harness verification.
+* LODiffusion's `VoxyBlockMapper` reads `block_mapping` from `model_config.json` at runtime.
 
 ## 9) Runtime (LODiffusion) — Just‑in‑Time
 
@@ -103,8 +104,8 @@ Report **overall** and **frequent‑set** (top ≈50 terrain blocks; air exclude
 
 ## 10) CI / Definition of Done
 
-* Unit: palette decode, downsample invariants
+* Unit: Mipper invariants, Voxy extraction round-trip, dataset contract
 * Mini E2E: export ONNX + `test_vectors.npz` on CI
 * DJL harness: Java loads ONNX, runs vectors, **max\_abs\_diff ≤ 1e‑4**
 * Eval: per‑step + rollout metrics on held‑out seeds (config‑driven); artifacts saved
-* Hygiene: batch cleanup verified; `block_vocab.json` frozen in dataset; `model_config.json` validated via JSON Schema
+* Hygiene: batch cleanup verified; `config/voxy_vocab.json` canonical; `model_config.json` validated via JSON Schema
