@@ -16,6 +16,7 @@ from typing import Dict, List, Optional
 
 import numpy as np
 import torch
+from torch.utils.data import Dataset
 
 from scripts.mipper import build_opacity_table, mip_volume_numpy
 
@@ -133,7 +134,7 @@ def create_lod_training_pairs(
     return training_pairs
 
 
-class MultiLODDataset:
+class MultiLODDataset(Dataset):
     """
     Dataset that provides multi-LOD training pairs from NPZ chunk data.
     """

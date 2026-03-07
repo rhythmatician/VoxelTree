@@ -194,19 +194,6 @@ class LODPyramidGenerator:
             # Measure how well coarsening preserves occupancy
             preservation = parent_occupancy / max(target_occupancy, 1e-8)
             stats["occupancy_preservation"][factor] = preservation
-        target_occupancy = (
-            target_mask.mean()  # FIXME: Incompatible types in assignment (expression has type "Tensor", variable has type "float")
-        )
-
-        for factor, parent in pyramid.items():
-            parent_occupancy = (
-                parent.mean()  # FIXME: Incompatible types in assignment (expression has type "Tensor", variable has type "float")
-            )
-            stats["pyramid_occupancies"][factor] = float(parent_occupancy)  # noqa
-
-            # Measure how well coarsening preserves occupancy
-            preservation = parent_occupancy / max(target_occupancy, 1e-8)  # noqa
-            stats["occupancy_preservation"][factor] = float(preservation)  # noqa
 
         return stats
 

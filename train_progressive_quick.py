@@ -17,11 +17,12 @@ from torch.utils.data import DataLoader
 # Add train directory to path
 sys.path.append(str(Path(__file__).parent / "train"))
 
-from train.multi_lod_dataset import MultiLODDataset, collate_multi_lod_batch  # noqa: E402
-from train.progressive_lod_models import (
-    ProgressiveLODModel,  # noqa: E402
-    ProgressiveLODModel0_Initial,
-)
+from scripts.mipper import build_opacity_table as _build_opacity_table  # noqa: E402
+from scripts.mipper import mip_volume_torch as _mip_volume_torch  # noqa: E402
+from train.multi_lod_dataset import MultiLODDataset  # noqa: E402
+from train.multi_lod_dataset import collate_multi_lod_batch  # noqa: E402
+from train.progressive_lod_models import ProgressiveLODModel  # noqa: E402
+from train.progressive_lod_models import ProgressiveLODModel0_Initial  # noqa: E402
 from train.unet3d import SimpleFlexibleConfig  # noqa: E402
 
 
@@ -98,8 +99,6 @@ class ProgressiveLODLoss(nn.Module):
 
 def _downsample_targets(blocks: torch.Tensor, occ: torch.Tensor, out_size: int):
     """Downsample 16³ targets to ``out_size``³ using Voxy Mipper (blocks) and OR (occ)."""
-    from scripts.mipper import build_opacity_table, mip_volume_torch
-
     if blocks.dim() == 4:
         B, H, W, D = blocks.shape
     else:
@@ -115,10 +114,10 @@ def _downsample_targets(blocks: torch.Tensor, occ: torch.Tensor, out_size: int):
         raise ValueError(f"factor {factor} must be a power of 2")
 
     # Build opacity table lazily
-    tbl = torch.from_numpy(build_opacity_table(n_blocks=4096)).long().to(blocks.device)
+    tbl = torch.from_numpy(_build_opacity_table(n_blocks=4096)).long().to(blocks.device)
 
     # Mipper: opacity-biased block selection
-    coarse_blks, coarse_occ = mip_volume_torch(blocks.long(), factor, tbl)
+    coarse_blks, coarse_occ = _mip_volume_torch(blocks.long(), factor, tbl)
     return coarse_blks, coarse_occ
 
 
@@ -425,17 +424,17 @@ def main():
     # Create model config
     model_config = SimpleFlexibleConfig()
 
+    # Create dummy data loader
+    class DummyDataLoader:
+        def __init__(self, batch_size):
+            self.batch_size = batch_size
+
+        def __iter__(self):
+            for _ in range(20):  # 20 dummy batches
+                yield create_quick_data_inputs(self.batch_size)
+
     if args.quick:
         print("Using dummy data for quick testing...")
-
-        # Create dummy data loader
-        class DummyDataLoader:
-            def __init__(self, batch_size):
-                self.batch_size = batch_size
-
-            def __iter__(self):
-                for _ in range(20):  # 20 dummy batches
-                    yield create_quick_data_inputs(self.batch_size)
 
         train_loader = DummyDataLoader(quick_config["batch_size"])
         val_loader = DummyDataLoader(quick_config["batch_size"])
@@ -446,7 +445,6 @@ def main():
             dataset = MultiLODDataset(
                 data_dir=Path(args.data_dir),
                 split="train",
-                max_samples=100,  # Limit samples for quick training
             )
             train_loader = DataLoader(
                 dataset,

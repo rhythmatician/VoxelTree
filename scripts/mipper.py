@@ -39,10 +39,16 @@ Usage
 
 from __future__ import annotations
 
+import json
 import math
-from typing import Optional, Tuple
+import re
+from pathlib import Path
+from typing import TYPE_CHECKING, Optional, Tuple
 
 import numpy as np
+
+if TYPE_CHECKING:
+    import torch
 
 # ---------------------------------------------------------------------------
 # Transparent block name fragments (Phase-1 list; extend for Phase-2)
@@ -115,6 +121,86 @@ def build_opacity_table(
             name_lower = name.lower()
             for frag in _TRANSPARENT_FRAGMENTS:
                 if frag in name_lower:
+                    table[bid] = 1
+                    break
+
+    return table
+
+
+def build_opacity_table_from_blocklist(
+    blocklist_path: Path | str,
+    vocab: dict[str, int],
+    n_blocks: int,
+) -> np.ndarray:
+    """Build an opacity table using real MC block data from joakimthorsen's blocklist.json.
+
+    This replaces the ``_TRANSPARENT_FRAGMENTS`` heuristic with ground-truth ``opaque: Yes/No``
+    data for each Minecraft block.
+
+    **Name normalisation** — blocklist display names are matched against MC registry names by:
+
+    1. Lower-casing and replacing spaces/hyphens with underscores:
+       ``"Grass Block"`` → ``"grass_block"``
+    2. MC names have their namespace stripped: ``"minecraft:grass_block"`` → ``"grass_block"``
+    3. Exact match first; if no exact match, fall back to ``_TRANSPARENT_FRAGMENTS`` heuristic.
+
+    **Opacity tiers:**
+
+    - 0  → only ``minecraft:air`` (block_id == 0 by convention)
+    - 1  → non-opaque non-air blocks (``opaque == "No"`` in blocklist)
+    - 15 → opaque solids (``opaque == "Yes"`` in blocklist, or unmatched)
+
+    Args:
+        blocklist_path: Path to ``blocklist.json`` (from https://joakimthorsen.github.io/).
+        vocab:          ``{mc_name: block_id}`` mapping, e.g. from ``block_vocab.json``.
+                        Value ``0`` must be ``minecraft:air``.
+        n_blocks:       Length of the returned table (≥ max block_id + 1).
+
+    Returns:
+        1-D int64 numpy array of length ``n_blocks``.
+    """
+    with open(blocklist_path, encoding="utf-8") as fh:
+        records = json.load(fh)
+
+    def _normalize(name: str) -> str:
+        """'Grass Block' → 'grass_block'  |  'minecraft:grass_block' → 'grass_block'."""
+        if ":" in name:
+            name = name.split(":", 1)[1]
+        return re.sub(r"[\s\-]+", "_", name).lower()
+
+    # Build snake_case display-name → opacity_tier mapping from blocklist
+    display_tier: dict[str, int] = {}
+    for entry in records:
+        raw = entry.get("block", "")
+        key = _normalize(raw)
+        # Air = tier 0 but only when block_id is truly 0; mark as "air_block" sentinel
+        if raw.strip().lower() == "air":
+            display_tier[key] = 0
+        elif entry.get("opaque", "Yes") == "No":
+            display_tier[key] = 1
+        else:
+            display_tier[key] = 15
+
+    # Start with all-opaque table, then carve out transparent entries
+    table = np.full(n_blocks, 15, dtype=np.int64)
+    table[0] = 0  # minecraft:air is always tier 0
+
+    matched = 0
+    for mc_name, bid in vocab.items():
+        if bid < 0 or bid >= n_blocks:
+            continue
+        if bid == 0:
+            table[0] = 0
+            continue
+        key = _normalize(mc_name)
+        if key in display_tier:
+            table[bid] = 1 if display_tier[key] == 0 else display_tier[key]
+            # ^ blocklist "air" entry (tier 0) for non-zero IDs still = transparent (tier 1)
+            matched += 1
+        else:
+            # Fallback: heuristic fragment match
+            for frag in _TRANSPARENT_FRAGMENTS:
+                if frag in key:
                     table[bid] = 1
                     break
 
@@ -218,9 +304,9 @@ def mip_volume_numpy(
 
 
 def mip_once_torch(
-    labels: "torch.Tensor",  # noqa: F821
-    opacity_table: "torch.Tensor",  # noqa: F821
-) -> Tuple["torch.Tensor", "torch.Tensor"]:  # noqa: F821
+    labels: torch.Tensor,
+    opacity_table: torch.Tensor,
+) -> Tuple[torch.Tensor, torch.Tensor]:
     """Apply one Voxy Mipper step (single 2× downsample) in PyTorch.
 
     Args:
@@ -264,10 +350,10 @@ def mip_once_torch(
 
 
 def mip_volume_torch(
-    labels: "torch.Tensor",  # noqa: F821
+    labels: torch.Tensor,
     factor: int,
-    opacity_table: Optional["torch.Tensor"] = None,  # noqa: F821
-) -> Tuple["torch.Tensor", "torch.Tensor"]:  # noqa: F821
+    opacity_table: Optional[torch.Tensor] = None,
+) -> Tuple[torch.Tensor, torch.Tensor]:
     """Downsample ``labels`` by ``factor`` using recursive Voxy Mipper steps (PyTorch).
 
     Args:
@@ -290,8 +376,8 @@ def mip_volume_torch(
 
     if opacity_table is None:
         n = int(labels.max().item()) + 2
-        opacity_table = build_opacity_table(max(n, 2))
-        opacity_table = torch.from_numpy(opacity_table).long()
+        _np_tbl = build_opacity_table(max(n, 2))
+        opacity_table = torch.from_numpy(_np_tbl).long()
 
     current = labels
     for _ in range(n_steps):

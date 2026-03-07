@@ -8,10 +8,38 @@ These tests define the expected behavior for seed-based conditioning variables.
 import shutil
 import tempfile
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import numpy as np
+import pytest
 
 from scripts.seed_inputs.generator import SeedInputGenerator
+
+
+@pytest.fixture(autouse=True)
+def _mock_biome_cli(monkeypatch):
+    """Prevent real subprocess calls; tests don't need the cubiomes binary on disk."""
+
+    def _fake_run(cmd, **kwargs):
+        # Vary the returned biome by (x, z) so diversity-checks pass.
+        # CLI arg order: [tool, "biome", seed, world_x, world_z, w, h]
+        try:
+            wx, wz = int(cmd[3]), int(cmd[4])
+        except (IndexError, ValueError):
+            wx, wz = 0, 0
+        biome = abs(wx * 11 + wz * 7 + 3) % 20
+        m = MagicMock()
+        m.returncode = 0
+        m.stdout = f"{biome}\n"
+        m.stderr = ""
+        return m
+
+    monkeypatch.setattr("scripts.seed_inputs.generator.subprocess.run", _fake_run)
+    # Also short-circuit _init_biome_generator so tests pass even without the CLI on disk.
+    monkeypatch.setattr(
+        "scripts.seed_inputs.generator.SeedInputGenerator._init_biome_generator",
+        lambda self: "mock-cubiomes-cli",
+    )
 
 
 class TestSeedInputGenerator:

@@ -79,11 +79,20 @@ class TestChunkExtractor:
         assert 0 in self.extractor.air_blocks
         assert 1 in self.extractor.solid_blocks
 
-    def test_extract_single_chunk(self):
+    @patch("scripts.extraction.chunk_extractor.anvil.Region.from_file")
+    def test_extract_single_chunk(self, mock_from_file):
         """Test extraction of one chunk from .mca file."""
-        # Create mock .mca file
+        # Create mock .mca file (content is irrelevant; anvil is mocked)
         mock_mca_path = self.test_temp_dir / "r.0.0.mca"
         mock_mca_path.write_bytes(b"fake_mca_data" + b"\x00" * 2000)
+
+        # Mock region → mock chunk with no sections/biomes (returns zeros)
+        mock_chunk = Mock()
+        mock_chunk.sections = None
+        mock_chunk.biomes = None
+        mock_region = Mock()
+        mock_region.get_chunk.return_value = mock_chunk
+        mock_from_file.return_value = mock_region
 
         # Should extract chunk data as dictionary
         chunk_data = self.extractor.extract_chunk_data(mock_mca_path, chunk_x=0, chunk_z=0)
@@ -199,11 +208,20 @@ class TestChunkExtractor:
         assert loaded_data["chunk_x"].item() == 5
         assert loaded_data["chunk_z"].item() == 10
 
-    def test_region_batch_extraction(self):
+    @patch("scripts.extraction.chunk_extractor.anvil.Region.from_file")
+    def test_region_batch_extraction(self, mock_from_file):
         """Test extraction of all chunks from one region."""
-        # Create mock .mca file
+        # Create mock .mca file (content irrelevant; anvil is mocked)
         mock_mca_path = self.test_temp_dir / "r.0.0.mca"
         mock_mca_path.write_bytes(b"fake_mca_with_multiple_chunks" + b"\x00" * 5000)
+
+        # Return a valid mock chunk only for (0, 0); None elsewhere (missing chunks)
+        mock_chunk = Mock()
+        mock_chunk.sections = None
+        mock_chunk.biomes = None
+        mock_region = Mock()
+        mock_region.get_chunk.side_effect = lambda x, z: mock_chunk if (x == 0 and z == 0) else None
+        mock_from_file.return_value = mock_region
 
         # Should extract all chunks in region
         output_files = self.extractor.extract_region_batch(mock_mca_path)
@@ -253,11 +271,20 @@ class TestChunkExtractor:
         assert isinstance(results, list)
         assert len(results) >= 3
 
-    def test_memory_management(self):
+    @patch("scripts.extraction.chunk_extractor.anvil.Region.from_file")
+    def test_memory_management(self, mock_from_file):
         """Test streaming processing without excessive memory usage."""
-        # Create large mock region file
+        # Create large mock region file (content irrelevant; anvil is mocked)
         large_mca_path = self.test_temp_dir / "r.big.0.mca"
         large_mca_path.write_bytes(b"big_fake_mca" + b"\x00" * 10000)
+
+        # Return a valid mock chunk only for (0, 0)
+        mock_chunk = Mock()
+        mock_chunk.sections = None
+        mock_chunk.biomes = None
+        mock_region = Mock()
+        mock_region.get_chunk.side_effect = lambda x, z: mock_chunk if (x == 0 and z == 0) else None
+        mock_from_file.return_value = mock_region
 
         # Monitor memory usage during extraction
         import psutil

@@ -70,11 +70,11 @@ class VoxelMetrics:
         self.union_air = 0
 
         # Per-LOD tracking
-        self.lod_metrics: Dict[int, Dict[str, float]] = {}
+        self.lod_metrics = {}
 
         # Confusion matrix accumulation
-        self.confusion_predictions: List[int] = []
-        self.confusion_targets: List[int] = []
+        self.confusion_predictions = []
+        self.confusion_targets = []
 
         # Frequent block tracking
         self.frequent_correct = 0
@@ -182,7 +182,7 @@ class VoxelMetrics:
                 if sample_solid_mask.sum() > 0:
                     sample_solid_pred = sample_pred[sample_solid_mask]
                     sample_solid_true = sample_target[sample_solid_mask]
-                    sample_solid_correct = (sample_solid_pred == sample_solid_true).sum().item()
+                    sample_solid_correct = int((sample_solid_pred == sample_solid_true).sum().item())  # type: ignore[assignment]
                     sample_solid_total = sample_solid_pred.numel()
 
                 self.lod_metrics[lod_val]["correct"] += sample_correct
@@ -320,10 +320,11 @@ class VoxelMetrics:
 
         # Count occurrences
         unique, counts = np.unique(self.confusion_targets, return_counts=True)
+        counts_py: list[int] = counts.tolist()  # convert numpy ints → Python ints
 
         # Filter by minimum samples and take top K
         frequent_candidates = [
-            (block_id, count) for block_id, count in zip(unique, counts) if count >= min_samples
+            (block_id, count) for block_id, count in zip(unique, counts_py) if count >= min_samples
         ]
         frequent_candidates.sort(key=lambda x: x[1], reverse=True)
 

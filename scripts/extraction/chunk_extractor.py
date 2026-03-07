@@ -7,16 +7,14 @@ region files and converting them into compressed numpy arrays.
 
 import logging
 import multiprocessing
+import struct
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import anvil  # type: ignore
 import numpy as np
 
-from scripts.extraction.palette_decode import (
-    decode_palette_indices,
-    map_palette_to_block_ids,
-)
+from scripts.extraction.palette_decode import decode_palette_indices, map_palette_to_block_ids
 from scripts.worldgen.config import load_config
 
 logger = logging.getLogger(__name__)
@@ -197,6 +195,16 @@ class ChunkExtractor:
             ):
                 logger.debug(
                     "Skipping missing chunk (%d,%d) in %s: %s",
+                    chunk_x,
+                    chunk_z,
+                    region_file.name,
+                    e,
+                )
+                return None
+            elif isinstance(e, (IndexError, struct.error, ValueError, EOFError)):
+                # Low-level parse errors → corrupt / truncated region bytes; skip chunk
+                logger.debug(
+                    "Skipping corrupt chunk (%d,%d) in %s: %s",
                     chunk_x,
                     chunk_z,
                     region_file.name,

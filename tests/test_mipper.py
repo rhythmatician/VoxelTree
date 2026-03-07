@@ -1,6 +1,8 @@
 """Tests for scripts/mipper.py — Voxy Mipper algorithm."""
 
+import json
 import sys
+import tempfile
 from pathlib import Path
 
 import numpy as np
@@ -9,7 +11,9 @@ import pytest
 # Ensure scripts/ is on the path when running from the repo root
 sys.path.insert(0, str(Path(__file__).parent.parent))  # noqa: E402
 
-from scripts.mipper import build_opacity_table, mip_once_numpy, mip_volume_numpy  # noqa: E402
+from scripts.mipper import build_opacity_table  # noqa: E402
+from scripts.mipper import build_opacity_table_from_blocklist  # noqa: E402
+from scripts.mipper import mip_once_numpy, mip_volume_numpy  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -69,6 +73,81 @@ class TestBuildOpacityTable:
         n = 1105
         t = build_opacity_table(n)
         assert len(t) == n
+
+
+# ---------------------------------------------------------------------------
+# build_opacity_table_from_blocklist
+# ---------------------------------------------------------------------------
+
+
+def _make_blocklist_json(records: list[dict]) -> Path:
+    """Write a temporary blocklist JSON file and return its path."""
+    f = tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False, encoding="utf-8")
+    json.dump(records, f)
+    f.close()
+    return Path(f.name)
+
+
+_MINI_BLOCKLIST = [
+    {"block": "Air", "opaque": "No", "opacity": 0},
+    {"block": "Stone", "opaque": "Yes", "opacity": 15},
+    {"block": "Glass", "opaque": "No", "opacity": 0},
+    {"block": "Water", "opaque": "No", "opacity": 1},
+    {"block": "Grass Block", "opaque": "Yes", "opacity": 15},
+]
+
+
+class TestBuildOpacityTableFromBlocklist:
+    def test_opaque_block_gets_tier_15(self):
+        bl = _make_blocklist_json(_MINI_BLOCKLIST)
+        vocab = {"minecraft:air": 0, "minecraft:stone": 1, "minecraft:glass": 2}
+        t = build_opacity_table_from_blocklist(bl, vocab, n_blocks=10)
+        assert t[1] == 15, "Stone should be tier 15"
+
+    def test_transparent_block_gets_tier_1(self):
+        bl = _make_blocklist_json(_MINI_BLOCKLIST)
+        vocab = {"minecraft:air": 0, "minecraft:glass": 1, "minecraft:water": 2}
+        t = build_opacity_table_from_blocklist(bl, vocab, n_blocks=10)
+        assert t[1] == 1, "Glass should be tier 1"
+        assert t[2] == 1, "Water should be tier 1"
+
+    def test_air_id_always_0(self):
+        bl = _make_blocklist_json(_MINI_BLOCKLIST)
+        vocab = {"minecraft:air": 0, "minecraft:stone": 1}
+        t = build_opacity_table_from_blocklist(bl, vocab, n_blocks=5)
+        assert t[0] == 0, "ID 0 must always be tier 0 (air)"
+
+    def test_multiword_name_normalisation(self):
+        bl = _make_blocklist_json(_MINI_BLOCKLIST)
+        vocab = {"minecraft:air": 0, "minecraft:grass_block": 1}
+        t = build_opacity_table_from_blocklist(bl, vocab, n_blocks=5)
+        assert t[1] == 15, "'Grass Block' → 'grass_block' should normalise correctly"
+
+    def test_unmatched_block_falls_back_to_heuristic(self):
+        # "minecraft:oak_leaves" isn't in _MINI_BLOCKLIST; fallback uses _TRANSPARENT_FRAGMENTS
+        bl = _make_blocklist_json(_MINI_BLOCKLIST)
+        vocab = {"minecraft:air": 0, "minecraft:oak_leaves": 1}
+        t = build_opacity_table_from_blocklist(bl, vocab, n_blocks=5)
+        assert t[1] == 1, "Leaves should fall back to transparent via heuristic"
+
+    def test_real_blocklist_if_present(self):
+        """Smoke-test against the actual project blocklist.json when available."""
+        bl_path = Path(__file__).parent.parent / "blocklist.json"
+        if not bl_path.exists():
+            pytest.skip("blocklist.json not present in workspace root")
+        vocab = {
+            "minecraft:air": 0,
+            "minecraft:stone": 1,
+            "minecraft:glass": 2,
+            "minecraft:water": 3,
+            "minecraft:oak_log": 4,
+        }
+        t = build_opacity_table_from_blocklist(bl_path, vocab, n_blocks=16)
+        assert t[0] == 0, "air tier"
+        assert t[1] == 15, "stone should be opaque"
+        assert t[2] == 1, "glass should be transparent"
+        assert t[3] == 1, "water should be transparent"
+        assert len(t) == 16
 
 
 # ---------------------------------------------------------------------------
