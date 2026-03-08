@@ -36,7 +36,6 @@ def _make_chunk_kwargs(seed: int = 42) -> dict:
     return {
         "labels16": _make_labels16(seed),
         "biome_patch": rng.randint(0, 50, (16, 16), dtype=np.int32),
-        "heightmap_patch": rng.rand(16, 16).astype(np.float32) * 100,
         "y_index": 5,
         "heightmap_surface": rng.rand(16, 16).astype(np.float32) * 200,
         "heightmap_ocean_floor": rng.rand(16, 16).astype(np.float32) * 50,
@@ -50,7 +49,6 @@ def _write_fake_npz(path: Path, seed: int = 42) -> None:
         path,
         labels16=kw["labels16"],
         biome_patch=kw["biome_patch"],
-        heightmap_patch=kw["heightmap_patch"],
         y_index=np.int64(kw["y_index"]),
         heightmap_surface=kw["heightmap_surface"],
         heightmap_ocean_floor=kw["heightmap_ocean_floor"],
@@ -123,11 +121,6 @@ class TestCreateLodTrainingPairs:
         for p in pairs:
             assert p["biome_idx"].shape == (16, 16), p["lod_transition"]
 
-    def test_lod_values(self, pairs):
-        expected_lods = {"init_to_lod4": 4, "lod4to3": 4, "lod3to2": 3, "lod2to1": 2}
-        for p in pairs:
-            assert int(p["lod"]) == expected_lods[p["lod_transition"]]
-
     def test_target_mask_is_binary(self, pairs):
         for p in pairs:
             vals = np.unique(p["target_mask"])
@@ -157,7 +150,6 @@ class TestGeneratePairsFromNpzFiles:
             path,
             labels16=kw["labels16"],
             biome_patch=kw["biome_patch"],
-            heightmap_patch=kw["heightmap_patch"],
             y_index=np.int64(kw["y_index"]),
             # no heightmap_surface or heightmap_ocean_floor
         )
@@ -172,7 +164,6 @@ class TestGeneratePairsFromNpzFiles:
             path,
             labels16=kw["labels16"],
             biome_patch=kw["biome_patch"],
-            heightmap_patch=kw["heightmap_patch"],
             y_index=np.int64(kw["y_index"]),
             heightmap_surface=kw["heightmap_surface"],
             heightmap_ocean_floor=kw["heightmap_ocean_floor"],
@@ -210,7 +201,7 @@ class TestPairCacheRoundTrip:
 
         # Check types
         assert isinstance(sample["parent_voxel"], torch.Tensor)
-        assert isinstance(sample["biome_patch"], torch.Tensor)
+        assert isinstance(sample["biome_idx"], torch.Tensor)
         assert isinstance(sample["height_planes"], torch.Tensor)
         assert isinstance(sample["target_mask"], torch.Tensor)
         assert isinstance(sample["target_types"], torch.Tensor)
@@ -219,10 +210,6 @@ class TestPairCacheRoundTrip:
     def test_missing_cache_raises(self, tmp_path):
         with pytest.raises(FileNotFoundError, match="Pair cache not found"):
             MultiLODDataset(data_dir=tmp_path, split="train")
-
-    def test_use_pair_cache_false_raises(self, tmp_path):
-        with pytest.raises(ValueError, match="use_pair_cache=False is no longer supported"):
-            MultiLODDataset(data_dir=tmp_path, split="train", use_pair_cache=False)
 
 
 # ===========================================================================
@@ -253,4 +240,4 @@ class TestCollateBatch:
 
         assert batch["parent_voxel"].shape == (2, 1, 8, 8, 8)
         assert batch["height_planes"].shape == (2, 5, 16, 16)
-        assert batch["biome_patch"].shape == (2, 16, 16)
+        assert batch["biome_idx"].shape == (2, 16, 16)

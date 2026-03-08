@@ -18,10 +18,8 @@ from train.unet3d import SimpleFlexibleConfig
 def config():
     return SimpleFlexibleConfig(
         base_channels=16,
-        max_channels=64,
         biome_vocab_size=50,
         biome_embed_dim=8,
-        lod_embed_dim=4,
         block_vocab_size=100,
     )
 
@@ -53,15 +51,6 @@ class TestInitModel:
             out = model(**cond)
         assert out["air_mask_logits"].shape == (3, 1, 1, 1, 1)
         assert out["block_type_logits"].shape == (3, 100, 1, 1, 1)
-
-    def test_ignores_x_parent(self, config):
-        """Init model should accept x_parent kwarg but ignore it."""
-        model = create_init_model(config)
-        cond = _dummy_conditioning(batch_size=1)
-        cond["x_parent"] = torch.randn(1, 1, 4, 4, 4)
-        with torch.no_grad():
-            out = model(**cond)
-        assert out["air_mask_logits"].shape == (1, 1, 1, 1, 1)
 
     def test_gradient_flow(self, config):
         model = create_init_model(config)

@@ -16,7 +16,7 @@ Conditioning channels (shared, cheap):
   - x_y_index       [B]           — int64 y-slab position 0..23 (→ learned embedding)
 """
 
-from typing import Dict, Optional
+from typing import Dict
 
 import torch
 import torch.nn as nn
@@ -171,7 +171,6 @@ class ProgressiveLODModel0_Initial(nn.Module):
         height_planes: torch.Tensor,  # [B, 5, 16, 16]
         biome_indices: torch.Tensor,  # [B, 16, 16] int64
         y_index: torch.Tensor,  # [B] int64
-        x_parent: Optional[torch.Tensor] = None,  # unused for init model
     ) -> Dict[str, torch.Tensor]:
         """Predict a single voxel at LOD4 from conditioning inputs."""
         B = height_planes.shape[0]

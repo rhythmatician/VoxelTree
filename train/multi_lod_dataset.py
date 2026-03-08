@@ -50,7 +50,6 @@ def create_occupancy_from_blocks(block_data: np.ndarray, air_id: int = 0) -> np.
 def create_lod_training_pairs(
     labels16: np.ndarray,
     biome_patch: np.ndarray,
-    heightmap_patch: np.ndarray,
     y_index: int,
     heightmap_surface: np.ndarray,
     heightmap_ocean_floor: np.ndarray,
@@ -74,7 +73,6 @@ def create_lod_training_pairs(
     Args:
         labels16:            (16, 16, 16) int array of block IDs at LOD0
         biome_patch:         (16, 16) int array of biome IDs
-        heightmap_patch:     (16, 16) float array — per-slab normalised heights
         y_index:             Y-level slab index for this chunk
         heightmap_surface:   (16, 16) float32 — column-level surface height (world-Y)
         heightmap_ocean_floor:(16, 16) float32 — column-level ocean floor (world-Y)
@@ -90,12 +88,6 @@ def create_lod_training_pairs(
     # ------------------------------------------------------------------
     # Biome: keep only compact index form; one-hot computed lazily in __getitem__
     biome_idx = biome_patch.astype(np.int64)  # (16,16)
-
-    # Heightmap: normalise patch to [0,1]
-    heightmap_norm = (heightmap_patch.astype(np.float32) - heightmap_patch.min()) / (
-        max(heightmap_patch.max() - heightmap_patch.min(), 1e-6)
-    )
-    heightmap_tensor = heightmap_norm[None, ...]  # (1,16,16)
 
     # ------------------------------------------------------------------
     # Compute height_planes tensor [5, 16, 16]
@@ -144,12 +136,9 @@ def create_lod_training_pairs(
         {
             # --- model inputs (per-sample shapes, no batch dim) ---
             "parent_voxel": np.zeros((1, 8, 8, 8), dtype=np.float32),  # init model ignores parent
-            "biome_patch": biome_idx,  # (16,16) int64 indices
             "biome_idx": biome_idx,  # (16,16) integer indices
-            "heightmap_patch": heightmap_tensor,  # (1,16,16)  C=1
             "height_planes": height_planes,  # (5,16,16)
             "y_index": np.int64(y_index),  # scalar
-            "lod": np.int64(4),  # LOD4 (coarsest)
             # --- targets (upsampled to 16³ for uniform storage) ---
             "target_mask": init_target_occ,  # (16,16,16) float32
             "target_types": init_target_labels,  # (16,16,16) int64
@@ -216,12 +205,9 @@ def create_lod_training_pairs(
             {
                 # --- model inputs (per-sample shapes, no batch dim) ---
                 "parent_voxel": coarse_occ_8[None, ...],  # (1,8,8,8)  C=1
-                "biome_patch": biome_idx,  # (16,16) int64 indices
                 "biome_idx": biome_idx,  # (16,16) integer indices
-                "heightmap_patch": heightmap_tensor,  # (1,16,16)  C=1
                 "height_planes": height_planes,  # (5,16,16)
                 "y_index": np.int64(y_index),  # scalar
-                "lod": np.int64(lod_token),  # scalar
                 # --- targets (16³, one LOD level finer than parent) ---
                 "target_mask": target_occ,  # (16,16,16) float32
                 "target_types": target_labels,  # (16,16,16) int64
@@ -248,8 +234,7 @@ def generate_pairs_from_npz_files(
     """Process raw NPZ chunk files into LOD training pairs.
 
     This is the **prep phase** — meant to run once, offline, *before* training.
-    Required NPZ keys: ``labels16`` (or ``target_types``), ``biome_patch``
-    (or ``biome16``), ``heightmap_patch`` (or ``height16``), ``y_index``,
+    Required NPZ keys: ``labels16``, ``biome_patch``, ``y_index``,
     ``heightmap_surface``, ``heightmap_ocean_floor``.
 
     Run ``scripts/add_column_heights.py`` after extraction to add the
@@ -273,15 +258,12 @@ def generate_pairs_from_npz_files(
         try:
             data = np.load(npz_file)
 
-            # Extract required fields — support both canonical and legacy key names
-            if "labels16" in data:
-                labels16 = data["labels16"]
-            elif "target_types" in data:
-                labels16 = data["target_types"].astype(np.int32)
-            else:
-                print(f"Skipping {npz_file}: no labels16 or target_types key")
+            # Extract required fields (canonical keys only)
+            if "labels16" not in data:
+                print(f"Skipping {npz_file}: no labels16 key")
                 skipped_missing += 1
                 continue
+            labels16 = data["labels16"]
 
             # Filter out nearly-all-air chunks (nothing to learn from)
             solid_frac = (labels16 != 0).mean()
@@ -290,30 +272,13 @@ def generate_pairs_from_npz_files(
                 continue
 
             # ---- Biome: require real data ----
-            if "biome16" in data:
-                biome16 = data["biome16"]
-            elif "biome_patch" in data:
-                biome16 = data["biome_patch"]
-            else:
-                print(f"Skipping {npz_file}: no biome data (biome16 or biome_patch)")
+            if "biome_patch" not in data:
+                print(f"Skipping {npz_file}: no biome_patch key")
                 skipped_missing += 1
                 continue
+            biome16 = data["biome_patch"]
 
-            # ---- Heightmap: require real data ----
-            if "height16" in data:
-                height16 = data["height16"]
-            elif "heightmap_patch" in data:
-                height16 = data["heightmap_patch"]
-            else:
-                print(f"Skipping {npz_file}: no heightmap data")
-                skipped_missing += 1
-                continue
-
-            # Handle different height formats
-            if height16.ndim == 3:
-                height16 = height16[0]  # Take first channel
-
-            # ---- Y-index: require real data ----
+            # ---- Y-index: required ----
             if "y_index" not in data:
                 print(f"Skipping {npz_file}: no y_index")
                 skipped_missing += 1
@@ -340,7 +305,6 @@ def generate_pairs_from_npz_files(
             pairs = create_lod_training_pairs(
                 labels16=labels16,
                 biome_patch=biome16,
-                heightmap_patch=height16,
                 y_index=y_index,
                 heightmap_surface=data["heightmap_surface"],
                 heightmap_ocean_floor=data["heightmap_ocean_floor"],
@@ -384,20 +348,15 @@ def save_pairs_cache(pairs: List[Dict], path: Path) -> None:
     t0 = time.time()
 
     # Count source files from the pairs (approximate — for cache validation)
-    # We store 0 since we no longer track npz_files in this context.
     np.savez_compressed(
         path,
         parent_voxel=np.array([p["parent_voxel"] for p in pairs], dtype=np.float32),
         biome_idx=np.array([p["biome_idx"] for p in pairs], dtype=np.int32),
-        heightmap_patch=np.array([p["heightmap_patch"] for p in pairs], dtype=np.float32),
         height_planes=np.array([p["height_planes"] for p in pairs], dtype=np.float32),
         y_index=np.array([int(p["y_index"]) for p in pairs], dtype=np.int64),
-        lod=np.array([int(p["lod"]) for p in pairs], dtype=np.int64),
         target_mask=np.array([p["target_mask"] for p in pairs], dtype=np.uint8),
         target_types=np.array([p["target_types"] for p in pairs], dtype=np.int32),
         lod_transition=np.array([p["lod_transition"] for p in pairs]),
-        _n_source_files=np.array([0]),  # unknown at this level
-        _min_solid_fraction=np.array([0.0]),
     )
     size_mb = path.stat().st_size / (1024 * 1024)
     print(f"  Saved {size_mb:.1f} MB in {time.time() - t0:.1f}s")
@@ -416,34 +375,19 @@ class MultiLODDataset(Dataset):
         data_dir: Path,
         split: str = "train",
         lod_sampling_weights: Optional[Dict[str, float]] = None,
-        min_solid_fraction: float = 0.02,
-        use_pair_cache: bool = True,
     ):
         """
         Initialize multi-LOD dataset from a pre-built pair cache.
 
         The pair cache MUST be built beforehand using ``scripts/build_pairs.py``.
-        This enforces a clean separation between data preparation (which
-        validates that all NPZ files contain real router6 noise data) and
-        training (which only reads the cache).
 
         Args:
             data_dir: Directory containing the pair cache (``{split}_pairs_v2.npz``)
             split: "train" or "val"
             lod_sampling_weights: Weights for sampling different LOD transitions
-            min_solid_fraction: Ignored when loading from cache (kept for API compat)
-            use_pair_cache: Must be True.  Retained for backward compat; False raises.
         """
         self.data_dir = Path(data_dir)
         self.split = split
-        self.min_solid_fraction = min_solid_fraction
-
-        if not use_pair_cache:
-            raise ValueError(
-                "use_pair_cache=False is no longer supported.  "
-                "Run 'python scripts/build_pairs.py --data-dir <dir>' first, "
-                "then use use_pair_cache=True (the default)."
-            )
 
         # Default sampling weights (can emphasize certain LOD levels)
         if lod_sampling_weights is None:
@@ -465,7 +409,7 @@ class MultiLODDataset(Dataset):
                 f"Training requires a pre-built pair cache.  Run:\n"
                 f"    python scripts/build_pairs.py --data-dir {self.data_dir}\n\n"
                 f"The pair cache is built from NPZ files with biome,\n"
-                f"heightmap, and y_index conditioning (router6 removed)."
+                f"heightmap, and y_index conditioning."
             )
         if not self._load_pairs_cache(cache_path):
             raise RuntimeError(
@@ -473,18 +417,6 @@ class MultiLODDataset(Dataset):
                 f"Delete it and rebuild: python scripts/build_pairs.py "
                 f"--data-dir {self.data_dir} --clean"
             )
-
-    def _generate_all_pairs(self):
-        """Legacy method — inline pair generation is no longer supported.
-
-        Use ``generate_pairs_from_npz_files()`` (module-level) instead,
-        which is called by ``scripts/build_pairs.py``.
-        """
-        raise RuntimeError(
-            "Inline pair generation during training is no longer supported.  "
-            "Run 'python scripts/build_pairs.py --data-dir <dir>' to build "
-            "the pair cache, then re-run training."
-        )
 
     # ------------------------------------------------------------------
     # Pair cache I/O
@@ -500,10 +432,8 @@ class MultiLODDataset(Dataset):
             # Reconstruct list-of-dicts from stacked arrays
             parent_voxel = data["parent_voxel"]
             biome_idx = data["biome_idx"]
-            heightmap_patch = data["heightmap_patch"]
             height_planes = data["height_planes"]
             y_index = data["y_index"]
-            lod = data["lod"]
             target_mask = data["target_mask"]
             target_types = data["target_types"]
             transitions = data["lod_transition"]
@@ -514,12 +444,9 @@ class MultiLODDataset(Dataset):
                 self.training_pairs.append(
                     {
                         "parent_voxel": parent_voxel[i].astype(np.float32),
-                        "biome_patch": biome_idx[i].astype(np.int64),
                         "biome_idx": biome_idx[i].astype(np.int64),
-                        "heightmap_patch": heightmap_patch[i].astype(np.float32),
                         "height_planes": height_planes[i].astype(np.float32),
                         "y_index": np.int64(y_index[i]),
-                        "lod": np.int64(lod[i]),
                         "target_mask": target_mask[i].astype(np.float32),
                         "target_types": target_types[i].astype(np.int64),
                         "lod_transition": str(transitions[i]),
@@ -567,20 +494,15 @@ class MultiLODDataset(Dataset):
             pair = self.training_pairs[random.choice(indices)]
 
         # Convert to tensors
-        # biome_patch stores compact int64 indices (16,16).
-        # The model accepts integer indices directly (via Embedding).
-        biome_idx_np = np.asarray(pair["biome_patch"])  # (16,16) int64
+        biome_idx_np = np.asarray(pair["biome_idx"])  # (16,16) int64
 
         sample = {
             "parent_voxel": torch.from_numpy(np.asarray(pair["parent_voxel"])).float(),
-            "biome_patch": torch.from_numpy(biome_idx_np).long(),  # (16,16)
             "biome_idx": torch.from_numpy(biome_idx_np).long(),  # (16,16)
-            "heightmap_patch": torch.from_numpy(np.asarray(pair["heightmap_patch"])).float(),
             "height_planes": torch.from_numpy(
                 np.asarray(pair["height_planes"])
             ).float(),  # (5,16,16)
             "y_index": torch.tensor(int(pair["y_index"]), dtype=torch.long),
-            "lod": torch.tensor(int(pair["lod"]), dtype=torch.long),
             "target_mask": torch.from_numpy(np.asarray(pair["target_mask"])).float(),
             "target_types": torch.from_numpy(np.asarray(pair["target_types"])).long(),
             "lod_transition": pair["lod_transition"],
@@ -599,12 +521,9 @@ def collate_multi_lod_batch(samples: List[Dict]) -> Dict:
     """
     tensor_keys = [
         "parent_voxel",
-        "biome_patch",
         "biome_idx",
-        "heightmap_patch",
         "height_planes",
         "y_index",
-        "lod",
         "target_mask",
         "target_types",
     ]

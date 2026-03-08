@@ -475,13 +475,6 @@ def main():
         help="Weight for surface-consistency loss (0=disabled, 0.1 recommended with anchor data)",
     )
     parser.add_argument(
-        "--height-channels",
-        type=int,
-        default=5,
-        help="Height-plane channels for anchor conditioning",
-    )
-    # --router6-channels removed: router6 is no longer used as conditioning input
-    parser.add_argument(
         "--num-workers",
         type=int,
         default=0,
@@ -498,11 +491,6 @@ def main():
         type=Path,
         default=None,
         help="Path to checkpoint .pt to resume training from",
-    )
-    parser.add_argument(
-        "--no-pair-cache",
-        action="store_true",
-        help="DEPRECATED: pair cache is now mandatory.  Ignored.",
     )
     parser.add_argument(
         "--max-samples",
@@ -558,7 +546,6 @@ def main():
         base_channels=args.base_channels,
         biome_vocab_size=256,
         block_vocab_size=block_vocab_size,
-        height_channels=args.height_channels,
     )
 
     models: Dict[str, nn.Module] = {
@@ -575,8 +562,6 @@ def main():
         print(f"  {name}: {n:,} params")
 
     # Create datasets
-    if args.no_pair_cache:
-        print("WARNING: --no-pair-cache is deprecated and ignored. " "Pair cache is now mandatory.")
     print("Loading datasets...")
     train_dataset = MultiLODDataset(
         data_dir=args.data_dir,
@@ -686,25 +671,20 @@ def main():
     if args.resume is not None:
         ckpt = torch.load(args.resume, map_location=device, weights_only=False)
 
-        # Load per-model state dicts (new format) or skip (old unified format)
-        model_states = ckpt.get("model_state_dicts", {})
-        loaded_any = False
+        # Require per-model state dicts (progressive checkpoint format)
+        if "model_state_dicts" not in ckpt:
+            raise ValueError(
+                f"Checkpoint {args.resume} has no 'model_state_dicts' key. "
+                f"Expected a progressive multi-model checkpoint from train.py. "
+                f"Available keys: {list(ckpt.keys())}"
+            )
+
+        model_states = ckpt["model_state_dicts"]
         for name, m in models.items():
             if name in model_states:
                 m.load_state_dict(model_states[name])
-                loaded_any = True
             else:
                 print(f"  Warning: no saved state for model '{name}', using fresh weights")
-
-        if not loaded_any and "model_state_dict" in ckpt:
-            print(
-                "  Note: checkpoint is from old unified model architecture. "
-                "All 4 models will start with fresh weights."
-            )
-            # Don't inherit epoch/optimizer from incompatible architecture
-            ckpt.pop("optimizer_state_dict", None)
-            ckpt.pop("epoch", None)
-            ckpt.pop("val_loss", None)
 
         # Load optimizer state only if it matches the current param count
         try:

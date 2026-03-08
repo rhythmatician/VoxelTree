@@ -34,10 +34,8 @@ LOD_MODEL_KEY = _train_mod.LOD_MODEL_KEY
 def config():
     return SimpleFlexibleConfig(
         base_channels=16,
-        max_channels=64,
         biome_vocab_size=50,
         biome_embed_dim=8,
-        lod_embed_dim=4,
         block_vocab_size=100,
     )
 

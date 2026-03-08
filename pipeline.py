@@ -502,11 +502,6 @@ def main() -> None:
     p_run.add_argument("--max-sections", type=int, default=None)
     p_run.add_argument("--clean", action="store_true")
     p_run.add_argument("--val-split", type=float, default=0.1)
-    p_run.add_argument(
-        "--skip-build-pairs",
-        action="store_true",
-        help="Skip Phase 1b (pair pre-computation); rely on lazy build in trainer",
-    )
     p_run.add_argument("--export", action="store_true", help="Also export ONNX after training")
     p_run.add_argument(
         "--deploy", action="store_true", help="Also deploy to LODiffusion after export"
@@ -575,15 +570,14 @@ def main() -> None:
             sys.exit(1)
 
         # Stage 1b: build pairs
-        if not args.skip_build_pairs:
-            result = phase1b_build_pairs(
-                args.data_dir,
-                val_split=args.val_split,
-                min_solid=args.min_solid,
-            )
-            if result == 0:
-                print("Pair build failed — aborting")
-                sys.exit(1)
+        result = phase1b_build_pairs(
+            args.data_dir,
+            val_split=args.val_split,
+            min_solid=args.min_solid,
+        )
+        if result == 0:
+            print("Pair build failed — aborting")
+            sys.exit(1)
 
         # Stage 2: train
         best = phase2_train(

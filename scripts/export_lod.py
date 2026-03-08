@@ -341,7 +341,7 @@ def load_progressive_checkpoint(
     for key, factory, output_size, parent_size, _ in MODEL_STEPS:
         model = factory(config)
         if key in state_dicts:
-            model.load_state_dict(state_dicts[key], strict=False)
+            model.load_state_dict(state_dicts[key], strict=True)
             LOGGER.info("Loaded state dict for %s (output %d³)", key, output_size)
         else:
             LOGGER.warning("No state dict for %s — using random weights", key)
