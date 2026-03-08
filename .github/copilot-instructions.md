@@ -14,7 +14,7 @@ This project has had repeated problems with Copilot generating new scripts
 canonical file. The result is a pile of dead code that must be deleted later.
 
 If you think a new file is needed, **ask first**. The answer is almost always
-"update the existing file instead."
+"update the existing file instead."  Churn is preferred over cruft/proliferation.
 
 ### Canonical file list (exhaustive)
 
