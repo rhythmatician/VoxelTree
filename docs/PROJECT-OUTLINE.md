@@ -479,13 +479,13 @@ or majority vote. Source of truth: `scripts/mipper.py`.
 
 - [x] Deterministic non-ML refinement (proof of pipeline) *(VanillaLikeTerrainGenerator + LodGenerationService sine/cosine heightmap)*
 - [x] Rendered via Voxy *(VoxySectionWriter actively pushing sections; confirmed in game logs)*
-- [ ] Seam strategy validated *(only crude tile-edge factor heuristic; no halo/XZ neighbor context)*
+- [ ] Seam strategy validated *(only crude tile-edge factor heuristic; no halo/XZ neighbor context. visibliy misaligned in-game)*
 
 ### Milestone 4: Model Training
 
-- [ ] Train Init model (noise → LOD4) *(architecture pivoted to single unified model; no dedicated init model)*
+- [ ] Train Init model (noise → LOD4) *(architecture pivoted to single unified model; no dedicated init model - but, I wonder if a dedicated model would be significantly faster.  We should investigate and consider pivoting back to dedicated models for each level)*
 - [ ] Train refinement models (LOD4→3, 3→2, 2→1, 1→0) *(training stalled at 8/20 epochs; transitions don't cascade as specified)*
-- [ ] Achieve 99% accuracy on frequent blocks (goal) *(best: ~69% overall; ~70% block accuracy)*
+- [ ] Achieve 99% accuracy on frequent blocks (goal) *(best: ~69% overall; ~70% block accuracy - needs much improvement, but its a start)*
 - [ ] Export all 5 models to ONNX *(1 undertrained unified model exported; pipeline works)*
 
 ### Milestone 5: ONNX Integration
