@@ -20,9 +20,9 @@ If you think a new file is needed, **ask first**. The answer is almost always
 
 | Role | File | Notes |
 |---|---|---|
-| **Orchestrator** | `pipeline.py` | Subprocess phases: extract → column-heights → build-pairs → train → export → deploy |
+| **Orchestrator** | `pipeline.py` | Train → export → deploy; `run` delegates dataprep to data-cli.py |
+| **Dataprep CLI** | `data-cli.py` | Unified dataprep: pregen → voxy-import → extract → column-heights → build-pairs |
 | **Training** | `train.py` | THE training script. 4 progressive models. |
-| **RCON CLI** | `data-cli.py` | freeze / pregen / status — RCON only, no training |
 | **Extraction** | `scripts/extract_voxy_training_data.py` | Voxy RocksDB → NPZ |
 | **Voxy reader** | `scripts/voxy_reader.py` | RocksDB reader |
 | **Column heights** | `scripts/add_column_heights.py` | Post-extraction heightmap enrichment |
@@ -93,18 +93,34 @@ Config is stored in checkpoints as `SimpleFlexibleConfig` — no external YAML.
 
 ## Canonical Pipeline
 
+**Data preparation** (steps 1-5) lives in `data-cli.py`:
 ```
-1. python data-cli.py pregen          # RCON: freeze world + Chunky pregen
-2. /voxy import world <name>          # manual in-game command
-3. python pipeline.py extract         # Voxy RocksDB → NPZ
-4. python pipeline.py column-heights  # enrich NPZs with heightmap_surface/ocean_floor
-5. python pipeline.py build-pairs     # NPZ → LOD transition pairs
+# All 5 dataprep steps (RCON → local):
+python data-cli.py dataprep --from-step pregen \
+    --password secret --world-name "New World" \
+    --voxy-dir LODiffusion/run/saves --data-dir data/voxy
+
+# Most common: local steps only (extract → column-heights → build-pairs):
+python data-cli.py dataprep --from-step extract \
+    --voxy-dir LODiffusion/run/saves --data-dir data/voxy
+
+# Individual RCON commands still work:
+python data-cli.py pregen --password secret
+python data-cli.py voxy-import --password secret --world-name "New World"
+```
+
+**Training + deployment** (steps 6-8) lives in `pipeline.py`:
+```
 6. python pipeline.py train           # train 4 progressive models
 7. python pipeline.py export          # checkpoint → 4 ONNX files
 8. python pipeline.py deploy          # copy to LODiffusion config dir
 ```
 
-Or run steps 3-8 in one shot: `python pipeline.py run`
+Full pipeline (dataprep + train [+ export]):
+```
+python pipeline.py run --voxy-dir LODiffusion/run/saves --epochs 20
+```
+`pipeline.py run` delegates data prep to `data-cli.py dataprep` automatically.
 
 ---
 
@@ -172,9 +188,9 @@ Single source of truth: `scripts/mipper.py`
 Existing test files:
 - `tests/test_mipper.py` — Mipper invariants
 - `tests/test_voxy_extraction.py` — Voxy reader + NPZ round-trip
-- `tests/test_conditioning.py` — anchor conditioning
-- `tests/test_forward_pass.py` — model forward pass shapes
-- `tests/test_lod_embedding.py` — LOD embedding behavior
-- `tests/test_unet3d.py` — UNet architecture
+- `tests/test_progressive_models.py` — progressive LOD model shapes
+- `tests/test_multi_lod_dataset.py` — pair generation + dataset
+- `tests/test_train.py` — training loop smoke tests
+- `tests/test_export_lod.py` — ONNX export
 
 Run: `python -m pytest tests/ -q`

@@ -1,39 +1,34 @@
 #!/usr/bin/env python3
-"""pipeline.py — Data-prep + training pipeline for VoxelTree.
+"""pipeline.py — Training + deployment pipeline for VoxelTree.
 
-Stage 1 — Data preparation (idempotent, world-locked):
-  Phase 1a  extract:         Voxy RocksDB  →  data/voxy/*.npz (raw LOD0 chunks)
-  Phase 1a½ column-heights:  Enrich NPZs with column-level heightmap_surface
-  Phase 1b  build-pairs:     data/voxy/    →  data/voxy/*_pairs_v1.npz
-                             Runs the Mipper once; 4 LOD transitions per chunk.
+Data preparation (extract → column-heights → build-pairs, optionally
+preceded by RCON pregen/voxy-import) now lives in **data-cli.py**.
+Use ``python data-cli.py dataprep --from-step <step>`` for data prep.
 
-Stage 2 — Training:
-  Phase 2   train:           *_pairs_v1.npz  →  model weights
-  Phase 3   export:          checkpoint      →  production/model.onnx
+This file handles stage 2+:
+  Phase 2   train:   *_pairs_v2.npz  →  model weights
+  Phase 3   export:  checkpoint      →  production/model.onnx
+  Phase 4   deploy:  ONNX + config   →  LODiffusion config directory
 
-The pipeline supports:
-- Single-shot: extract once, build-pairs once, train once
-- Iterative: extract → build-pairs → train → delete → new seed → repeat (future)
+The ``run`` meta-command delegates data preparation to *data-cli.py*
+then runs train [+ export + deploy].
 
 Usage::
 
-    # Full pipeline: extract + build-pairs + train + (optional) export
+    # Full pipeline: data-prep + train + (optional) export
     python pipeline.py run \\
         --voxy-dir "C:/path/to/LODiffusion/run/saves" \\
         --epochs 20
 
-    # Data-prep only (stages 1a + 1b)
-    python pipeline.py extract  --voxy-dir "C:/path/to/LODiffusion/run/saves"
-    python pipeline.py build-pairs
-
-    # Train only (stage 2, requires data/voxy/*_pairs_v1.npz)
+    # Train only (requires data/voxy/*_pairs_v2.npz)
     python pipeline.py train --epochs 20
 
     # Export ONNX after training
     python pipeline.py export --checkpoint models/voxy/best_model.pt
 
-    # Full pipeline including ONNX export
-    python pipeline.py run --voxy-dir "..." --epochs 20 --export
+    # Data prep (use data-cli.py instead):
+    python data-cli.py dataprep --from-step extract \\
+        --voxy-dir LODiffusion/run/saves --data-dir data/voxy
 """
 
 from __future__ import annotations
@@ -54,168 +49,11 @@ DEFAULT_DATA_DIR = Path("data/voxy")
 DEFAULT_MODEL_DIR = Path("models/voxy")
 DEFAULT_EXPORT_DIR = Path("production")
 
-# Pair-cache files written by build-pairs and consumed by MultiLODDataset
-PAIRS_CACHE_GLOB = "*_pairs_v1.npz"
 
-
-def find_voxy_databases(saves_dir: Path) -> list[Path]:
-    """Discover all Voxy storage directories under a Minecraft saves folder."""
-    dbs = sorted(saves_dir.glob("*/voxy/*/storage"))
-    return [d for d in dbs if d.is_dir()]
-
-
-def phase1_extract(
-    voxy_dir: Path,
-    data_dir: Path,
-    *,
-    min_solid: float = 0.02,
-    max_sections: int | None = None,
-    clean_first: bool = False,
-) -> int:
-    """Phase 1: Extract training data from Voxy RocksDB databases.
-
-    Returns the number of training chunks extracted.
-    """
-    print()
-    print("=" * 70)
-    print("  PHASE 1: Extract training data from Voxy")
-    print("=" * 70)
-    print()
-
-    if clean_first and data_dir.exists():
-        print("Cleaning previous extraction: %s" % data_dir)
-        shutil.rmtree(data_dir)
-
-    # Find all Voxy databases
-    dbs = find_voxy_databases(voxy_dir)
-    if not dbs:
-        print("ERROR: No Voxy databases found under %s" % voxy_dir)
-        print("Expected structure: <saves>/<world>/voxy/<hash>/storage/")
-        return 0
-
-    print("Found %d Voxy database(s):" % len(dbs))
-    for db in dbs:
-        # Extract world name from path
-        world_name = db.parts[-4] if len(db.parts) >= 4 else str(db)
-        print("  - %s" % world_name)
-    print()
-
-    # Build CLI args for extract script
-    cmd = [
-        sys.executable,
-        "scripts/extract_voxy_training_data.py",
-        *[str(d) for d in dbs],
-        "--output-dir",
-        str(data_dir),
-        "--vocab",
-        str(VOXY_VOCAB_PATH),
-        "--min-solid",
-        str(min_solid),
-    ]
-    if max_sections is not None:
-        cmd.extend(["--max-sections", str(max_sections)])
-
-    t0 = time.time()
-    result = subprocess.run(cmd, cwd=str(Path(__file__).parent))
-    elapsed = time.time() - t0
-
-    if result.returncode != 0:
-        print("ERROR: Extraction failed with exit code %d" % result.returncode)
-        return 0
-
-    # Count output files
-    n_files = len(list(data_dir.glob("*.npz"))) if data_dir.exists() else 0
-    print()
-    print(
-        "Phase 1 complete: %d chunks in %.1fs (%.0f chunks/s)"
-        % (n_files, elapsed, n_files / max(elapsed, 0.01))
-    )
-    return n_files
-
-
-def phase1a_column_heights(data_dir: Path) -> bool:
-    """Phase 1a½: Compute column-level surface heights for all extracted NPZs.
-
-    This enriches each NPZ with ``heightmap_surface`` and ``heightmap_ocean_floor``
-    (world-Y coordinates) by scanning all Y-slabs at each (x, z) column.  Must
-    run after extraction and before build-pairs.
-
-    Returns True on success.
-    """
-    print()
-    print("=" * 70)
-    print("  PHASE 1a½: Compute column-level surface heights")
-    print("=" * 70)
-    print()
-
-    cmd = [
-        sys.executable,
-        "scripts/add_column_heights.py",
-        str(data_dir),
-    ]
-
-    result = subprocess.run(cmd, cwd=str(Path(__file__).parent))
-    if result.returncode != 0:
-        print("ERROR: add_column_heights failed with exit code %d" % result.returncode)
-        return False
-    return True
-
-
-def phase1b_build_pairs(
-    data_dir: Path,
-    *,
-    val_split: float = 0.1,
-    min_solid: float = 0.02,
-    clean_first: bool = False,
-) -> int:
-    """Phase 1b: Pre-compute LOD pair caches from extracted NPZ chunks.
-
-    Returns the total number of training pairs built, or 0 on failure.
-    The Mipper (3-D volume downsampling) runs exactly once per chunk here
-    instead of being repeated on every training epoch.
-    """
-    print()
-    print("=" * 70)
-    print("  PHASE 1b: Build LOD training pairs")
-    print("=" * 70)
-    print()
-
-    n_source = len(list(data_dir.glob("*.npz")))
-    # Exclude cache files from count
-    n_source -= len(list(data_dir.glob(PAIRS_CACHE_GLOB)))
-    if n_source <= 0:
-        print("ERROR: No source NPZ files in %s — run extraction first" % data_dir)
-        return 0
-    print("Source chunks: %d  in %s" % (n_source, data_dir))
-
-    cmd = [
-        sys.executable,
-        "scripts/build_pairs.py",
-        "--data-dir",
-        str(data_dir),
-        "--val-split",
-        str(val_split),
-        "--min-solid",
-        str(min_solid),
-    ]
-    if clean_first:
-        cmd.append("--clean")
-
-    t0 = time.time()
-    result = subprocess.run(cmd, cwd=str(Path(__file__).parent))
-    elapsed = time.time() - t0
-
-    if result.returncode != 0:
-        print("ERROR: build-pairs failed with exit code %d" % result.returncode)
-        return 0
-
-    # Count pairs from written cache files
-    cache_files = list(data_dir.glob(PAIRS_CACHE_GLOB))
-    if not cache_files:
-        return 0
-    print()
-    print("Phase 1b complete in %.1fs" % elapsed)
-    return sum(1 for _ in cache_files)  # success indicator
+# ------------------------------------------------------------------
+# Data-preparation functions have moved to data-cli.py.
+# Use:  python data-cli.py dataprep --from-step <step>
+# ------------------------------------------------------------------
 
 
 def phase2_train(
@@ -355,70 +193,54 @@ def deploy_onnx(onnx_dir: Path, lodiffusion_config: Path) -> bool:
 
 
 # ------------------------------------------------------------------
-# Iterative training (future expansion)
-# ------------------------------------------------------------------
-
-
-def run_iterative(
-    voxy_dir: Path,
-    data_dir: Path,
-    model_dir: Path,
-    *,
-    cycles: int = 1,
-    epochs_per_cycle: int = 20,
-    clean_between: bool = True,
-    **train_kwargs,
-) -> None:
-    """Run the extract→train loop for multiple cycles.
-
-    For now, this just runs one cycle. In the future, each cycle could:
-    1. Generate a new Minecraft world with a fresh seed
-    2. Run Voxy import
-    3. Extract training data
-    4. Continue training from previous checkpoint
-    5. Delete training data to free disk space
-    6. Repeat
-    """
-    for cycle in range(cycles):
-        print()
-        print("#" * 70)
-        print("  CYCLE %d / %d" % (cycle + 1, cycles))
-        print("#" * 70)
-
-        n = phase1_extract(
-            voxy_dir,
-            data_dir,
-            clean_first=clean_between and cycle > 0,
-        )
-        if n == 0:
-            print("No data extracted — stopping")
-            break
-
-        # On subsequent cycles, resume from previous checkpoint
-        # TODO: pass resume_from to phase2_train when checkpoint resumption is implemented
-        # resume_from = model_dir / "best_model.pt" if cycle > 0 else None
-
-        best = phase2_train(
-            data_dir,
-            model_dir,
-            epochs=epochs_per_cycle,
-            **train_kwargs,
-        )
-        if best is None:
-            print("Training failed — stopping")
-            break
-
-        if clean_between:
-            print("Cleaning training data to free disk space...")
-            shutil.rmtree(data_dir, ignore_errors=True)
-
-    print()
-    print("All cycles complete.")
-
-
-# ------------------------------------------------------------------
 # CLI
 # ------------------------------------------------------------------
+
+
+def _run_dataprep(args: argparse.Namespace) -> None:
+    """Delegate data preparation to data-cli.py dataprep."""
+    from_step = "voxy-import" if args.voxy_import_world else "extract"
+
+    cmd = [
+        sys.executable,
+        "data-cli.py",
+        "dataprep",
+        "--from-step",
+        from_step,
+        "--voxy-dir",
+        str(args.voxy_dir),
+        "--data-dir",
+        str(args.data_dir),
+        "--min-solid",
+        str(args.min_solid),
+        "--val-split",
+        str(args.val_split),
+    ]
+    if args.max_sections is not None:
+        cmd.extend(["--max-sections", str(args.max_sections)])
+    if args.clean:
+        cmd.append("--clean")
+    # RCON args (needed for voxy-import / pregen steps)
+    if args.voxy_import_world:
+        cmd.extend(
+            [
+                "--world-name",
+                args.voxy_import_world,
+                "--password",
+                args.rcon_password,
+                "--host",
+                args.rcon_host,
+                "--port",
+                str(args.rcon_port),
+                "--timeout",
+                str(args.rcon_timeout),
+            ]
+        )
+
+    result = subprocess.run(cmd, cwd=str(Path(__file__).parent))
+    if result.returncode != 0:
+        print("Data preparation failed — aborting")
+        sys.exit(1)
 
 
 def main() -> None:
@@ -429,42 +251,8 @@ def main() -> None:
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
-    # -- extract ---
-    p_ext = sub.add_parser("extract", help="Phase 1a: Extract data from Voxy")
-    p_ext.add_argument(
-        "--voxy-dir",
-        type=Path,
-        required=True,
-        help="Minecraft saves directory (e.g. LODiffusion/run/saves)",
-    )
-    p_ext.add_argument("--data-dir", type=Path, default=DEFAULT_DATA_DIR)
-    p_ext.add_argument("--min-solid", type=float, default=0.02)
-    p_ext.add_argument("--max-sections", type=int, default=None)
-    p_ext.add_argument(
-        "--clean", action="store_true", help="Delete existing data before extraction"
-    )
-
-    # -- column-heights ---
-    p_ch = sub.add_parser(
-        "column-heights",
-        help="Phase 1a½: Compute column-level surface heights in extracted NPZs",
-    )
-    p_ch.add_argument("--data-dir", type=Path, default=DEFAULT_DATA_DIR)
-
-    # -- build-pairs ---
-    p_bp = sub.add_parser(
-        "build-pairs",
-        help="Phase 1b: Pre-compute LOD pair caches from extracted NPZ chunks",
-    )
-    p_bp.add_argument("--data-dir", type=Path, default=DEFAULT_DATA_DIR)
-    p_bp.add_argument("--val-split", type=float, default=0.1)
-    p_bp.add_argument("--min-solid", type=float, default=0.02)
-    p_bp.add_argument(
-        "--clean", action="store_true", help="Delete existing pair caches before rebuilding"
-    )
-
     # -- train ---
-    p_train = sub.add_parser("train", help="Phase 2: Train model")
+    p_train = sub.add_parser("train", help="Train model (requires pair caches)")
     p_train.add_argument("--data-dir", type=Path, default=DEFAULT_DATA_DIR)
     p_train.add_argument("--model-dir", type=Path, default=DEFAULT_MODEL_DIR)
     p_train.add_argument("--epochs", type=int, default=20)
@@ -475,7 +263,7 @@ def main() -> None:
     p_train.add_argument("--surface-loss-weight", type=float, default=0.1)
 
     # -- export ---
-    p_exp = sub.add_parser("export", help="Phase 3: Export ONNX")
+    p_exp = sub.add_parser("export", help="Export ONNX model")
     p_exp.add_argument("--checkpoint", type=Path, required=True)
     p_exp.add_argument("--export-dir", type=Path, default=DEFAULT_EXPORT_DIR)
 
@@ -486,8 +274,12 @@ def main() -> None:
         "--lodiffusion-config", type=Path, default=Path("../LODiffusion/config/lodiffusion")
     )
 
-    # -- run (full pipeline) ---
-    p_run = sub.add_parser("run", help="Full pipeline: extract + train [+ export]")
+    # -- run (full pipeline: dataprep + train [+ export + deploy]) ---
+    p_run = sub.add_parser(
+        "run",
+        help="Full pipeline: dataprep → train [→ export → deploy]",
+        epilog="Data prep is delegated to data-cli.py dataprep.",
+    )
     p_run.add_argument("--voxy-dir", type=Path, required=True)
     p_run.add_argument("--data-dir", type=Path, default=DEFAULT_DATA_DIR)
     p_run.add_argument("--model-dir", type=Path, default=DEFAULT_MODEL_DIR)
@@ -509,31 +301,21 @@ def main() -> None:
     p_run.add_argument(
         "--lodiffusion-config", type=Path, default=Path("../LODiffusion/config/lodiffusion")
     )
+    # RCON args for optional voxy-import in the full pipeline
+    p_run.add_argument(
+        "--voxy-import-world",
+        metavar="NAME",
+        default=None,
+        help="If set, start dataprep from voxy-import (requires RCON)",
+    )
+    p_run.add_argument("--rcon-host", default="localhost", metavar="HOST")
+    p_run.add_argument("--rcon-port", type=int, default=25575, metavar="PORT")
+    p_run.add_argument("--rcon-password", default="", metavar="PASS")
+    p_run.add_argument("--rcon-timeout", type=int, default=300, metavar="SECS")
 
     args = parser.parse_args()
 
-    if args.command == "extract":
-        phase1_extract(
-            args.voxy_dir,
-            args.data_dir,
-            min_solid=args.min_solid,
-            max_sections=args.max_sections,
-            clean_first=args.clean,
-        )
-
-    elif args.command == "column-heights":
-        if not phase1a_column_heights(args.data_dir):
-            sys.exit(1)
-
-    elif args.command == "build-pairs":
-        phase1b_build_pairs(
-            args.data_dir,
-            val_split=args.val_split,
-            min_solid=args.min_solid,
-            clean_first=args.clean,
-        )
-
-    elif args.command == "train":
+    if args.command == "train":
         phase2_train(
             args.data_dir,
             args.model_dir,
@@ -552,34 +334,10 @@ def main() -> None:
         deploy_onnx(args.export_dir, args.lodiffusion_config)
 
     elif args.command == "run":
-        # Stage 1a: extract
-        n = phase1_extract(
-            args.voxy_dir,
-            args.data_dir,
-            min_solid=args.min_solid,
-            max_sections=args.max_sections,
-            clean_first=args.clean,
-        )
-        if n == 0:
-            print("No data extracted — aborting")
-            sys.exit(1)
+        # Data preparation → data-cli.py dataprep
+        _run_dataprep(args)
 
-        # Stage 1a½: column-level heights
-        if not phase1a_column_heights(args.data_dir):
-            print("Column heights failed — aborting")
-            sys.exit(1)
-
-        # Stage 1b: build pairs
-        result = phase1b_build_pairs(
-            args.data_dir,
-            val_split=args.val_split,
-            min_solid=args.min_solid,
-        )
-        if result == 0:
-            print("Pair build failed — aborting")
-            sys.exit(1)
-
-        # Stage 2: train
+        # Training
         best = phase2_train(
             args.data_dir,
             args.model_dir,
