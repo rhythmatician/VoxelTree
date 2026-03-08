@@ -100,8 +100,6 @@ class AnchorConditioningFusion(nn.Module):
         y_embed_dim: int = 16,
         y_slabs: int = Y_SLABS,
         out_channels: int = 64,
-        # Kept for backward-compat deserialization; ignored.
-        router6_channels: int = 0,
     ):
         super().__init__()
 
@@ -117,7 +115,7 @@ class AnchorConditioningFusion(nn.Module):
             nn.ReLU(inplace=True),
         )
 
-        # Biome stream (larger now that router6 is gone)
+        # Biome stream
         self.biome_embedding = nn.Embedding(biome_vocab_size, biome_embed_dim)
         self.biome_conv = nn.Sequential(
             nn.Conv2d(biome_embed_dim, third, 3, padding=1, bias=False),

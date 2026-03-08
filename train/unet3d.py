@@ -211,13 +211,12 @@ class SimpleFlexibleUNet3D(nn.Module):
         y_index: torch.Tensor,
         lod: torch.Tensor,
         height_planes: Optional[torch.Tensor] = None,
-        router6: Optional[torch.Tensor] = None,  # ignored, kept for compat
     ) -> Dict[str, torch.Tensor]:
         """
         Forward pass with flexible input/output sizes and anchor conditioning.
 
         Conditioning inputs: biome_patch, heightmap_patch (or height_planes),
-        y_index, lod.  Router6 has been removed from the architecture.
+        y_index, lod.
 
         For ONNX export (v2 contract) biome_patch should be int64 indices [B,H,W]
         and height_planes should be pre-computed float32 tensors.

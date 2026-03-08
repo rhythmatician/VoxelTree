@@ -135,6 +135,11 @@ class MultiLODLoss(nn.Module):
             # Shape: (B, H, W)  — weighted average y of solid voxels per column
             predicted_surface = (solid_prob * y_weights[None, :, None, None]).sum(dim=1)  # (B,H,W)
             predicted_surface = predicted_surface / (solid_prob.sum(dim=1).clamp(min=1e-6))
+            # Downsample anchor to match model output spatial size when D < 16
+            if predicted_surface.shape[-1] != surface_anchor.shape[-1]:
+                surface_anchor = torch.nn.functional.adaptive_avg_pool2d(
+                    surface_anchor.unsqueeze(1), predicted_surface.shape[-1]
+                ).squeeze(1)
             surface_loss = torch.nn.functional.l1_loss(predicted_surface, surface_anchor)
 
         # Combined loss

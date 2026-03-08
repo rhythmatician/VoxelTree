@@ -12,12 +12,8 @@ Model family:
 
 Conditioning channels (shared, cheap):
   - x_height_planes [B,5,16,16]   — surface, ocean_floor, slope_x, slope_z, curvature
-  - x_router6       [B,6,16,16]   — temperature, vegetation, continents, erosion, depth, ridges
   - x_biome         [B,16,16]     — int64 biome index per column (→ learned embedding)
   - x_y_index       [B]           — int64 y-slab position 0..23 (→ learned embedding)
-
-Dropped channels (too expensive for distant LOD):
-  - x_cave_prior4, x_aquifer3, x_barrier, x_biome_quart, x_chunk_pos, x_lod
 """
 
 from typing import Dict, Optional
@@ -32,12 +28,11 @@ class AnchorConditioningFusion3D(nn.Module):
     """
     Conditioning fusion for anchor channels, adapted for varying 3D output sizes.
 
-    Processes 2D anchor signals (height_planes, router6, biome, y_index) and
+    Processes 2D anchor signals (height_planes, biome, y_index) and
     broadcasts them to the target 3D volume size for each progressive model.
 
     Architecture:
-      height_planes → Conv2d(5, out//4)  → GroupNorm → ReLU  ──┐
-      router6       → Conv2d(6, out//2)  → GroupNorm → ReLU  ──┤
+      height_planes → Conv2d(5, out//2)  → GroupNorm → ReLU  ──┐
       biome embed   → Conv2d(E, out//4)  → GroupNorm → ReLU  ──┤
                                                                 ├─ cat → Conv2d → 3D
       y_index embed → broadcast [B, y_dim, H, W]              ──┘
@@ -46,7 +41,6 @@ class AnchorConditioningFusion3D(nn.Module):
     def __init__(
         self,
         height_channels: int = 5,
-        router6_channels: int = 6,
         biome_vocab_size: int = 256,
         biome_embed_dim: int = 32,
         y_embed_dim: int = 16,
@@ -59,19 +53,12 @@ class AnchorConditioningFusion3D(nn.Module):
         self.y_slabs = y_slabs
         self.y_embed_dim = y_embed_dim
 
-        quarter = max(out_channels // 4, 4)
         half = max(out_channels // 2, 8)
+        quarter = max(out_channels // 4, 4)
 
         # Height planes stream
         self.height_conv = nn.Sequential(
-            nn.Conv2d(height_channels, quarter, 3, padding=1, bias=False),
-            nn.GroupNorm(min(4, quarter), quarter),
-            nn.ReLU(inplace=True),
-        )
-
-        # Router-6 stream (dominant: macro terrain shape)
-        self.router6_conv = nn.Sequential(
-            nn.Conv2d(router6_channels, half, 3, padding=1, bias=False),
+            nn.Conv2d(height_channels, half, 3, padding=1, bias=False),
             nn.GroupNorm(min(4, half), half),
             nn.ReLU(inplace=True),
         )
@@ -87,8 +74,8 @@ class AnchorConditioningFusion3D(nn.Module):
         # Y-slab embedding
         self.y_embedding = nn.Embedding(y_slabs, y_embed_dim)
 
-        # Fusion (quarter + half + quarter + y_dim → out_channels)
-        fusion_in = quarter + half + quarter + y_embed_dim
+        # Fusion (half + quarter + y_dim → out_channels)
+        fusion_in = half + quarter + y_embed_dim
         norm_groups = min(4, out_channels)
         self.fusion = nn.Sequential(
             nn.Conv2d(fusion_in, out_channels, 3, padding=1, bias=False),
@@ -99,7 +86,6 @@ class AnchorConditioningFusion3D(nn.Module):
     def forward(
         self,
         height_planes: torch.Tensor,  # [B, 5, 16, 16]
-        router6: torch.Tensor,  # [B, 6, 16, 16]
         biome_indices: torch.Tensor,  # [B, 16, 16] int64
         y_index: torch.Tensor,  # [B] int64
         output_size: int,  # Target 3D size (1, 2, 4, or 8)
@@ -108,8 +94,7 @@ class AnchorConditioningFusion3D(nn.Module):
         B = height_planes.shape[0]
 
         # Process 2D features
-        h_feat = self.height_conv(height_planes)  # [B, quarter, 16, 16]
-        r_feat = self.router6_conv(router6)  # [B, half, 16, 16]
+        h_feat = self.height_conv(height_planes)  # [B, half, 16, 16]
 
         # Biome embedding → Conv2d
         bx = biome_indices.long().clamp(0, self.biome_embedding.num_embeddings - 1)
@@ -122,7 +107,7 @@ class AnchorConditioningFusion3D(nn.Module):
         y_feat = y_emb.view(B, self.y_embed_dim, 1, 1).expand(-1, -1, 16, 16)
 
         # Fuse 2D features
-        combined_2d = torch.cat([h_feat, r_feat, b_feat, y_feat], dim=1)
+        combined_2d = torch.cat([h_feat, b_feat, y_feat], dim=1)
         fused_2d = self.fusion(combined_2d)  # [B, out_channels, 16, 16]
 
         # Resize to output spatial size
@@ -148,7 +133,7 @@ class ProgressiveLODModel0_Initial(nn.Module):
     Generates the very first LOD from conditioning inputs only.
 
     Tiny MLP since it only predicts 1 voxel.
-    Inputs: height_planes, router6, biome, y_index (all pooled to scalars)
+    Inputs: height_planes, biome, y_index (all pooled to scalars)
     Output: [B, N_blocks, 1, 1, 1], [B, 1, 1, 1, 1]
     """
 
@@ -161,12 +146,11 @@ class ProgressiveLODModel0_Initial(nn.Module):
 
         # Pool 2D inputs to scalars
         self.height_processor = nn.Linear(5, hidden_dim // 4)  # 5→8
-        self.router6_processor = nn.Linear(6, hidden_dim // 4)  # 6→8
         self.biome_embedding = nn.Embedding(256, 8)  # mode per column → 8
         self.y_embedding = nn.Embedding(24, 4)  # slab → 4
 
-        # Total fused: 8+8+8+4 = 28 → project to hidden_dim
-        self.fuse = nn.Linear(28, hidden_dim)
+        # Total fused: 8+8+4 = 20 → project to hidden_dim
+        self.fuse = nn.Linear(20, hidden_dim)
 
         # Compact processing network
         self.processor = nn.Sequential(
@@ -185,7 +169,6 @@ class ProgressiveLODModel0_Initial(nn.Module):
     def forward(
         self,
         height_planes: torch.Tensor,  # [B, 5, 16, 16]
-        router6: torch.Tensor,  # [B, 6, 16, 16]
         biome_indices: torch.Tensor,  # [B, 16, 16] int64
         y_index: torch.Tensor,  # [B] int64
         x_parent: Optional[torch.Tensor] = None,  # unused for init model
@@ -195,10 +178,8 @@ class ProgressiveLODModel0_Initial(nn.Module):
 
         # Pool 2D features to scalars
         h_vec = height_planes.mean(dim=(2, 3))  # [B, 5]
-        r_vec = router6.mean(dim=(2, 3))  # [B, 6]
 
         h_feat = self.height_processor(h_vec)  # [B, 8]
-        r_feat = self.router6_processor(r_vec)  # [B, 8]
 
         # Biome: mode of the 16×16 grid → single embedding
         biome_mode = biome_indices[:, 8, 8].long().clamp(0, 255)  # center column
@@ -209,7 +190,7 @@ class ProgressiveLODModel0_Initial(nn.Module):
         y_feat = self.y_embedding(yi)  # [B, 4]
 
         # Fuse and process
-        fused = self.fuse(torch.cat([h_feat, r_feat, b_feat, y_feat], dim=1))  # [B, hidden]
+        fused = self.fuse(torch.cat([h_feat, b_feat, y_feat], dim=1))  # [B, hidden]
         z = self.processor(fused)  # [B, hidden]
 
         # Output heads → reshape to 1×1×1
@@ -234,7 +215,6 @@ class ProgressiveLODModel(nn.Module):
     Inputs:
       - x_parent:       [B, 1, P, P, P] parent occupancy (P = output_size // 2)
       - height_planes:  [B, 5, 16, 16]
-      - router6:        [B, 6, 16, 16]
       - biome_indices:  [B, 16, 16] int64
       - y_index:        [B] int64
     """
@@ -309,7 +289,6 @@ class ProgressiveLODModel(nn.Module):
     def forward(
         self,
         height_planes: torch.Tensor,  # [B, 5, 16, 16]
-        router6: torch.Tensor,  # [B, 6, 16, 16]
         biome_indices: torch.Tensor,  # [B, 16, 16] int64
         y_index: torch.Tensor,  # [B] int64
         x_parent: torch.Tensor,  # [B, 1, P, P, P] parent occupancy
@@ -319,7 +298,7 @@ class ProgressiveLODModel(nn.Module):
         """
         # Anchor conditioning → 3D features at output resolution
         cond_features = self.conditioning(
-            height_planes, router6, biome_indices, y_index, self.output_size
+            height_planes, biome_indices, y_index, self.output_size
         )  # [B, base_channels, D, D, D]
 
         # Encode parent and upsample to output resolution
