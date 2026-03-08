@@ -3,11 +3,12 @@
 Quick training script for progressive LOD models.
 Trains just a few epochs to create models for runtime performance evaluation.
 
-NOTE: This script uses the OLD model forward() API (biome_quart, chunk_pos,
-lod as positional args). The progressive models have been refactored to use
-anchor conditioning (height_planes, router6, biome int index, y_index).
-See train_multi_lod.py for the current primary training pipeline.
-This script needs refactoring to match the new model interface.
+Uses the same 4-model architecture as train_multi_lod.py:
+  - Model 0  (Init→LOD4):  1×1×1 MLP, no parent
+  - Model 1  (LOD4→LOD3):  2×2×2 Conv3D, parent 1³
+  - Model 2  (LOD3→LOD2):  4×4×4 Conv3D, parent 2³
+  - Model 3  (LOD2→LOD1):  8×8×8 Conv3D, parent 4³
+LOD0 is NOT generated — vanilla Minecraft handles full resolution.
 """
 
 import argparse
@@ -54,13 +55,9 @@ class ProgressiveLODLoss(nn.Module):
     ) -> Dict[str, torch.Tensor]:
         """Compute loss for progressive LOD predictions."""
 
-        # Handle different output key names
-        if "air_mask_logits" in predictions:
-            air_mask_logits = predictions["air_mask_logits"]
-            block_type_logits = predictions["block_type_logits"]
-        else:
-            air_mask_logits = predictions["air_mask"]
-            block_type_logits = predictions["block_logits"]
+        # Output keys are always air_mask_logits / block_type_logits
+        air_mask_logits = predictions["air_mask_logits"]
+        block_type_logits = predictions["block_type_logits"]
 
         target_blocks = targets["target_blocks"]
         target_occupancy = targets["target_occupancy"]
@@ -127,40 +124,13 @@ def _downsample_targets(blocks: torch.Tensor, occ: torch.Tensor, out_size: int):
     return coarse_blks, coarse_occ
 
 
-def _build_parent_logits_from_targets(blocks16: torch.Tensor, parent_size: int, num_classes: int):
-    """Build parent block logits [B,C,P,P,P] from 16^3 integer block labels via window mode.
-
-    We downsample labels to parent_size using window mode (like _downsample_targets) and then
-    create one-hot logits scaled to a positive margin for the true class.
-    """
-    if parent_size is None:
-        return None
-    if 16 % parent_size != 0:
-        raise ValueError("parent_size must divide 16")
-    # Reuse downsample to get parent labels (ignore occupancy result)
-    parent_labels, _ = _downsample_targets(blocks16, torch.ones_like(blocks16), parent_size)
-    # One-hot -> logits
-    B, P, _, _ = parent_labels.shape
-    one_hot = torch.nn.functional.one_hot(
-        parent_labels.long(), num_classes=num_classes
-    )  # [B,P,P,P,C]
-    one_hot = one_hot.permute(0, 4, 1, 2, 3).contiguous().float()  # [B,C,P,P,P]
-    logits = (one_hot * 6.0) + ((1.0 - one_hot) * -6.0)  # margin logits
-    return logits
-
-
 def compute_metrics(
     predictions: Dict[str, torch.Tensor], targets: Dict[str, torch.Tensor]
 ) -> Dict[str, float]:
     """Compute evaluation metrics."""
     with torch.no_grad():
-        # Handle different output key names
-        if "air_mask_logits" in predictions:
-            air_mask_logits = predictions["air_mask_logits"]
-            block_type_logits = predictions["block_type_logits"]
-        else:
-            air_mask_logits = predictions["air_mask"]
-            block_type_logits = predictions["block_logits"]
+        air_mask_logits = predictions["air_mask_logits"]
+        block_type_logits = predictions["block_type_logits"]
 
         target_blocks = targets["target_blocks"]
         target_occupancy = targets["target_occupancy"]
@@ -233,18 +203,17 @@ def train_model(model, train_loader, val_loader, config, model_name, device="cud
             optimizer.zero_grad()
 
             try:
-                # Create inputs for progressive model
-                if "0_Initial" in model_name:
-                    # Model 0 - no parent input
+                # Forward pass — route to correct model API
+                if isinstance(model, ProgressiveLODModel0_Initial):
+                    # Init model: no parent input
                     predictions = model(
-                        batch["height_planes"],
-                        batch["biome_quart"],
-                        batch["router6"],
-                        batch["chunk_pos"],
-                        batch["lod"],
+                        height_planes=batch["height_planes"],
+                        router6=batch["router6"],
+                        biome_indices=batch["biome_idx"],
+                        y_index=batch["y_index"],
                     )
                 else:
-                    # Models 1-4 - with parent input
+                    # Refinement models: need parent occupancy
                     # Infer expected parent size from model name
                     if "1_LOD4to3" in model_name:
                         parent_size = 1
@@ -252,40 +221,33 @@ def train_model(model, train_loader, val_loader, config, model_name, device="cud
                         parent_size = 2
                     elif "3_LOD2to1" in model_name:
                         parent_size = 4
-                    elif "4_LOD1to0" in model_name:
-                        parent_size = 8
                     else:
                         parent_size = None
 
-                    parent_input = batch.get("parent_logits")
-                    # If parent logits missing or wrong shape, rebuild from targets
+                    x_parent = batch.get("parent_voxel")
+                    # If parent missing or wrong shape, build binary occupancy from targets
                     if parent_size is not None:
                         rebuild_parent = True
-                        if isinstance(parent_input, torch.Tensor) and parent_input.dim() == 5:
-                            if parent_input.shape[-1] == parent_size:
+                        if isinstance(x_parent, torch.Tensor) and x_parent.dim() == 5:
+                            if x_parent.shape[-1] == parent_size:
                                 rebuild_parent = False
                         if rebuild_parent:
-                            num_classes = model.config.block_vocab_size
-                            parent_input = _build_parent_logits_from_targets(
-                                batch["target_blocks"], parent_size, num_classes
-                            ).to(device)
+                            # Downsample targets to parent resolution, use occupancy as binary parent
+                            _, parent_occ = _downsample_targets(
+                                batch["target_blocks"], batch["target_occupancy"], parent_size
+                            )
+                            x_parent = parent_occ.float().unsqueeze(1).to(device)  # [B,1,P,P,P]
 
                     predictions = model(
-                        batch["height_planes"],
-                        batch["biome_quart"],
-                        batch["router6"],
-                        batch["chunk_pos"],
-                        batch["lod"],
-                        parent_input,  # parent input
+                        height_planes=batch["height_planes"],
+                        router6=batch["router6"],
+                        biome_indices=batch["biome_idx"],
+                        y_index=batch["y_index"],
+                        x_parent=x_parent,
                     )
 
                 # Downsample targets to match model output size
-                out_logits = (
-                    predictions.get("block_type_logits")
-                    if "0_Initial" in model_name
-                    else predictions["block_logits"]
-                )
-                out_size = out_logits.shape[-1]
+                out_size = predictions["block_type_logits"].shape[-1]
                 blocks_ds, occ_ds = _downsample_targets(
                     batch["target_blocks"], batch["target_occupancy"], out_size
                 )
@@ -326,15 +288,13 @@ def train_model(model, train_loader, val_loader, config, model_name, device="cud
                     if isinstance(vb[k], torch.Tensor):
                         vb[k] = vb[k].to(device)
 
-                if "0_Initial" in model_name:
+                if isinstance(model, ProgressiveLODModel0_Initial):
                     preds = model(
-                        vb["height_planes"],
-                        vb["biome_quart"],
-                        vb["router6"],
-                        vb["chunk_pos"],
-                        vb["lod"],
+                        height_planes=vb["height_planes"],
+                        router6=vb["router6"],
+                        biome_indices=vb["biome_idx"],
+                        y_index=vb["y_index"],
                     )
-                    out_logits = preds["block_type_logits"]
                 else:
                     # infer parent size for eval
                     if "1_LOD4to3" in model_name:
@@ -344,22 +304,21 @@ def train_model(model, train_loader, val_loader, config, model_name, device="cud
                     elif "3_LOD2to1" in model_name:
                         ps = 4
                     else:
-                        ps = 8
-                    num_classes = model.config.block_vocab_size
-                    parent_in = _build_parent_logits_from_targets(
-                        vb["target_blocks"], ps, num_classes
-                    ).to(device)
-                    preds = model(
-                        vb["height_planes"],
-                        vb["biome_quart"],
-                        vb["router6"],
-                        vb["chunk_pos"],
-                        vb["lod"],
-                        parent_in,
+                        ps = 1  # fallback
+                    # Build binary occupancy parent from targets
+                    _, parent_occ = _downsample_targets(
+                        vb["target_blocks"], vb["target_occupancy"], ps
                     )
-                    out_logits = preds["block_logits"]
+                    parent_in = parent_occ.float().unsqueeze(1).to(device)  # [B,1,P,P,P]
+                    preds = model(
+                        height_planes=vb["height_planes"],
+                        router6=vb["router6"],
+                        biome_indices=vb["biome_idx"],
+                        y_index=vb["y_index"],
+                        x_parent=parent_in,
+                    )
 
-                s = out_logits.shape[-1]
+                s = preds["block_type_logits"].shape[-1]
                 tb, to = _downsample_targets(vb["target_blocks"], vb["target_occupancy"], s)
                 m = compute_metrics(
                     preds,
@@ -395,12 +354,11 @@ def train_model(model, train_loader, val_loader, config, model_name, device="cud
 def create_quick_data_inputs(batch_size=1):
     """Create dummy inputs for testing when no real data is available."""
     return {
-        "height_planes": torch.randn(batch_size, 5, 1, 16, 16),
-        "biome_quart": torch.randn(batch_size, 6, 4, 4, 4),
-        "router6": torch.randn(batch_size, 6, 1, 16, 16),
-        "chunk_pos": torch.randn(batch_size, 2),
-        "lod": torch.randint(0, 4, (batch_size, 1)),
-        # parent_voxel omitted in quick mode; we synthesize per model as needed
+        "height_planes": torch.randn(batch_size, 5, 16, 16),
+        "router6": torch.randn(batch_size, 6, 16, 16),
+        "biome_idx": torch.randint(0, 256, (batch_size, 16, 16)),
+        "y_index": torch.randint(0, 24, (batch_size,)),
+        "parent_voxel": torch.zeros(batch_size, 1, 8, 8, 8),  # rebuilt per-model as needed
         "target_blocks": torch.randint(0, 1104, (batch_size, 16, 16, 16)),
         "target_occupancy": torch.randint(0, 2, (batch_size, 16, 16, 16)),
     }
@@ -427,10 +385,10 @@ def main():
     device = args.device if torch.cuda.is_available() else "cpu"
     print(f"Using device: {device}")
 
-    # Create model config
+    # Model config
     model_config = SimpleFlexibleConfig()
 
-    # Create dummy data loader
+    # Create dummy data loader for --quick mode
     class DummyDataLoader:
         def __init__(self, batch_size):
             self.batch_size = batch_size
@@ -438,6 +396,9 @@ def main():
         def __iter__(self):
             for _ in range(20):  # 20 dummy batches
                 yield create_quick_data_inputs(self.batch_size)
+
+        def __len__(self):
+            return 20
 
     if args.quick:
         print("Using dummy data for quick testing...")

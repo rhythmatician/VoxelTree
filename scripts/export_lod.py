@@ -1,20 +1,27 @@
 #!/usr/bin/env python3
-"""LODiffusion Contract Export
+"""LODiffusion Progressive Export — 4 Separate ONNX Models
 
-Exports a trained VoxelTree model to the strict LODiffusion runtime contract:
-Inputs (static batch=1):
-  x_parent : [1,1,8,8,8]          float32 (0/1 occupancy)
-  x_biome  : [1,N_biomes,16,16,1] float32 (one-hot, 16x16 chunk grid)
-  x_height : [1,1,16,16,1]        float32 (normalized 0..1, 16x16 chunk grid)
-  x_lod    : [1,1]                float32 (LOD scalar in [1,4])
+Exports 4 separate progressive LOD models to ONNX for the LODiffusion runtime:
 
-Outputs:
-  block_logits : [1,N_blocks,16,16,16]
-  air_mask     : [1,1,16,16,16]
+  init_to_lod4.onnx        — Conditioning → 1×1×1  (tiny MLP)
+  refine_lod4_to_lod3.onnx — 1³ parent → 2×2×2     (small Conv3D)
+  refine_lod3_to_lod2.onnx — 2³ parent → 4×4×4     (medium Conv3D)
+  refine_lod2_to_lod1.onnx — 4³ parent → 8×8×8     (medium-large Conv3D)
 
-The adapter squeezes the trailing dim from 2D inputs (biome, height), converts
-one-hot biome to integer IDs, and passes everything to SimpleFlexibleUNet3D with
-fixed y_index=12 and integer lod.
+LOD0 is NOT exported — vanilla terrain handles full resolution.
+
+Each model receives anchor conditioning inputs:
+  x_height_planes : [1, 5, 16, 16]   float32
+  x_router6       : [1, 6, 16, 16]   float32
+  x_biome         : [1, 16, 16]      int64
+  x_y_index       : [1]              int64
+
+Refinement models additionally receive:
+  x_parent        : [1, 1, P, P, P]  float32   (P = output_size // 2)
+
+All models output:
+  block_logits    : [1, N_blocks, D, D, D]
+  air_mask        : [1, 1, D, D, D]
 """
 
 from __future__ import annotations
@@ -27,21 +34,39 @@ import subprocess
 import sys
 from pathlib import Path
 from typing import Any, Dict
+
 import numpy as np
 import torch
-import torch.nn.functional as F
 import yaml
 
-# Ensure the repo root (VoxelTree/) is on sys.path so `train.*` imports work
-# regardless of which directory this script is invoked from.
+# Ensure the repo root (VoxelTree/) is on sys.path
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-
-from train.unet3d import SimpleFlexibleConfig, SimpleFlexibleUNet3D  # noqa: E402
+from train.progressive_lod_models import (  # noqa: E402
+    ProgressiveLODModel,
+    ProgressiveLODModel0_Initial,
+    create_init_model,
+    create_lod2_to_lod1_model,
+    create_lod3_to_lod2_model,
+    create_lod4_to_lod3_model,
+)
+from train.unet3d import SimpleFlexibleConfig  # noqa: E402
 
 LOGGER = logging.getLogger("export_lod")
+
+# ─── Model step definitions ─────────────────────────────────────────────
+# Each entry: (model_key, factory_func, output_size, parent_size, onnx_filename)
+MODEL_STEPS = [
+    ("init_to_lod4", create_init_model, 1, 0, "init_to_lod4.onnx"),
+    ("lod4to3", create_lod4_to_lod3_model, 2, 1, "refine_lod4_to_lod3.onnx"),
+    ("lod3to2", create_lod3_to_lod2_model, 4, 2, "refine_lod3_to_lod2.onnx"),
+    ("lod2to1", create_lod2_to_lod1_model, 8, 4, "refine_lod2_to_lod1.onnx"),
+]
+
+
+# ─── Reusable helpers ────────────────────────────────────────────────────
 
 
 def collect_export_provenance() -> Dict:
@@ -103,192 +128,81 @@ def embed_block_mapping(model_config: Dict) -> Dict:
     return model_config
 
 
-class LODiffusionAdapter(torch.nn.Module):
-    """Wraps SimpleFlexibleUNet3D to expose the LODiffusion input contract.
+# ─── ONNX adapter wrappers ──────────────────────────────────────────────
 
-    Input contract (static batch=1):
-      x_parent : (1,1,8,8,8)          float32  0/1 occupancy
-      x_biome  : (1,N_biomes,16,16,1) float32  one-hot biome per cell
-      x_height : (1,1,16,16,1)        float32  normalized 0..1
-      x_lod    : (1,1)                float32  LOD scalar 1..4
 
-    Output contract:
-      block_logits : (1,N_blocks,16,16,16)
-      air_mask     : (1,1,16,16,16)
+class InitModelAdapter(torch.nn.Module):
+    """Adapter for Init→LOD4 model (no parent).
+
+    ONNX inputs:
+      x_height_planes : [1, 5, 16, 16]  float32
+      x_router6       : [1, 6, 16, 16]  float32
+      x_biome         : [1, 16, 16]     int64
+      x_y_index       : [1]             int64
+
+    ONNX outputs:
+      block_logits : [1, N_blocks, 1, 1, 1]
+      air_mask     : [1, 1, 1, 1, 1]
     """
 
-    def __init__(self, model: SimpleFlexibleUNet3D, biome_vocab_size: int):
-        super().__init__()
-        self.model = model
-        self.biome_vocab_size = biome_vocab_size
-
-    def forward(self, x_parent, x_biome, x_height, x_lod):  # type: ignore
-        # x_parent: (1,1,8,8,8)
-        # x_biome:  (1,N_biomes,16,16,1) one-hot  → squeeze → (1,N_biomes,16,16)
-        # x_height: (1,1,16,16,1)                 → squeeze → (1,1,16,16)
-        # x_lod:    (1,1)
-
-        x_biome = x_biome.squeeze(-1)  # (1, N_biomes, 16, 16)
-        x_height = x_height.squeeze(-1)  # (1, 1, 16, 16)
-
-        # One-hot → integer biome IDs, already at 16×16 resolution
-        biome_patch = torch.argmax(x_biome, dim=1).long()  # (1, 16, 16)
-
-        # y_index fixed to midpoint slab 12
-        batch = x_parent.shape[0]
-        y_index = torch.full((batch,), 12, device=x_parent.device, dtype=torch.long)
-
-        # LOD float → integer index, clamped 1..4
-        lod = torch.clamp(torch.round(x_lod.squeeze(-1)).long(), 1, 4)  # (B,)
-
-        outputs = self.model(
-            parent_voxel=x_parent,
-            biome_patch=biome_patch,
-            heightmap_patch=x_height,
-            y_index=y_index,
-            lod=lod,
-        )
-        # Return (block_logits, air_mask) to match contract output ordering
-        return outputs["block_type_logits"], outputs["air_mask_logits"]
-
-
-class LODiffusionAdapterV2(torch.nn.Module):
-    """Wraps SimpleFlexibleUNet3D to expose the LODiffusion v2 input contract.
-
-    v2 drops the legacy one-hot biome and scalar heightmap in favour of:
-      x_parent        : (1, 1,  8,  8,  8)  float32  binary occupancy
-      x_height_planes : (1, 5, 16, 16)      float32  5-plane heightmap
-      x_router6       : (1, 6, 16, 16)      float32  normalised router6
-      x_biome         : (1, 16, 16)         int64    biome integer index
-      x_y_index       : (1,)                int64    y-slab index 0..23
-      x_lod           : (1,)                int64    LOD token 1..4
-
-    Outputs (same as v1):
-      block_logits : (1, N_blocks, 16, 16, 16)
-      air_mask     : (1, 1, 16, 16, 16)
-    """
-
-    def __init__(self, model: SimpleFlexibleUNet3D):
+    def __init__(self, model: ProgressiveLODModel0_Initial):
         super().__init__()
         self.model = model
 
-    def forward(  # type: ignore
+    def forward(
         self,
-        x_parent: torch.Tensor,  # (1,1,8,8,8) float32
-        x_height_planes: torch.Tensor,  # (1,5,16,16) float32
-        x_router6: torch.Tensor,  # (1,6,16,16) float32
-        x_biome: torch.Tensor,  # (1,16,16)   int64
-        x_y_index: torch.Tensor,  # (1,)        int64
-        x_lod: torch.Tensor,  # (1,)        int64
+        x_height_planes: torch.Tensor,
+        x_router6: torch.Tensor,
+        x_biome: torch.Tensor,
+        x_y_index: torch.Tensor,
     ):
-        # Build a legacy heightmap_patch [1,1,16,16] from height_planes[0] (surface plane)
-        # so the model's fallback biome/height tensors are properly shaped.
-        heightmap_patch = x_height_planes[:, 0:1, :, :]  # (1,1,16,16)
-
-        outputs = self.model(
-            parent_voxel=x_parent,
-            biome_patch=x_biome,  # integer indices expected by forward()
-            heightmap_patch=heightmap_patch,
-            y_index=x_y_index.squeeze(-1),  # (B,)
-            lod=x_lod.squeeze(-1),  # (B,)
+        out = self.model(
             height_planes=x_height_planes,
             router6=x_router6,
+            biome_indices=x_biome,
+            y_index=x_y_index,
         )
-        return outputs["block_type_logits"], outputs["air_mask_logits"]
+        return out["block_type_logits"], out["air_mask_logits"]
 
 
-def export_contract_v2(adapter: LODiffusionAdapterV2, cfg: Dict, out_dir: Path):
-    """Export ONNX model+sidecar for the lodiffusion.v2 contract."""
-    out_dir.mkdir(parents=True, exist_ok=True)
-    adapter.eval()
+class RefinementModelAdapter(torch.nn.Module):
+    """Adapter for refinement models (LOD4→3, LOD3→2, LOD2→1).
 
-    biome_vocab = cfg["model"].get("biome_vocab_size", 256)
-    block_vocab = cfg["model"].get("block_vocab_size", 1102)
+    ONNX inputs:
+      x_height_planes : [1, 5, 16, 16]   float32
+      x_router6       : [1, 6, 16, 16]   float32
+      x_biome         : [1, 16, 16]      int64
+      x_y_index       : [1]              int64
+      x_parent        : [1, 1, P, P, P]  float32
 
-    dummy = (
-        torch.rand(1, 1, 8, 8, 8),  # x_parent
-        torch.rand(1, 5, 16, 16),  # x_height_planes
-        torch.rand(1, 6, 16, 16),  # x_router6
-        torch.randint(0, biome_vocab, (1, 16, 16), dtype=torch.long),  # x_biome
-        torch.tensor([12], dtype=torch.long),  # x_y_index
-        torch.tensor([2], dtype=torch.long),  # x_lod
-    )
+    ONNX outputs:
+      block_logits : [1, N_blocks, D, D, D]
+      air_mask     : [1, 1, D, D, D]
+    """
 
-    onnx_path = out_dir / "model.onnx"
-    torch.onnx.export(
-        adapter,
-        dummy,
-        onnx_path,
-        export_params=True,
-        opset_version=17,
-        do_constant_folding=True,
-        input_names=["x_parent", "x_height_planes", "x_router6", "x_biome", "x_y_index", "x_lod"],
-        output_names=["block_logits", "air_mask"],
-        dynamic_axes=None,
-        dynamo=False,  # Force legacy TorchScript-based exporter
-    )
-    LOGGER.info("Exported v2 ONNX model: %s", onnx_path)
+    def __init__(self, model: ProgressiveLODModel):
+        super().__init__()
+        self.model = model
 
-    # Sidecar model_config.json (v2)
-    model_config: Dict[str, Any] = {
-        "version": "2.0.0",
-        "contract": "lodiffusion.v2",
-        "inputs": {
-            "x_parent": [1, 1, 8, 8, 8],
-            "x_height_planes": [1, 5, 16, 16],
-            "x_router6": [1, 6, 16, 16],
-            "x_biome": [1, 16, 16],
-            "x_y_index": [1],
-            "x_lod": [1],
-        },
-        "input_dtypes": {
-            "x_parent": "float32",
-            "x_height_planes": "float32",
-            "x_router6": "float32",
-            "x_biome": "int64",
-            "x_y_index": "int64",
-            "x_lod": "int64",
-        },
-        "outputs": {
-            "block_logits": [1, block_vocab, 16, 16, 16],
-            "air_mask": [1, 1, 16, 16, 16],
-        },
-        "assumptions": {
-            "lod_range": [1, 4],
-            "y_index_range": [0, 23],
-            "height_planes_normalized": True,
-            "router6_normalized": True,
-        },
-        "normalization": {
-            "router6": {
-                "mean": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                "std": [1.0, 1.0, 1.0, 1.0, 1.0, 1.0],
-            }
-        },
-        "biome_vocab_size": biome_vocab,
-        "block_vocab_size": block_vocab,
-        "provenance": collect_export_provenance(),
-    }
-    model_config = embed_block_mapping(model_config)
-    with open(out_dir / "model_config.json", "w") as f:
-        json.dump(model_config, f, indent=2)
+    def forward(
+        self,
+        x_height_planes: torch.Tensor,
+        x_router6: torch.Tensor,
+        x_biome: torch.Tensor,
+        x_y_index: torch.Tensor,
+        x_parent: torch.Tensor,
+    ):
+        out = self.model(
+            height_planes=x_height_planes,
+            router6=x_router6,
+            biome_indices=x_biome,
+            y_index=x_y_index,
+            x_parent=x_parent,
+        )
+        return out["block_type_logits"], out["air_mask_logits"]
 
-    # Test vectors
-    with torch.no_grad():
-        block_logits, air_mask = adapter(*dummy)
-    np.savez(
-        out_dir / "test_vectors.npz",
-        x_parent=dummy[0].cpu().numpy(),
-        x_height_planes=dummy[1].cpu().numpy(),
-        x_router6=dummy[2].cpu().numpy(),
-        x_biome=dummy[3].cpu().numpy(),
-        x_y_index=dummy[4].cpu().numpy(),
-        x_lod=dummy[5].cpu().numpy(),
-        block_logits=block_logits.cpu().numpy(),
-        air_mask=air_mask.cpu().numpy(),
-    )
-    LOGGER.info("Wrote test vectors: %s", out_dir / "test_vectors.npz")
-    return onnx_path
+
+# ─── Export logic ────────────────────────────────────────────────────────
 
 
 def load_config(path: Path) -> Dict:
@@ -296,127 +210,245 @@ def load_config(path: Path) -> Dict:
         return yaml.safe_load(f)
 
 
-def build_model(cfg: Dict) -> SimpleFlexibleUNet3D:
-    """Build model from config, passing only fields known to SimpleFlexibleConfig."""
-    mcfg = cfg.get("model", {})
-    valid_fields = set(inspect.signature(SimpleFlexibleConfig).parameters.keys())
-    filtered = {k: v for k, v in mcfg.items() if k in valid_fields}
-    model_cfg = SimpleFlexibleConfig(**filtered)
-    return SimpleFlexibleUNet3D(model_cfg)
-
-
-def load_checkpoint(model: SimpleFlexibleUNet3D, checkpoint: Path):
-    ckpt = torch.load(checkpoint, map_location="cpu", weights_only=False)
-    state_dict = ckpt.get("model_state_dict", ckpt.get("model_state", ckpt))
-    model.load_state_dict(state_dict, strict=False)
-    LOGGER.info("Loaded checkpoint: %s", checkpoint)
-
-
-def export_contract(adapter: LODiffusionAdapter, cfg: Dict, out_dir: Path):
+def export_step(
+    adapter: torch.nn.Module,
+    step_name: str,
+    output_size: int,
+    parent_size: int,
+    onnx_filename: str,
+    cfg: Dict,
+    out_dir: Path,
+) -> Path:
+    """Export a single progressive step to ONNX with sidecar config + test vectors."""
     out_dir.mkdir(parents=True, exist_ok=True)
-    model = adapter
-    model.eval()
+    adapter.eval()
 
-    biome_vocab = cfg["model"].get("biome_vocab_size", 256)
-    block_vocab = cfg["model"].get("block_vocab_size", 1102)
+    biome_vocab = cfg.get("model", {}).get("biome_vocab_size", 256)
+    block_vocab = cfg.get("model", {}).get("block_vocab_size", 1102)
 
-    dummy = (
-        torch.rand(1, 1, 8, 8, 8),  # x_parent (already 0..1)
-        F.one_hot(torch.randint(0, biome_vocab, (1, 16, 16)), num_classes=biome_vocab)
-        .permute(0, 3, 1, 2)
-        .unsqueeze(-1)
-        .float(),  # x_biome: 16x16 chunk size
-        torch.rand(1, 1, 16, 16, 1),  # x_height: 16x16 chunk size
-        torch.randint(1, 5, (1, 1)).float(),  # x_lod
-    )
+    # Build dummy inputs
+    dummy_height = torch.rand(1, 5, 16, 16)
+    dummy_router = torch.rand(1, 6, 16, 16)
+    dummy_biome = torch.randint(0, biome_vocab, (1, 16, 16), dtype=torch.long)
+    dummy_y = torch.tensor([12], dtype=torch.long)
 
-    onnx_path = out_dir / "model.onnx"
+    if parent_size == 0:
+        # Init model — no parent
+        dummy = (dummy_height, dummy_router, dummy_biome, dummy_y)
+        input_names = ["x_height_planes", "x_router6", "x_biome", "x_y_index"]
+        inputs_spec = {
+            "x_height_planes": [1, 5, 16, 16],
+            "x_router6": [1, 6, 16, 16],
+            "x_biome": [1, 16, 16],
+            "x_y_index": [1],
+        }
+        input_dtypes = {
+            "x_height_planes": "float32",
+            "x_router6": "float32",
+            "x_biome": "int64",
+            "x_y_index": "int64",
+        }
+    else:
+        # Refinement model — with parent
+        dummy_parent = torch.rand(1, 1, parent_size, parent_size, parent_size)
+        dummy = (dummy_height, dummy_router, dummy_biome, dummy_y, dummy_parent)
+        input_names = ["x_height_planes", "x_router6", "x_biome", "x_y_index", "x_parent"]
+        inputs_spec = {
+            "x_height_planes": [1, 5, 16, 16],
+            "x_router6": [1, 6, 16, 16],
+            "x_biome": [1, 16, 16],
+            "x_y_index": [1],
+            "x_parent": [1, 1, parent_size, parent_size, parent_size],
+        }
+        input_dtypes = {
+            "x_height_planes": "float32",
+            "x_router6": "float32",
+            "x_biome": "int64",
+            "x_y_index": "int64",
+            "x_parent": "float32",
+        }
+
+    onnx_path = out_dir / onnx_filename
     torch.onnx.export(
-        model,
+        adapter,
         dummy,
         onnx_path,
         export_params=True,
         opset_version=17,
         do_constant_folding=True,
-        input_names=["x_parent", "x_biome", "x_height", "x_lod"],
+        input_names=input_names,
         output_names=["block_logits", "air_mask"],
         dynamic_axes=None,
+        dynamo=False,
     )
-    LOGGER.info("Exported ONNX model: %s", onnx_path)
+    LOGGER.info("Exported %s → %s", step_name, onnx_path)
 
-    # Sidecar model_config.json
-    model_config = {
-        "version": "1.0.0",
-        "contract": "lodiffusion.v1",
-        "inputs": {
-            "x_parent": [1, 1, 8, 8, 8],
-            "x_biome": [1, biome_vocab, 16, 16, 1],  # 16x16 chunk size
-            "x_height": [1, 1, 16, 16, 1],  # 16x16 chunk size
-            "x_lod": [1, 1],
-        },
+    # ── Per-model sidecar config ─────────────────────────────────────
+    D = output_size
+    model_config: Dict[str, Any] = {
+        "version": "3.0.0",
+        "contract": "lodiffusion.v3.progressive",
+        "step": step_name,
+        "inputs": inputs_spec,
+        "input_dtypes": input_dtypes,
         "outputs": {
-            "block_logits": [1, block_vocab, 16, 16, 16],
-            "air_mask": [1, 1, 16, 16, 16],
+            "block_logits": [1, block_vocab, D, D, D],
+            "air_mask": [1, 1, D, D, D],
         },
+        "parent_resolution": parent_size,
+        "output_resolution": D,
         "assumptions": {
-            "y_index_fixed": 12,
-            "river_patch": "zeros",
-            "lod_range": [1, 4],
-            "height_normalized": True,
+            "y_index_range": [0, 23],
+            "height_planes_normalized": True,
+            "router6_normalized": True,
         },
         "biome_vocab_size": biome_vocab,
         "block_vocab_size": block_vocab,
         "provenance": collect_export_provenance(),
     }
-    # Embed complete block mapping for self-contained exports
     model_config = embed_block_mapping(model_config)
-    with open(out_dir / "model_config.json", "w") as f:
+
+    config_name = onnx_filename.replace(".onnx", "_config.json")
+    with open(out_dir / config_name, "w") as f:
         json.dump(model_config, f, indent=2)
 
-    # Test vectors (inputs + forward outputs)
+    # ── Test vectors ──────────────────────────────────────────────────
     with torch.no_grad():
-        block_logits, air_mask = model(*dummy)
-    np.savez(
-        out_dir / "test_vectors.npz",
-        x_parent=dummy[0].cpu().numpy(),
-        x_biome=dummy[1].cpu().numpy(),
-        x_height=dummy[2].cpu().numpy(),
-        x_lod=dummy[3].cpu().numpy(),
-        block_logits=block_logits.cpu().numpy(),
-        air_mask=air_mask.cpu().numpy(),
-    )
-    LOGGER.info("Wrote test vectors: %s", out_dir / "test_vectors.npz")
+        block_logits, air_mask = adapter(*dummy)
+
+    vectors = {
+        "x_height_planes": dummy_height.cpu().numpy(),
+        "x_router6": dummy_router.cpu().numpy(),
+        "x_biome": dummy_biome.cpu().numpy(),
+        "x_y_index": dummy_y.cpu().numpy(),
+        "block_logits": block_logits.cpu().numpy(),
+        "air_mask": air_mask.cpu().numpy(),
+    }
+    if parent_size > 0:
+        vectors["x_parent"] = dummy[-1].cpu().numpy()
+
+    vectors_name = onnx_filename.replace(".onnx", "_test_vectors.npz")
+    np.savez(out_dir / vectors_name, **vectors)
+    LOGGER.info("Wrote test vectors: %s", out_dir / vectors_name)
 
     return onnx_path
 
 
+def load_progressive_checkpoint(
+    config: SimpleFlexibleConfig,
+    checkpoint_path: Path,
+) -> Dict[str, torch.nn.Module]:
+    """Load a multi-model checkpoint and return per-step models.
+
+    Supports the new per-step checkpoint format with ``model_state_dicts``.
+    """
+    ckpt = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+
+    if "model_state_dicts" in ckpt:
+        state_dicts = ckpt["model_state_dicts"]
+        LOGGER.info("Loaded per-step checkpoint with keys: %s", list(state_dicts.keys()))
+    else:
+        raise ValueError(
+            f"Checkpoint {checkpoint_path} has no 'model_state_dicts' key. "
+            "Expected a multi-model checkpoint from train_multi_lod.py. "
+            f"Available keys: {list(ckpt.keys())}"
+        )
+
+    models: Dict[str, torch.nn.Module] = {}
+    for key, factory, output_size, parent_size, _ in MODEL_STEPS:
+        model = factory(config)
+        if key in state_dicts:
+            model.load_state_dict(state_dicts[key], strict=False)
+            LOGGER.info("Loaded state dict for %s (output %d³)", key, output_size)
+        else:
+            LOGGER.warning("No state dict for %s — using random weights", key)
+        models[key] = model
+
+    return models
+
+
 def main():
-    parser = argparse.ArgumentParser(description="Export VoxelTree model to LODiffusion contract")
-    parser.add_argument("--config", type=Path, default=Path("config.yaml"))
-    parser.add_argument("--checkpoint", type=Path, required=True)
-    parser.add_argument("--out-dir", type=Path, default=Path("production"))
+    parser = argparse.ArgumentParser(
+        description="Export progressive LOD models to 4 separate ONNX files"
+    )
+    parser.add_argument(
+        "--config",
+        type=Path,
+        default=Path("config_multi_lod.yaml"),
+        help="Training config YAML (for model hyperparams)",
+    )
+    parser.add_argument(
+        "--checkpoint",
+        type=Path,
+        required=True,
+        help="Multi-model .pt checkpoint from train_multi_lod.py",
+    )
+    parser.add_argument(
+        "--out-dir",
+        type=Path,
+        default=Path("production"),
+        help="Output directory for ONNX files",
+    )
     parser.add_argument("--log-level", default="INFO")
     args = parser.parse_args()
 
     logging.basicConfig(level=getattr(logging, args.log_level.upper()))
 
     cfg = load_config(args.config)
-    model = build_model(cfg)
-    load_checkpoint(model, args.checkpoint)
 
-    # Detect contract version from config (export.contract or v2 marker keys)
-    export_cfg = cfg.get("export", {})
-    contract = export_cfg.get("contract", "lodiffusion.v1")
+    # Build SimpleFlexibleConfig from YAML
+    mcfg = cfg.get("model", {})
+    valid_fields = set(inspect.signature(SimpleFlexibleConfig).parameters.keys())
+    filtered = {k: v for k, v in mcfg.items() if k in valid_fields}
+    config = SimpleFlexibleConfig(**filtered)
 
-    if contract == "lodiffusion.v2":
-        LOGGER.info("Exporting lodiffusion.v2 contract (anchor channels)")
-        adapter_v2 = LODiffusionAdapterV2(model)
-        export_contract_v2(adapter_v2, cfg, args.out_dir)
-    else:
-        LOGGER.info("Exporting lodiffusion.v1 contract (legacy one-hot)")
-        adapter_v1 = LODiffusionAdapter(model, cfg["model"].get("biome_vocab_size", 256))
-        export_contract(adapter_v1, cfg, args.out_dir)
+    # Load per-step models from checkpoint
+    models = load_progressive_checkpoint(config, args.checkpoint)
+
+    LOGGER.info("Exporting 4 progressive LOD models to %s", args.out_dir)
+
+    exported = []
+    for key, factory, output_size, parent_size, onnx_filename in MODEL_STEPS:
+        model = models[key]
+        if parent_size == 0:
+            adapter = InitModelAdapter(model)
+        else:
+            adapter = RefinementModelAdapter(model)
+
+        path = export_step(
+            adapter=adapter,
+            step_name=key,
+            output_size=output_size,
+            parent_size=parent_size,
+            onnx_filename=onnx_filename,
+            cfg=cfg,
+            out_dir=args.out_dir,
+        )
+        exported.append(path)
+
+    # Write a pipeline manifest listing all exported models
+    manifest = {
+        "version": "3.0.0",
+        "contract": "lodiffusion.v3.progressive",
+        "pipeline": [
+            {
+                "step": key,
+                "onnx": fn,
+                "output_resolution": out,
+                "parent_resolution": par,
+            }
+            for key, _, out, par, fn in MODEL_STEPS
+        ],
+        "provenance": collect_export_provenance(),
+    }
+    manifest = embed_block_mapping(manifest)
+    with open(args.out_dir / "pipeline_manifest.json", "w") as f:
+        json.dump(manifest, f, indent=2)
+
+    LOGGER.info("Export complete. Manifest: %s", args.out_dir / "pipeline_manifest.json")
+    for p in exported:
+        LOGGER.info("  %s", p)
 
 
-if __name__ == "__main__":  # pragma: no cover
+if __name__ == "__main__":
     main()

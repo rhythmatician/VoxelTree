@@ -2052,3 +2052,22 @@ Separate models will almost certainly be faster and easier to integrate.
 
 
 
+## Priority & Cost/Benefit Analysis
+
+| # | Item | Priority | Cost | Benefit | Action |
+|---|------|----------|------|---------|--------|
+| 1 | **Drop LOD0** (vanilla authoritative) | **NOW** | Low | High — removes hardest model, simplifies scope | Update docs + configs, remove LOD1→0 references |
+| 2 | **Revert to separate models per LOD** | **NOW** | Medium | High — correct tensor sizes, better ONNX perf, per-step capacity | Update docs, configs, training pipeline |
+| 3 | **Drop carvers + expensive noise** | **NOW** | Low | Medium — simpler inputs, less anchor compute | Remove cave_prior/aquifer/barrier, simplify docs |
+| 4 | **Insert-only RocksDB policy** | **NOW** | Low | High — prevents data conflicts, respects Voxy | Document policy, add guard comments |
+| 5 | **Skip underground subchunks** | Design now | Medium | Very High — biggest perf lever | Document visibility rule, implement later |
+| 6 | **Demand-driven Voxy hook** | Design now | High | Very High — right architecture | Document target design, requires Voxy investigation |
+| 7 | **Queue system w/ prereq chains** | Design now | Medium | High — enables #6 | Document, implement with #6 |
+| 8 | **Capacity scaling per LOD** | Enabled by #2 | Free | Medium — smaller coarse models | Flows naturally from separate models |
+| 9 | **Cave conditioning (x_cave)** | Future | Medium | Medium — contradicts #3 simplification | Mark as Phase 2 idea |
+| 10 | **Residual prediction** | Idea | Medium | Medium — training experiment | Note as experiment to try |
+| 11 | **Single-seed generalization test** | Idea | Low | Medium — cheap validation signal | Note, run when convenient |
+| 12 | **Transition quality focus** | Depends on #6 | High | Critical — the make-or-break UX | Document priority, defer implementation |
+| 13 | **Neural terrain generator comparison** | Idea | Low | Low — research interest | Note for fun |
+
+Items 1–4 are actionable right now.

@@ -71,15 +71,15 @@ def create_lod_training_pairs(
     is the Mipper output at LOD N, upsampled to the canonical 8³ input.  The
     target is the Mipper output at LOD N-1, upsampled to 16³.
 
-    Transitions produced (coarsening factor → parent → target):
-        f=2   → 8³ parent (LOD1), target = labels16       (LOD0, 16³)  — LOD1→LOD0
-        f=4   → 4³→8³ parent (LOD2), target = mip(·,2)→16³ (LOD1)    — LOD2→LOD1
-        f=8   → 2³→8³ parent (LOD3), target = mip(·,4)→16³ (LOD2)    — LOD3→LOD2
-        f=16  → 1³→8³ parent (LOD4), target = mip(·,8)→16³ (LOD3)    — LOD4→LOD3
+    Transitions produced (4 total, no LOD0 — vanilla handles that):
+        init_to_lod4  → no parent,      target = mip(·,16)→16³ (LOD4)  — Init
+        f=16 (lod4to3) → 1³→8³ parent (LOD4), target = mip(·,8)→16³ (LOD3)
+        f=8  (lod3to2) → 2³→8³ parent (LOD3), target = mip(·,4)→16³ (LOD2)
+        f=4  (lod2to1) → 4³→8³ parent (LOD2), target = mip(·,2)→16³ (LOD1)
 
-    At runtime, LODiffusion chains these: LOD4→LOD3→LOD2→LOD1→LOD0, each step
-    adding one level of detail.  Training mirrors this so the model only ever
-    learns tractable 2× super-resolution.
+    All targets are stored at 16³ for uniform cache/collation.  The training
+    loop downsamples them to match each model's native output resolution
+    (1³, 2³, 4³, 8³) before computing loss.
 
     Anchor channels (height_planes, router6) are passed through directly when
     available from NoiseDumper extraction.  When None, they are approximated
@@ -221,7 +221,45 @@ def create_lod_training_pairs(
 
     training_pairs: List[Dict] = []
 
-    for f in (2, 4, 8, 16):
+    # ------------------------------------------------------------------
+    # Init → LOD4 pair (no parent, target is the single-voxel mip)
+    # ------------------------------------------------------------------
+    init_labels, init_occ = mip_volume_numpy(labels16, 16, tbl)
+    # init_labels / init_occ: shape (1, 1, 1)
+    # Upsample to 16³ for uniform cache shape
+    init_target_labels = np.repeat(
+        np.repeat(np.repeat(init_labels, 16, axis=0), 16, axis=1), 16, axis=2
+    ).astype(np.int64)
+    init_target_occ = np.repeat(
+        np.repeat(np.repeat(init_occ.astype(np.float32), 16, axis=0), 16, axis=1), 16, axis=2
+    )
+
+    training_pairs.append(
+        {
+            # --- model inputs (per-sample shapes, no batch dim) ---
+            "parent_voxel": np.zeros((1, 8, 8, 8), dtype=np.float32),  # init model ignores parent
+            "biome_patch": biome_idx,  # (16,16) int64 indices
+            "biome_idx": biome_idx,  # (16,16) integer indices
+            "heightmap_patch": heightmap_tensor,  # (1,16,16)  C=1
+            "height_planes": height_planes,  # (5,16,16)
+            "router6": router6_tensor,  # (6,16,16)
+            "y_index": np.int64(y_index),  # scalar
+            "lod": np.int64(4),  # LOD4 (coarsest)
+            # --- targets (upsampled to 16³ for uniform storage) ---
+            "target_mask": init_target_occ,  # (16,16,16) float32
+            "target_types": init_target_labels,  # (16,16,16) int64
+            # --- metadata ---
+            "lod_transition": "init_to_lod4",
+            "parent_size": 0,  # no parent for init
+            "target_size": 16,
+        }
+    )
+
+    # ------------------------------------------------------------------
+    # Refinement pairs: LOD4→LOD3, LOD3→LOD2, LOD2→LOD1
+    # (f=2 / LOD1→LOD0 deliberately dropped — vanilla handles LOD0)
+    # ------------------------------------------------------------------
+    for f in (4, 8, 16):
         # ------------------------------------------------------------------
         # Parent: coarsen labels16 by factor f using the Voxy Mipper,
         # then nearest-upsample to canonical 8³.
@@ -242,35 +280,29 @@ def create_lod_training_pairs(
 
         # ------------------------------------------------------------------
         # Target: one level finer than the parent (incremental refinement).
-        #   f=2  → target is LOD0 = labels16           (already 16³)
         #   f=4  → target is LOD1 = mip(labels16, 2)   → upsample to 16³
         #   f=8  → target is LOD2 = mip(labels16, 4)   → upsample to 16³
         #   f=16 → target is LOD3 = mip(labels16, 8)   → upsample to 16³
         # ------------------------------------------------------------------
         f_target = f // 2  # coarsening factor for the target LOD level
 
-        if f_target == 1:
-            # Target is full-detail LOD0
-            target_labels = labels16.astype(np.int64)  # (16,16,16)
-            target_occ = create_occupancy_from_blocks(labels16, air_id).astype(np.float32)
-        else:
-            # Target is the next-finer LOD level, upsampled to 16³
-            tgt_labels, tgt_occ = mip_volume_numpy(labels16, f_target, tbl)
-            # shape: (16//f_target, 16//f_target, 16//f_target)
-            tgt_size = tgt_labels.shape[0]  # 8, 4, or 2
-            up = 16 // tgt_size
-            target_labels = np.repeat(
-                np.repeat(np.repeat(tgt_labels, up, axis=0), up, axis=1),
-                up,
-                axis=2,
-            ).astype(
-                np.int64
-            )  # (16,16,16)
-            target_occ = np.repeat(
-                np.repeat(np.repeat(tgt_occ.astype(np.float32), up, axis=0), up, axis=1),
-                up,
-                axis=2,
-            )  # (16,16,16)
+        # Target is the next-finer LOD level, upsampled to 16³
+        tgt_labels, tgt_occ = mip_volume_numpy(labels16, f_target, tbl)
+        # shape: (16//f_target, 16//f_target, 16//f_target)
+        tgt_size = tgt_labels.shape[0]  # 8, 4, or 2
+        up = 16 // tgt_size
+        target_labels = np.repeat(
+            np.repeat(np.repeat(tgt_labels, up, axis=0), up, axis=1),
+            up,
+            axis=2,
+        ).astype(
+            np.int64
+        )  # (16,16,16)
+        target_occ = np.repeat(
+            np.repeat(np.repeat(tgt_occ.astype(np.float32), up, axis=0), up, axis=1),
+            up,
+            axis=2,
+        )  # (16,16,16)
 
         lod_token = int(math.log2(f))  # 1, 2, 3, 4
         target_lod = lod_token - 1  # 0, 1, 2, 3
@@ -360,7 +392,7 @@ class MultiLODDataset(Dataset):
         """Generate all possible training pairs from NPZ files."""
         # Try loading pre-computed pairs from cache
         if self.use_pair_cache:
-            cache_path = self.data_dir / f"{self.split}_pairs_v1.npz"
+            cache_path = self.data_dir / f"{self.split}_pairs_v2.npz"
             if cache_path.exists():
                 if self._load_pairs_cache(cache_path):
                     return
@@ -472,7 +504,7 @@ class MultiLODDataset(Dataset):
 
         # Cache computed pairs for fast reloading on subsequent runs
         if self.use_pair_cache and self.training_pairs:
-            cache_path = self.data_dir / f"{self.split}_pairs_v1.npz"
+            cache_path = self.data_dir / f"{self.split}_pairs_v2.npz"
             self._save_pairs_cache(cache_path)
 
     # ------------------------------------------------------------------

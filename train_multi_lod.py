@@ -40,6 +40,8 @@ from train.progressive_lod_models import (
     create_lod4_to_lod3_model,
 )
 from train.unet3d import SimpleFlexibleConfig
+from scripts.mipper import build_opacity_table as _build_opacity_table
+from scripts.mipper import mip_volume_torch as _mip_volume_torch
 
 # Default Voxy vocabulary path
 DEFAULT_VOCAB_PATH = Path("config/voxy_vocab.json")
@@ -206,6 +208,26 @@ LOD_MODEL_KEY = {
 }
 
 
+def _downsample_targets(blocks: torch.Tensor, occ: torch.Tensor, out_size: int) -> tuple:
+    """Downsample 16³ targets to ``out_size``³ using Voxy Mipper.
+
+    The dataset stores all targets at 16³ for uniform caching.  Each
+    progressive model outputs a different resolution (1/2/4/8), so we
+    mip the targets down before computing loss.
+    """
+    if out_size == 16:
+        return blocks, occ
+
+    if blocks.dim() != 4:
+        raise ValueError(f"Expected blocks shape [B,16,16,16], got {blocks.shape}")
+
+    factor = 16 // out_size
+    tbl = torch.from_numpy(_build_opacity_table(n_blocks=4096)).long().to(blocks.device)
+
+    coarse_blks, coarse_occ = _mip_volume_torch(blocks.long(), factor, tbl)
+    return coarse_blks, coarse_occ.float()
+
+
 def _forward_batch(
     models: Dict[str, nn.Module],
     batch: Dict[str, torch.Tensor],
@@ -291,6 +313,15 @@ def train_epoch(
         optimizer.zero_grad()
         predictions = _forward_batch(models, batch, device)
 
+        # Downsample 16³ targets to match model's native output resolution
+        out_size = predictions["block_type_logits"].shape[-1]
+        if out_size != 16:
+            ds_blocks, ds_occ = _downsample_targets(
+                targets["target_blocks"], targets["target_occupancy"], out_size
+            )
+            targets["target_blocks"] = ds_blocks
+            targets["target_occupancy"] = ds_occ
+
         # Compute loss
         losses = loss_fn(predictions, targets)
         loss = losses["total_loss"]
@@ -356,6 +387,15 @@ def validate_epoch(
 
             # Forward pass through the correct per-step model
             predictions = _forward_batch(models, batch, device)
+
+            # Downsample 16³ targets to match model's native output resolution
+            out_size = predictions["block_type_logits"].shape[-1]
+            if out_size != 16:
+                ds_blocks, ds_occ = _downsample_targets(
+                    targets["target_blocks"], targets["target_occupancy"], out_size
+                )
+                targets["target_blocks"] = ds_blocks
+                targets["target_occupancy"] = ds_occ
 
             # Compute loss
             losses = loss_fn(predictions, targets)
