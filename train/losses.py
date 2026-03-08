@@ -29,6 +29,9 @@ def voxel_loss_fn(
         Combined scalar loss
     """
     # Binary cross-entropy for air mask
+    # Ensure target_mask has channel dim matching air_mask_logits (B,1,H,W,D)
+    if target_mask.dim() == 4 and air_mask_logits.dim() == 5:
+        target_mask = target_mask.unsqueeze(1)
     mask_loss = F.binary_cross_entropy_with_logits(air_mask_logits, target_mask, reduction="mean")
 
     # Cross-entropy for block types (only where mask indicates solid blocks)

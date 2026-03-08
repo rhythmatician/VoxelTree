@@ -19,6 +19,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader
+from tqdm import tqdm
 
 # Add train directory to path
 sys.path.append(str(Path(__file__).parent / "train"))
@@ -186,9 +187,18 @@ def train_epoch(
     total_overall_acc = 0.0
     num_batches = 0
 
-    lod_counts = {}
+    lod_counts: dict[str, int] = {}
 
-    for batch in dataloader:
+    total_batches = len(dataloader)
+
+    for batch_idx, batch in tqdm(
+        enumerate(dataloader),
+        total=total_batches,
+        unit="batches",
+        desc="Training",
+        leave=False,
+        dynamic_ncols=True,
+    ):
         # Move to device — include anchor tensors when present
         inputs = {
             "parent_voxel": batch["parent_voxel"].to(device),
@@ -207,8 +217,8 @@ def train_epoch(
         }
 
         # Track LOD distribution
-        lod_transition = batch["lod_transition"]
-        lod_counts[lod_transition] = lod_counts.get(lod_transition, 0) + 1
+        lod_transition: str = batch["lod_transition"]
+        lod_counts[lod_transition]: int = lod_counts.get(lod_transition, 0) + 1
 
         # Forward pass
         optimizer.zero_grad()
@@ -378,10 +388,27 @@ def main():
         help="Router6 channels for anchor conditioning",
     )
     parser.add_argument(
+        "--num-workers",
+        type=int,
+        default=0,
+        help="DataLoader workers (0=main process, safest on Windows CPU)",
+    )
+    parser.add_argument(
         "--vocab",
         type=Path,
         default=DEFAULT_VOCAB_PATH,
         help="Path to Voxy vocabulary JSON (default: config/voxy_vocab.json)",
+    )
+    parser.add_argument(
+        "--resume",
+        type=Path,
+        default=None,
+        help="Path to checkpoint .pt to resume training from",
+    )
+    parser.add_argument(
+        "--no-pair-cache",
+        action="store_true",
+        help="Force regeneration of training pairs (ignore cached pairs)",
     )
 
     args = parser.parse_args()
@@ -427,16 +454,19 @@ def main():
         data_dir=args.data_dir,
         split="train",
         lod_sampling_weights={
+            # Keys must match lod_transition names: "lod{N}to{N-1}"
             "lod4to3": 0.2,
             "lod3to2": 0.25,
             "lod2to1": 0.25,
             "lod1to0": 0.3,  # Emphasize finest level
         },
+        use_pair_cache=not args.no_pair_cache,
     )
 
     val_dataset = MultiLODDataset(
         data_dir=args.data_dir,
         split="val",
+        use_pair_cache=not args.no_pair_cache,
     )
 
     # Create data loaders
@@ -445,7 +475,7 @@ def main():
         batch_size=args.batch_size,
         shuffle=True,
         collate_fn=collate_multi_lod_batch,
-        num_workers=2,
+        num_workers=args.num_workers,
         pin_memory=True if device.type == "cuda" else False,
     )
 
@@ -454,7 +484,7 @@ def main():
         batch_size=args.batch_size,
         shuffle=False,
         collate_fn=collate_multi_lod_batch,
-        num_workers=2,
+        num_workers=args.num_workers,
         pin_memory=True if device.type == "cuda" else False,
     )
 
@@ -471,13 +501,34 @@ def main():
     # Learning rate scheduler
     scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs)
 
-    # Training loop
+    # Resume from checkpoint if requested
+    start_epoch = 1
     best_val_loss = float("inf")
-    start_time = time.time()
 
+    if args.resume is not None:
+        ckpt = torch.load(args.resume, map_location=device, weights_only=False)
+        model.load_state_dict(ckpt["model_state_dict"])
+        optimizer.load_state_dict(ckpt["optimizer_state_dict"])
+        start_epoch = ckpt.get("epoch", 0) + 1
+        best_val_loss = ckpt.get("val_loss", float("inf"))
+        # Advance scheduler to match resumed epoch
+        for _ in range(start_epoch - 1):
+            scheduler.step()
+        print(
+            f"Resumed from {args.resume} "
+            f"(epoch {start_epoch - 1}, "
+            f"best_val_loss={best_val_loss:.4f})"
+        )
+
+    start_time = time.time()
     print("Starting training...")
 
-    for epoch in range(1, args.epochs + 1):
+    for epoch in tqdm(
+        range(start_epoch, args.epochs + 1),
+        unit="epochs",
+        dynamic_ncols=True,
+        desc="Training  Epochs",
+    ):
         epoch_start = time.time()
 
         # Train

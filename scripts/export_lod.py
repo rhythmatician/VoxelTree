@@ -24,15 +24,22 @@ import inspect
 import json
 import logging
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any, Dict
-
 import numpy as np
 import torch
 import torch.nn.functional as F
 import yaml
 
-from train.unet3d import SimpleFlexibleConfig, SimpleFlexibleUNet3D
+# Ensure the repo root (VoxelTree/) is on sys.path so `train.*` imports work
+# regardless of which directory this script is invoked from.
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+
+from train.unet3d import SimpleFlexibleConfig, SimpleFlexibleUNet3D  # noqa: E402
 
 LOGGER = logging.getLogger("export_lod")
 
@@ -196,7 +203,7 @@ def export_contract_v2(adapter: LODiffusionAdapterV2, cfg: Dict, out_dir: Path):
     adapter.eval()
 
     biome_vocab = cfg["model"].get("biome_vocab_size", 256)
-    block_vocab = cfg["model"].get("block_type_channels", 1102)
+    block_vocab = cfg["model"].get("block_vocab_size", 1102)
 
     dummy = (
         torch.rand(1, 1, 8, 8, 8),  # x_parent
@@ -311,7 +318,7 @@ def export_contract(adapter: LODiffusionAdapter, cfg: Dict, out_dir: Path):
     model.eval()
 
     biome_vocab = cfg["model"].get("biome_vocab_size", 256)
-    block_vocab = cfg["model"].get("block_type_channels", 1102)
+    block_vocab = cfg["model"].get("block_vocab_size", 1102)
 
     dummy = (
         torch.rand(1, 1, 8, 8, 8),  # x_parent (already 0..1)

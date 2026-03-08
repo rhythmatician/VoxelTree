@@ -465,7 +465,7 @@ or majority vote. Source of truth: `scripts/mipper.py`.
 
 - [x] Mod stack launches on 1.21.11
 - [x] Voxy renders synthetic LOD terrain (no ML yet) *(exceeded: ONNX model now active)*
-- [ ] Freeze + pregen pipeline works *(data-cli.py is a stub; no pregen command exists)*
+- [x] Freeze + pregen pipeline works *(VoxelTree/data-cli.py: RCON orchestrator with Carpet freeze + Chunky pregen; requires server with RCON enabled)*
 - [x] Anchor computation + caching functional
 
 ### Milestone 2: Dataset & Training Prep

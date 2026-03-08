@@ -200,6 +200,7 @@ class TestOnnxExportRoundtrip:
     def _skip_if_no_ort(self):
         pytest.importorskip("onnxruntime", reason="onnxruntime not installed")
         pytest.importorskip("onnx", reason="onnx not installed")
+        pytest.importorskip("onnxscript", reason="onnxscript not installed (required by torch.onnx.export)")
 
     def _export(self, onnx_path: Path):
         """Export a tiny model to ONNX and return dummy_input tuple."""

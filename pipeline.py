@@ -1,25 +1,31 @@
 #!/usr/bin/env python3
-"""pipeline.py — Two-phase training pipeline for VoxelTree.
+"""pipeline.py — Data-prep + training pipeline for VoxelTree.
 
-Phase 1: Extract training data from Voxy RocksDB databases.
-Phase 2: Train the model on extracted data.
+Stage 1 — Data preparation (idempotent, world-locked):
+  Phase 1a  extract:      Voxy RocksDB  →  data/voxy/*.npz (raw LOD0 chunks)
+  Phase 1b  build-pairs:  data/voxy/    →  data/voxy/*_pairs_v1.npz
+                          Runs the Mipper once; 4 LOD transitions per chunk.
+
+Stage 2 — Training:
+  Phase 2   train:        *_pairs_v1.npz  →  model weights
+  Phase 3   export:       checkpoint      →  production/model.onnx
 
 The pipeline supports:
-- Single-shot: extract once, train once
-- Iterative: extract → train → delete → new seed → repeat (future)
+- Single-shot: extract once, build-pairs once, train once
+- Iterative: extract → build-pairs → train → delete → new seed → repeat (future)
 
 Usage::
 
-    # Full pipeline: extract from all Voxy worlds, then train 20 epochs
+    # Full pipeline: extract + build-pairs + train + (optional) export
     python pipeline.py run \\
         --voxy-dir "C:/path/to/LODiffusion/run/saves" \\
         --epochs 20
 
-    # Extract only
-    python pipeline.py extract \\
-        --voxy-dir "C:/path/to/LODiffusion/run/saves"
+    # Data-prep only (stages 1a + 1b)
+    python pipeline.py extract  --voxy-dir "C:/path/to/LODiffusion/run/saves"
+    python pipeline.py build-pairs
 
-    # Train only (using previously extracted data)
+    # Train only (stage 2, requires data/voxy/*_pairs_v1.npz)
     python pipeline.py train --epochs 20
 
     # Export ONNX after training
@@ -46,6 +52,9 @@ VOXY_VOCAB_PATH = Path("config/voxy_vocab.json")
 DEFAULT_DATA_DIR = Path("data/voxy")
 DEFAULT_MODEL_DIR = Path("models/voxy")
 DEFAULT_EXPORT_DIR = Path("production")
+
+# Pair-cache files written by build-pairs and consumed by MultiLODDataset
+PAIRS_CACHE_GLOB = "*_pairs_v1.npz"
 
 
 def find_voxy_databases(saves_dir: Path) -> list[Path]:
@@ -121,6 +130,63 @@ def phase1_extract(
         % (n_files, elapsed, n_files / max(elapsed, 0.01))
     )
     return n_files
+
+
+def phase1b_build_pairs(
+    data_dir: Path,
+    *,
+    val_split: float = 0.1,
+    min_solid: float = 0.02,
+    clean_first: bool = False,
+) -> int:
+    """Phase 1b: Pre-compute LOD pair caches from extracted NPZ chunks.
+
+    Returns the total number of training pairs built, or 0 on failure.
+    The Mipper (3-D volume downsampling) runs exactly once per chunk here
+    instead of being repeated on every training epoch.
+    """
+    print()
+    print("=" * 70)
+    print("  PHASE 1b: Build LOD training pairs")
+    print("=" * 70)
+    print()
+
+    n_source = len(list(data_dir.glob("*.npz")))
+    # Exclude cache files from count
+    n_source -= len(list(data_dir.glob(PAIRS_CACHE_GLOB)))
+    if n_source <= 0:
+        print("ERROR: No source NPZ files in %s — run extraction first" % data_dir)
+        return 0
+    print("Source chunks: %d  in %s" % (n_source, data_dir))
+
+    cmd = [
+        sys.executable,
+        "scripts/build_pairs.py",
+        "--data-dir",
+        str(data_dir),
+        "--val-split",
+        str(val_split),
+        "--min-solid",
+        str(min_solid),
+    ]
+    if clean_first:
+        cmd.append("--clean")
+
+    t0 = time.time()
+    result = subprocess.run(cmd, cwd=str(Path(__file__).parent))
+    elapsed = time.time() - t0
+
+    if result.returncode != 0:
+        print("ERROR: build-pairs failed with exit code %d" % result.returncode)
+        return 0
+
+    # Count pairs from written cache files
+    cache_files = list(data_dir.glob(PAIRS_CACHE_GLOB))
+    if not cache_files:
+        return 0
+    print()
+    print("Phase 1b complete in %.1fs" % elapsed)
+    return sum(1 for _ in cache_files)  # success indicator
 
 
 def phase2_train(
@@ -338,7 +404,7 @@ def main() -> None:
     sub = parser.add_subparsers(dest="command", required=True)
 
     # -- extract ---
-    p_ext = sub.add_parser("extract", help="Phase 1: Extract data from Voxy")
+    p_ext = sub.add_parser("extract", help="Phase 1a: Extract data from Voxy")
     p_ext.add_argument(
         "--voxy-dir",
         type=Path,
@@ -350,6 +416,18 @@ def main() -> None:
     p_ext.add_argument("--max-sections", type=int, default=None)
     p_ext.add_argument(
         "--clean", action="store_true", help="Delete existing data before extraction"
+    )
+
+    # -- build-pairs ---
+    p_bp = sub.add_parser(
+        "build-pairs",
+        help="Phase 1b: Pre-compute LOD pair caches from extracted NPZ chunks",
+    )
+    p_bp.add_argument("--data-dir", type=Path, default=DEFAULT_DATA_DIR)
+    p_bp.add_argument("--val-split", type=float, default=0.1)
+    p_bp.add_argument("--min-solid", type=float, default=0.02)
+    p_bp.add_argument(
+        "--clean", action="store_true", help="Delete existing pair caches before rebuilding"
     )
 
     # -- train ---
@@ -391,6 +469,12 @@ def main() -> None:
     p_run.add_argument("--min-solid", type=float, default=0.02)
     p_run.add_argument("--max-sections", type=int, default=None)
     p_run.add_argument("--clean", action="store_true")
+    p_run.add_argument("--val-split", type=float, default=0.1)
+    p_run.add_argument(
+        "--skip-build-pairs",
+        action="store_true",
+        help="Skip Phase 1b (pair pre-computation); rely on lazy build in trainer",
+    )
     p_run.add_argument("--export", action="store_true", help="Also export ONNX after training")
     p_run.add_argument(
         "--deploy", action="store_true", help="Also deploy to LODiffusion after export"
@@ -407,6 +491,14 @@ def main() -> None:
             args.data_dir,
             min_solid=args.min_solid,
             max_sections=args.max_sections,
+            clean_first=args.clean,
+        )
+
+    elif args.command == "build-pairs":
+        phase1b_build_pairs(
+            args.data_dir,
+            val_split=args.val_split,
+            min_solid=args.min_solid,
             clean_first=args.clean,
         )
 
@@ -429,7 +521,7 @@ def main() -> None:
         deploy_onnx(args.export_dir, args.lodiffusion_config)
 
     elif args.command == "run":
-        # Full pipeline
+        # Stage 1: data prep
         n = phase1_extract(
             args.voxy_dir,
             args.data_dir,
@@ -441,6 +533,17 @@ def main() -> None:
             print("No data extracted — aborting")
             sys.exit(1)
 
+        if not args.skip_build_pairs:
+            result = phase1b_build_pairs(
+                args.data_dir,
+                val_split=args.val_split,
+                min_solid=args.min_solid,
+            )
+            if result == 0:
+                print("Pair build failed — aborting")
+                sys.exit(1)
+
+        # Stage 2: train
         best = phase2_train(
             args.data_dir,
             args.model_dir,

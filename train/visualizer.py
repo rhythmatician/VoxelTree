@@ -16,9 +16,14 @@ import torch
 from matplotlib.animation import FuncAnimation
 from matplotlib.figure import Figure
 from torch import Tensor
-from torch.utils.tensorboard import SummaryWriter
 
-TENSORBOARD_AVAILABLE = True
+# tensorboard is optional — only needed when tb logging is enabled
+try:
+    from torch.utils.tensorboard import SummaryWriter
+    TENSORBOARD_AVAILABLE = True
+except ImportError:
+    SummaryWriter = None  # type: ignore[assignment,misc]
+    TENSORBOARD_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
 

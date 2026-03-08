@@ -29,12 +29,12 @@ Report **overall** and **frequent‑set** (top ≈50 terrain blocks; air exclude
   * Air/solid IoU (16³) ≥ **0.99**
   * Block top‑1 (frequent‑set) ≥ **0.99**
   * Block top‑1 (overall) ≥ **0.98**
-* **Coarser parent starts (simulated with lod token):**
+* **Coarser transitions (incremental refinement — each step refines by one LOD level):**
 
-  * 4³‑parent (LOD2→0 equiv): frequent‑set ≥ **0.985**
-  * 2³‑parent (LOD3→0 equiv): frequent‑set ≥ **0.98**
-  * 1³ / sub‑1³ (LOD4/5→0 equiv): frequent‑set ≥ **0.975**
-* **Full rollout (self‑fed LOD5→4→3→2→1→0):**
+  * LOD2→LOD1: frequent‑set ≥ **0.985**
+  * LOD3→LOD2: frequent‑set ≥ **0.98**
+  * LOD4→LOD3: frequent‑set ≥ **0.975**
+* **Full rollout (self‑fed LOD4→LOD3→LOD2→LOD1→LOD0):**
 
   * Final LOD0 frequent‑set ≥ **0.985**; visual QA passes (readable biomes; rivers align).
 
@@ -67,21 +67,27 @@ Report **overall** and **frequent‑set** (top ≈50 terrain blocks; air exclude
 * Build LOD targets using **Voxy Mipper** (`scripts/mipper.py`): opacity-biased corner selection, not OR-pool or majority vote.
 * Pipeline orchestrator: `pipeline.py extract` → `pipeline.py train` → `pipeline.py export`.
 
-## 6) Training Strategy (single static model; multi‑LOD capable)
+## 6) Training Strategy (single static model; incremental refinement)
 
-* Always predict **16³** (LOD0) from an **8³** parent.
-* For each sample, randomly choose coarsening factor `f ∈ {1,2,4,8,16}` (relative to 8³):
+* Always predict **16³** from an **8³** parent (both nearest-upsampled to canonical sizes).
+* Each training sample represents one **LOD step**: the target is one level finer
+  than the parent, not always LOD0.
+* For each sample, randomly choose coarsening factor `f ∈ {2,4,8,16}`:
 
-  * `parent_f = mip_volume_numpy(labels16, f, tbl)` → nearest-upsample to **8³** for input
-  * `lod = log2(f)+1`
-  * Targets remain **true 16³** labels (plus air)
+  * Parent: `mip_volume_numpy(labels16, f, tbl)` → nearest-upsample to **8³**
+  * Target: `mip_volume_numpy(labels16, f//2, tbl)` → nearest-upsample to **16³**
+    (for f=2 the target is `labels16` itself — full-detail LOD0)
+  * `lod_token = log2(f)` (1,2,3,4)
+  * `lod_transition = "lod{N}to{N-1}"` (lod1to0, lod2to1, lod3to2, lod4to3)
+* At runtime, LODiffusion chains: LOD4→LOD3→LOD2→LOD1→LOD0, each step feeding
+  the previous prediction as the next parent.
 * **Scheduled sampling**: with p≈0.1→0.3, form parent from the model's own previous prediction (argmax → Mipper) to stabilize rollouts.
-* **Loss**: `CE(block_logits, labels16) + λ_air * BCEWithLogits(air_mask, air_target)`; start `λ_air=0.25`.
+* **Loss**: `CE(block_logits, target_labels) + λ_air * BCEWithLogits(air_mask, target_occ)`; start `λ_air=0.25`.
 
 ## 7) Evaluation
 
-* **Per‑step eval**: accuracy/IoU for each `f` above.
-* **Full rollout eval**: self‑fed chain from LOD5→…→LOD0.
+* **Per‑step eval**: accuracy/IoU for each LOD transition (lod1to0, lod2to1, lod3to2, lod4to3).
+* **Full rollout eval**: self‑fed chain from LOD4→LOD3→LOD2→LOD1→LOD0.
 * Report frequent‑set vs overall, confusion matrix on frequent‑set, surface top‑block accuracy.
 
 ## 8) Export & Metadata
@@ -96,10 +102,11 @@ Report **overall** and **frequent‑set** (top ≈50 terrain blocks; air exclude
 
 ## 9) Runtime (LODiffusion) — Just‑in‑Time
 
-* **LOD5 (1³):** biome/height tint (no 3D inference in Phase‑1 minimal)
-* **LOD4/3/2:** (optional) pool down from an 8³ coarse head if added later; otherwise keep tint
-* **LOD1 (8³):** run the model **once** for that patch; render 16³ result
-* **LOD0:** render from 16³; optionally handoff to vanilla in sim distance
+* **LOD4 (16m/voxel):** coarsest; biome/height tint (no 3D inference in Phase‑1 minimal)
+* **LOD3 (8m):** run model LOD4→LOD3; render result
+* **LOD2 (4m):** run model LOD3→LOD2; render result
+* **LOD1 (2m):** run model LOD2→LOD1; render result
+* **LOD0 (1m):** run model LOD1→LOD0; render 16³ result; optionally handoff to vanilla in sim distance
 * Scheduler: speed‑aware forward cone; 360° when idle; preempt on player turn; tight D1 safety halo; cache & evict far‑behind first
 
 ## 10) CI / Definition of Done

@@ -16,15 +16,35 @@ Features:
 
 import logging
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Sequence, Tuple
 
-import matplotlib.pyplot as plt
 import numpy as np
-import pandas as pd
-import seaborn as sns
 import torch
-from matplotlib.figure import Figure
-from sklearn.metrics import confusion_matrix as sk_confusion_matrix
+
+if TYPE_CHECKING:
+    pass  # keep TYPE_CHECKING import for future use
+
+# Heavy visualisation deps are lazy-imported so that importing this module
+# (and therefore trainer.py) works even when seaborn/sklearn/matplotlib
+# are not installed — important for fast test suites.
+_plt: Any = None
+_sns: Any = None
+_sk_confusion_matrix: Any = None
+
+
+def _ensure_viz_deps() -> None:
+    """Lazily import matplotlib, seaborn, sklearn on first use."""
+    global _plt, _sns, _sk_confusion_matrix
+    if _plt is None:
+        import matplotlib.pyplot as plt
+        _plt = plt
+    if _sns is None:
+        import seaborn as sns
+        _sns = sns
+    if _sk_confusion_matrix is None:
+        from sklearn.metrics import confusion_matrix as sk_cm
+        _sk_confusion_matrix = sk_cm
+
 
 logger = logging.getLogger(__name__)
 
@@ -113,7 +133,8 @@ class ConfusionAnalyzer:
         target_np = targets.cpu().numpy()
 
         # Update accumulated confusion matrix
-        batch_confusion = sk_confusion_matrix(target_np, pred_np, labels=range(self.n_classes))
+        _ensure_viz_deps()
+        batch_confusion = _sk_confusion_matrix(target_np, pred_np, labels=range(self.n_classes))
         self.accumulated_confusion += batch_confusion
         self.total_samples += len(pred_np)
 
@@ -219,7 +240,7 @@ class ConfusionAnalyzer:
         self,
         blocks_to_show: Optional[Sequence[int]] = None,
         title: str = "Confusion Matrix",
-    ) -> Figure:
+    ) -> Any:
         """
         Create confusion matrix visualization.
 
@@ -246,8 +267,9 @@ class ConfusionAnalyzer:
         )
 
         # Create visualization
-        fig, ax = plt.subplots(figsize=(12, 10))
-        sns.heatmap(
+        _ensure_viz_deps()
+        fig, ax = _plt.subplots(figsize=(12, 10))
+        _sns.heatmap(
             normalized_confusion,
             annot=True,
             fmt=".3f",
@@ -261,7 +283,7 @@ class ConfusionAnalyzer:
         ax.set_xlabel("Predicted Block ID")
         ax.set_ylabel("True Block ID")
 
-        plt.tight_layout()
+        _plt.tight_layout()
         return fig
 
     def generate_report(self) -> str:
@@ -342,6 +364,7 @@ Bottom 20 Worst Performing Blocks:
 
         # Save per-class accuracies as CSV
         per_class_acc = self.compute_per_class_accuracy()
+        import pandas as pd
         df = pd.DataFrame(
             [
                 {
@@ -362,7 +385,8 @@ Bottom 20 Worst Performing Blocks:
             dpi=150,
             bbox_inches="tight",
         )
-        plt.close(fig)
+        _ensure_viz_deps()
+        _plt.close(fig)
 
         logger.info(f"Confusion analysis saved to {self.save_dir}")
 

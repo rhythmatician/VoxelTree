@@ -17,6 +17,56 @@ import yaml
 
 logger = logging.getLogger(__name__)
 
+# ---------------------------------------------------------------------------
+# Terrain Purity Settings
+# ---------------------------------------------------------------------------
+# These ensure generated terrain is in its exact as-generated state,
+# with no block updates, mob modifications, or weather effects.
+# Gamerules are applied as belt-and-suspenders alongside tick freeze.
+
+TERRAIN_PURITY_GAMERULES = [
+    "gamerule randomTickSpeed 0",  # No random ticks (leaf decay, crop growth, ice)
+    "gamerule doFireTick false",  # No fire spread
+    "gamerule mobGriefing false",  # No mob terrain modification
+    "gamerule doWeatherCycle false",  # No weather changes (lightning, snow, ice)
+    "gamerule doDaylightCycle false",  # Freeze daylight (cosmetic but consistent)
+    "gamerule doMobSpawning false",  # No mob spawning (belt-and-suspenders)
+]
+
+# MC 1.20.3+ command that freezes ALL game ticking (block ticks, entity ticks,
+# scheduled ticks including water/lava flow). Chunk generation still works
+# because worldgen runs in a separate pipeline from game ticking.
+TICK_FREEZE_COMMAND = "tick freeze"
+
+# Blocks that are ONLY placed by structure generation (never by terrain features).
+# If any of these appear in extracted training data, generate-structures was
+# not properly set to false, or the world was modified.
+STRUCTURE_ONLY_BLOCKS = frozenset(
+    [
+        "minecraft:chest",
+        "minecraft:trapped_chest",
+        "minecraft:spawner",
+        "minecraft:brewing_stand",
+        "minecraft:enchanting_table",
+        "minecraft:bell",
+        "minecraft:lectern",
+        "minecraft:cartography_table",
+        "minecraft:smithing_table",
+        "minecraft:fletching_table",
+        "minecraft:blast_furnace",
+        "minecraft:smoker",
+        "minecraft:barrel",
+        "minecraft:composter",
+        "minecraft:loom",
+        "minecraft:stonecutter",
+        "minecraft:grindstone",
+        "minecraft:suspicious_sand",
+        "minecraft:suspicious_gravel",
+        "minecraft:trial_spawner",
+        "minecraft:vault",
+    ]
+)
+
 
 class WorldGenBootstrap:
     """
@@ -231,7 +281,15 @@ class WorldGenBootstrap:
                 # Step 2: Wait for server to be ready
                 if not self._wait_for_server_ready():
                     self.logger.error("Server failed to become ready")
-                    return None  # Step 3: Execute Chunky commands for chunk generation
+                    return None
+
+                # Step 2.5: Freeze ticks + set gamerules before any chunks load
+                if not self._apply_terrain_purity_settings():
+                    self.logger.warning(
+                        "Failed to apply terrain purity settings — terrain may evolve"
+                    )
+
+                # Step 3: Execute Chunky commands for chunk generation
                 if not self._execute_chunky_commands(center_x, center_z, radius):
                     self.logger.error("Failed to execute Chunky commands")
                     return None
@@ -305,17 +363,26 @@ class WorldGenBootstrap:
                 if permanent_world.exists():
                     shutil.rmtree(permanent_world)
 
-                # Create the basic structure and copy only the region data
+                # Create the basic structure and copy region data + world metadata
                 permanent_world.mkdir()
                 permanent_region = permanent_world / "region"
                 permanent_region.mkdir()
 
-                # Copy only .mca files to avoid file lock issues
+                # Copy .mca files
                 for mca_file in found_region_path.glob("*.mca"):
                     shutil.copy2(mca_file, permanent_region / mca_file.name)
 
                 mca_file_count = len(list(permanent_region.glob("*.mca")))
                 self.logger.info(f"Copied {mca_file_count} .mca files to {permanent_world}")
+
+                # Copy level.dat and other essential world metadata
+                # (needed to open the world in MC client for Voxy import)
+                world_root = found_region_path.parent  # parent of 'region/'
+                for meta_file in ["level.dat", "level.dat_old"]:
+                    src = world_root / meta_file
+                    if src.exists():
+                        shutil.copy2(src, permanent_world / meta_file)
+                        self.logger.info(f"Copied {meta_file} to {permanent_world}")
 
                 return permanent_world
 
@@ -533,6 +600,48 @@ class WorldGenBootstrap:
             self.logger.error(f"Server not ready after {timeout} seconds")
             return False
 
+    def _apply_terrain_purity_settings(self) -> bool:
+        """Send gamerule + tick-freeze commands to ensure pristine terrain.
+
+        Must be called AFTER the server is ready and BEFORE Chunky starts.
+        This prevents water flow, leaf decay, fire spread, mob spawning,
+        and all other block/entity updates during chunk pre-generation.
+
+        Order matters: gamerules first (instant effect), then tick freeze
+        (halts the tick loop so nothing can run between commands).
+        """
+        try:
+            if not self.server_process or self.server_process.poll() is not None:
+                self.logger.error("Server process is not running")
+                return False
+
+            if not self.server_process.stdin:
+                self.logger.error("Server stdin is not available")
+                return False
+
+            # 1. Apply gamerules (belt-and-suspenders, take effect immediately)
+            for cmd in TERRAIN_PURITY_GAMERULES:
+                self.logger.info(f"Applying: {cmd}")
+                self.server_process.stdin.write(f"{cmd}\n")
+                self.server_process.stdin.flush()
+                time.sleep(0.5)
+
+            # 2. Freeze ALL ticking (MC 1.20.3+)
+            #    After this, no scheduled ticks (water/lava flow), random ticks,
+            #    or entity ticks will run. Chunk generation still works because
+            #    worldgen is separate from the game tick loop.
+            self.logger.info(f"Applying: {TICK_FREEZE_COMMAND}")
+            self.server_process.stdin.write(f"{TICK_FREEZE_COMMAND}\n")
+            self.server_process.stdin.flush()
+            time.sleep(1)  # Allow the freeze to take effect
+
+            self.logger.info("Terrain purity settings applied — world is frozen")
+            return True
+
+        except Exception as e:
+            self.logger.error(f"Failed to apply terrain purity settings: {e}")
+            return False
+
     def _execute_chunky_commands(self, center_x: int, center_z: int, radius: int) -> bool:
         """Execute Chunky commands to generate chunks."""
         try:
@@ -673,6 +782,12 @@ class WorldGenBootstrap:
                     self.logger.error("Server failed to become ready")
                     return None
 
+                # Freeze ticks + set gamerules before any chunks load
+                if not self._apply_terrain_purity_settings():
+                    self.logger.warning(
+                        "Failed to apply terrain purity settings — terrain may evolve"
+                    )
+
                 if not self._execute_chunky_region_selection(x1, z1, x2, z2):
                     self.logger.error("Failed to execute Chunky selection commands")
                     return None
@@ -734,6 +849,14 @@ class WorldGenBootstrap:
 
                 mca_file_count = len(list(permanent_region.glob("*.mca")))
                 self.logger.info(f"Copied {mca_file_count} .mca files to {permanent_world}")
+
+                # Copy level.dat and other essential world metadata
+                world_root = found_region_path.parent
+                for meta_file in ["level.dat", "level.dat_old"]:
+                    src = world_root / meta_file
+                    if src.exists():
+                        shutil.copy2(src, permanent_world / meta_file)
+                        self.logger.info(f"Copied {meta_file} to {permanent_world}")
                 return permanent_world
             except Exception as copy_error:
                 self.logger.error(f"Failed to copy world data: {copy_error}")

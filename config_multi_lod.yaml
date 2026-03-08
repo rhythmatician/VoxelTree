@@ -26,19 +26,19 @@ data:
   # LOD sampling weights for training
   # Higher weight = more samples during training
   lod_sampling_weights:
-    lod4to3: 0.2 # 1³ → 2³ (coarsest)
-    lod3to2: 0.25 # 2³ → 4³
-    lod2to1: 0.25 # 4³ → 8³
-    lod1to0: 0.3 # 8³ → 16³ (finest, emphasize)
+    lod4to3: 0.2 # LOD4→LOD3 (coarsest transition)
+    lod3to2: 0.25 # LOD3→LOD2
+    lod2to1: 0.25 # LOD2→LOD1
+    lod1to0: 0.3 # LOD1→LOD0 (finest, emphasize)
 
 # Validation metrics thresholds
 validation:
-  # Per-LOD transition accuracy targets
+  # Per-LOD transition accuracy targets (incremental refinement)
   target_accuracies:
-    lod4to3_overall: 0.90 # Coarsest transition, lower target
-    lod3to2_overall: 0.92
-    lod2to1_overall: 0.94
-    lod1to0_overall: 0.96 # Finest transition, highest target
+    lod4to3_overall: 0.90 # LOD4→LOD3 (coarsest, lower target)
+    lod3to2_overall: 0.92 # LOD3→LOD2
+    lod2to1_overall: 0.94 # LOD2→LOD1
+    lod1to0_overall: 0.96 # LOD1→LOD0 (finest, highest target)
 
   # Overall model targets
   overall_accuracy: 0.93
@@ -73,3 +73,7 @@ early_stopping:
   patience: 20
   min_delta: 0.001
   monitor: "val_loss"
+
+# Export configuration
+export:
+  contract: "lodiffusion.v2"

@@ -12,9 +12,11 @@ refinement, allowing the model to learn to reverse the process.
 
 import math
 import random
+import time
 from pathlib import Path
 from typing import Dict, List, Optional
 
+from tqdm import tqdm
 import numpy as np
 import torch
 from torch.utils.data import Dataset
@@ -61,17 +63,21 @@ def create_lod_training_pairs(
     curvature: Optional[np.ndarray] = None,
 ) -> List[Dict]:
     """
-    Create training pairs for all LOD coarsening levels from a single 16³ chunk.
+    Create training pairs for incremental LOD refinement from a single 16³ chunk.
 
-    The model*always* predicts 16³ from an 8³ parent.  The parent is the Voxy
-    Mipper output of `labels16` downsampled by `f`, then nearest-upsampled to
-    the canonical 8³ input size.  The target is always `labels16` (16³).
+    Each transition refines by exactly one LOD level (2× per axis).  The parent
+    is the Mipper output at LOD N, upsampled to the canonical 8³ input.  The
+    target is the Mipper output at LOD N-1, upsampled to 16³.
 
-    Coarsening factors and resulting LOD token:
-        f=2   → 8³ parent, lod=1  (native LOD1→LOD0 transition)
-        f=4   → 4³→8³ parent, lod=2  (simulated LOD2→LOD0)
-        f=8   → 2³→8³ parent, lod=3  (simulated LOD3→LOD0)
-        f=16  → 1³→8³ parent, lod=4  (simulated LOD4→LOD0)
+    Transitions produced (coarsening factor → parent → target):
+        f=2   → 8³ parent (LOD1), target = labels16       (LOD0, 16³)  — LOD1→LOD0
+        f=4   → 4³→8³ parent (LOD2), target = mip(·,2)→16³ (LOD1)    — LOD2→LOD1
+        f=8   → 2³→8³ parent (LOD3), target = mip(·,4)→16³ (LOD2)    — LOD3→LOD2
+        f=16  → 1³→8³ parent (LOD4), target = mip(·,8)→16³ (LOD3)    — LOD4→LOD3
+
+    At runtime, LODiffusion chains these: LOD4→LOD3→LOD2→LOD1→LOD0, each step
+    adding one level of detail.  Training mirrors this so the model only ever
+    learns tractable 2× super-resolution.
 
     Anchor channels (height_planes, router6) are passed through directly when
     available from NoiseDumper extraction.  When None, they are approximated
@@ -95,16 +101,11 @@ def create_lod_training_pairs(
     """
     tbl = _get_opacity_table(int(labels16.max()) + 1)
 
-    # Ground-truth 16³ occupancy (used as target for all LOD levels)
-    occ16 = create_occupancy_from_blocks(labels16, air_id).astype(np.float32)
-
     # ------------------------------------------------------------------
     # Build conditioning tensors
     # ------------------------------------------------------------------
-    # Biome (legacy one-hot kept for backward compat; also keep index form)
-    biome_onehot = np.eye(256, dtype=np.float32)[biome_patch]  # (16,16,256)
-    biome_tensor = biome_onehot.transpose(2, 0, 1)  # (256,16,16)
-    biome_idx = biome_patch.astype(np.int64)  # (16,16)  -- for anchor fusion
+    # Biome: keep only compact index form; one-hot computed lazily in __getitem__
+    biome_idx = biome_patch.astype(np.int64)  # (16,16)
 
     # Heightmap: normalise patch to [0,1]
     heightmap_norm = (heightmap_patch.astype(np.float32) - heightmap_patch.min()) / (
@@ -157,11 +158,13 @@ def create_lod_training_pairs(
     training_pairs: List[Dict] = []
 
     for f in (2, 4, 8, 16):
-        # Coarsen labels16 by factor f using the Voxy Mipper
+        # ------------------------------------------------------------------
+        # Parent: coarsen labels16 by factor f using the Voxy Mipper,
+        # then nearest-upsample to canonical 8³.
+        # ------------------------------------------------------------------
         coarse_labels, coarse_occ = mip_volume_numpy(labels16, f, tbl)
         # shape: (16//f, 16//f, 16//f)
 
-        # Nearest-neighbour upsample to canonical 8³
         coarse_size = coarse_labels.shape[0]  # 8, 4, 2, or 1
         if coarse_size != 8:
             scale = 8 // coarse_size
@@ -173,24 +176,57 @@ def create_lod_training_pairs(
         else:
             coarse_occ_8 = coarse_occ.astype(np.float32)
 
+        # ------------------------------------------------------------------
+        # Target: one level finer than the parent (incremental refinement).
+        #   f=2  → target is LOD0 = labels16           (already 16³)
+        #   f=4  → target is LOD1 = mip(labels16, 2)   → upsample to 16³
+        #   f=8  → target is LOD2 = mip(labels16, 4)   → upsample to 16³
+        #   f=16 → target is LOD3 = mip(labels16, 8)   → upsample to 16³
+        # ------------------------------------------------------------------
+        f_target = f // 2  # coarsening factor for the target LOD level
+
+        if f_target == 1:
+            # Target is full-detail LOD0
+            target_labels = labels16.astype(np.int64)  # (16,16,16)
+            target_occ = create_occupancy_from_blocks(labels16, air_id).astype(np.float32)
+        else:
+            # Target is the next-finer LOD level, upsampled to 16³
+            tgt_labels, tgt_occ = mip_volume_numpy(labels16, f_target, tbl)
+            # shape: (16//f_target, 16//f_target, 16//f_target)
+            tgt_size = tgt_labels.shape[0]  # 8, 4, or 2
+            up = 16 // tgt_size
+            target_labels = np.repeat(
+                np.repeat(np.repeat(tgt_labels, up, axis=0), up, axis=1),
+                up,
+                axis=2,
+            ).astype(
+                np.int64
+            )  # (16,16,16)
+            target_occ = np.repeat(
+                np.repeat(np.repeat(tgt_occ.astype(np.float32), up, axis=0), up, axis=1),
+                up,
+                axis=2,
+            )  # (16,16,16)
+
         lod_token = int(math.log2(f))  # 1, 2, 3, 4
+        target_lod = lod_token - 1  # 0, 1, 2, 3
 
         training_pairs.append(
             {
                 # --- model inputs (per-sample shapes, no batch dim) ---
                 "parent_voxel": coarse_occ_8[None, ...],  # (1,8,8,8)  C=1
-                "biome_patch": biome_tensor,  # (256,16,16) legacy one-hot
+                "biome_patch": biome_idx,  # (16,16) int64 indices
                 "biome_idx": biome_idx,  # (16,16) integer indices
                 "heightmap_patch": heightmap_tensor,  # (1,16,16)  C=1
                 "height_planes": height_planes,  # (5,16,16)
                 "router6": router6_tensor,  # (6,16,16)
                 "y_index": np.int64(y_index),  # scalar
                 "lod": np.int64(lod_token),  # scalar
-                # --- targets (always 16³) ---
-                "target_mask": occ16.astype(np.float32),  # (16,16,16)
-                "target_types": labels16.astype(np.int64),  # (16,16,16)
+                # --- targets (16³, one LOD level finer than parent) ---
+                "target_mask": target_occ,  # (16,16,16) float32
+                "target_types": target_labels,  # (16,16,16) int64
                 # --- metadata ---
-                "lod_transition": f"lod{lod_token}to0",
+                "lod_transition": f"lod{lod_token}to{target_lod}",
                 "parent_size": 8,
                 "target_size": 16,
             }
@@ -210,6 +246,7 @@ class MultiLODDataset(Dataset):
         split: str = "train",
         lod_sampling_weights: Optional[Dict[str, float]] = None,
         min_solid_fraction: float = 0.02,
+        use_pair_cache: bool = True,
     ):
         """
         Initialize multi-LOD dataset.
@@ -226,22 +263,28 @@ class MultiLODDataset(Dataset):
         self.data_dir = Path(data_dir)
         self.split = split
         self.min_solid_fraction = min_solid_fraction
+        self.use_pair_cache = use_pair_cache
 
         # Default sampling weights (can emphasize certain LOD levels)
         if lod_sampling_weights is None:
             self.lod_sampling_weights = {
-                "lod4to0": 0.2,  # Coarsest parent (simulated)
-                "lod3to0": 0.25,
-                "lod2to0": 0.25,
-                "lod1to0": 0.3,  # Native LOD1→LOD0 (most important)
+                "lod4to3": 0.2,  # Coarsest transition
+                "lod3to2": 0.25,
+                "lod2to1": 0.25,
+                "lod1to0": 0.3,  # Finest transition (most important)
             }
         else:
             self.lod_sampling_weights = lod_sampling_weights
 
-        # Load NPZ file paths
-        self.npz_files = list(self.data_dir.glob(f"*_{split}_*.npz"))
-        if not self.npz_files:
-            self.npz_files = list(self.data_dir.glob("*.npz"))
+        # Load NPZ file paths — check split subdirectory first, then
+        # filename pattern, then fall back to all files in data_dir.
+        split_subdir = self.data_dir / split
+        if split_subdir.is_dir():
+            self.npz_files = list(split_subdir.glob("*.npz"))
+        else:
+            self.npz_files = list(self.data_dir.glob(f"*_{split}_*.npz"))
+            if not self.npz_files:
+                self.npz_files = list(self.data_dir.glob("*.npz"))
 
         print(f"Found {len(self.npz_files)} NPZ files for {split} split")
 
@@ -251,10 +294,20 @@ class MultiLODDataset(Dataset):
 
     def _generate_all_pairs(self):
         """Generate all possible training pairs from NPZ files."""
+        # Try loading pre-computed pairs from cache
+        if self.use_pair_cache:
+            cache_path = self.data_dir / f"{self.split}_pairs_v1.npz"
+            if cache_path.exists():
+                if self._load_pairs_cache(cache_path):
+                    return
+
         print("Generating multi-LOD training pairs...")
         skipped_air = 0
+        total_files = len(self.npz_files)
 
-        for npz_file in self.npz_files:
+        for file_idx, npz_file in tqdm(
+            enumerate(self.npz_files), total=total_files, desc="Processing NPZ files", unit="file"
+        ):
             try:
                 data = np.load(npz_file)
 
@@ -341,34 +394,175 @@ class MultiLODDataset(Dataset):
         for transition, count in lod_counts.items():
             print(f"  {transition}: {count} pairs")
 
+        # Pre-compute indices per LOD transition for O(1) sampling
+        self._transition_indices: Dict[str, List[int]] = {}
+        for i, pair in enumerate(self.training_pairs):
+            t = pair["lod_transition"]
+            if t not in self._transition_indices:
+                self._transition_indices[t] = []
+            self._transition_indices[t].append(i)
+
+        # Build weighted transition list for random.choices
+        self._transitions = list(self._transition_indices.keys())
+        self._transition_weights = [
+            self.lod_sampling_weights.get(t, 1.0) for t in self._transitions
+        ]
+
+        # Cache computed pairs for fast reloading on subsequent runs
+        if self.use_pair_cache and self.training_pairs:
+            cache_path = self.data_dir / f"{self.split}_pairs_v1.npz"
+            self._save_pairs_cache(cache_path)
+
+    # ------------------------------------------------------------------
+    # Pair cache I/O
+    # ------------------------------------------------------------------
+
+    def _save_pairs_cache(self, path: Path) -> None:
+        """Save computed pairs as compressed NPZ for fast reloading."""
+        n = len(self.training_pairs)
+        print(f"Caching {n} training pairs to {path} ...")
+        t0 = time.time()
+        np.savez_compressed(
+            path,
+            parent_voxel=np.array(
+                [p["parent_voxel"] for p in self.training_pairs], dtype=np.float32
+            ),
+            biome_idx=np.array(
+                [p["biome_idx"] for p in self.training_pairs], dtype=np.int32
+            ),
+            heightmap_patch=np.array(
+                [p["heightmap_patch"] for p in self.training_pairs], dtype=np.float32
+            ),
+            height_planes=np.array(
+                [p["height_planes"] for p in self.training_pairs], dtype=np.float32
+            ),
+            router6=np.array(
+                [p["router6"] for p in self.training_pairs], dtype=np.float32
+            ),
+            y_index=np.array(
+                [int(p["y_index"]) for p in self.training_pairs], dtype=np.int64
+            ),
+            lod=np.array(
+                [int(p["lod"]) for p in self.training_pairs], dtype=np.int64
+            ),
+            target_mask=np.array(
+                [p["target_mask"] for p in self.training_pairs], dtype=np.uint8
+            ),
+            target_types=np.array(
+                [p["target_types"] for p in self.training_pairs], dtype=np.int32
+            ),
+            lod_transition=np.array(
+                [p["lod_transition"] for p in self.training_pairs]
+            ),
+            _n_source_files=np.array([len(self.npz_files)]),
+            _min_solid_fraction=np.array([self.min_solid_fraction]),
+        )
+        size_mb = path.stat().st_size / (1024 * 1024)
+        print(f"  Saved {size_mb:.1f} MB in {time.time() - t0:.1f}s")
+
+    def _load_pairs_cache(self, path: Path) -> bool:
+        """Load pre-computed pairs from NPZ cache.  Returns True on success."""
+        try:
+            t0 = time.time()
+            print(f"Loading cached pairs from {path} ...")
+            data = np.load(path, allow_pickle=True)
+
+            # Validate cache matches current source data
+            cached_n_files = int(data["_n_source_files"][0])
+            cached_min_solid = float(data["_min_solid_fraction"][0])
+            if cached_n_files != len(self.npz_files):
+                print(
+                    f"  Stale cache: {cached_n_files} source files cached "
+                    f"vs {len(self.npz_files)} current -- regenerating"
+                )
+                return False
+            if abs(cached_min_solid - self.min_solid_fraction) > 1e-6:
+                print(
+                    f"  Stale cache: min_solid_fraction changed "
+                    f"({cached_min_solid} vs {self.min_solid_fraction}) -- regenerating"
+                )
+                return False
+
+            # Reconstruct list-of-dicts from stacked arrays
+            parent_voxel = data["parent_voxel"]
+            biome_idx = data["biome_idx"]
+            heightmap_patch = data["heightmap_patch"]
+            height_planes = data["height_planes"]
+            router6 = data["router6"]
+            y_index = data["y_index"]
+            lod = data["lod"]
+            target_mask = data["target_mask"]
+            target_types = data["target_types"]
+            transitions = data["lod_transition"]
+            n = len(parent_voxel)
+
+            self.training_pairs = []
+            for i in range(n):
+                self.training_pairs.append(
+                    {
+                        "parent_voxel": parent_voxel[i].astype(np.float32),
+                        "biome_patch": biome_idx[i].astype(np.int64),
+                        "biome_idx": biome_idx[i].astype(np.int64),
+                        "heightmap_patch": heightmap_patch[i].astype(np.float32),
+                        "height_planes": height_planes[i].astype(np.float32),
+                        "router6": router6[i].astype(np.float32),
+                        "y_index": np.int64(y_index[i]),
+                        "lod": np.int64(lod[i]),
+                        "target_mask": target_mask[i].astype(np.float32),
+                        "target_types": target_types[i].astype(np.int64),
+                        "lod_transition": str(transitions[i]),
+                        "parent_size": 8,
+                        "target_size": 16,
+                    }
+                )
+
+            # Build transition index
+            self._transition_indices = {}
+            for i, pair in enumerate(self.training_pairs):
+                t = pair["lod_transition"]
+                if t not in self._transition_indices:
+                    self._transition_indices[t] = []
+                self._transition_indices[t].append(i)
+            self._transitions = list(self._transition_indices.keys())
+            self._transition_weights = [
+                self.lod_sampling_weights.get(t, 1.0) for t in self._transitions
+            ]
+
+            elapsed = time.time() - t0
+            print(f"  Loaded {n} pairs in {elapsed:.1f}s")
+            for t in self._transitions:
+                print(f"    {t}: {len(self._transition_indices[t])} pairs")
+            return True
+
+        except Exception as e:
+            print(f"  Cache load failed ({e}) -- regenerating")
+            return False
+
     def __len__(self):
         return len(self.training_pairs)
 
     def __getitem__(self, idx):
         """Get a training sample."""
-        # Choose sample based on LOD sampling weights
-        if random.random() < 0.1:  # 10% random sampling
+        # Choose sample based on LOD sampling weights (O(1) via pre-computed indices)
+        if random.random() < 0.1:  # 10% direct index sampling
             pair = self.training_pairs[idx % len(self.training_pairs)]
         else:
-            # Weighted sampling by LOD transition
-            transition_weights = []
-            transitions = []
-            for pair in self.training_pairs:
-                transition = pair["lod_transition"]
-                transitions.append(transition)
-                transition_weights.append(self.lod_sampling_weights.get(transition, 1.0))
-
-            # Sample based on weights
-            chosen_idx = random.choices(
-                range(len(self.training_pairs)), weights=transition_weights, k=1
+            # Pick a transition type weighted by lod_sampling_weights
+            chosen_transition = random.choices(
+                self._transitions, weights=self._transition_weights, k=1
             )[0]
-            pair = self.training_pairs[chosen_idx]
+            indices = self._transition_indices[chosen_transition]
+            pair = self.training_pairs[random.choice(indices)]
 
         # Convert to tensors
+        # biome_patch stores compact int64 indices (16,16).
+        # The model accepts integer indices directly (via Embedding).
+        biome_idx_np = np.asarray(pair["biome_patch"])  # (16,16) int64
+
         sample = {
             "parent_voxel": torch.from_numpy(np.asarray(pair["parent_voxel"])).float(),
-            "biome_patch": torch.from_numpy(np.asarray(pair["biome_patch"])).float(),
-            "biome_idx": torch.from_numpy(np.asarray(pair["biome_idx"])).long(),  # (16,16)
+            "biome_patch": torch.from_numpy(biome_idx_np).long(),  # (16,16)
+            "biome_idx": torch.from_numpy(biome_idx_np).long(),  # (16,16)
             "heightmap_patch": torch.from_numpy(np.asarray(pair["heightmap_patch"])).float(),
             "height_planes": torch.from_numpy(
                 np.asarray(pair["height_planes"])
@@ -387,25 +581,12 @@ class MultiLODDataset(Dataset):
 def collate_multi_lod_batch(samples: List[Dict]) -> Dict:
     """
     Collate function for multi-LOD batches.
-    Groups samples by LOD transition type.
+
+    Uses ALL samples regardless of LOD transition type.  The ``lod_transition``
+    metadata is kept as a list, and the caller can inspect it for logging, but
+    the model treats every sample identically (the LOD token is an input).
     """
-    # Group samples by LOD transition
-    grouped: Dict[str, List[Dict]] = {}
-    for sample in samples:
-        transition = sample["lod_transition"]
-        if transition not in grouped:
-            grouped[transition] = []
-        grouped[transition].append(sample)
-
-    # For now, just take the first transition type
-    # In practice, you might want to process all types or sample one
-    transition_type = list(grouped.keys())[0]
-    transition_samples = grouped[transition_type]
-
-    # Standard batching for samples of the same transition type
-    # Use a general dict for mixed types (tensors + metadata string)
-    batch: Dict[str, object] = {}
-    for key in [
+    tensor_keys = [
         "parent_voxel",
         "biome_patch",
         "biome_idx",
@@ -416,9 +597,14 @@ def collate_multi_lod_batch(samples: List[Dict]) -> Dict:
         "lod",
         "target_mask",
         "target_types",
-    ]:
-        if key in transition_samples[0]:
-            batch[key] = torch.stack([s[key] for s in transition_samples], dim=0)
+    ]
 
-    batch["lod_transition"] = transition_type
+    batch: Dict[str, object] = {}
+    for key in tensor_keys:
+        if key in samples[0]:
+            batch[key] = torch.stack([s[key] for s in samples], dim=0)
+
+    # Keep lod_transition as the majority type (for logging)
+    transitions = [s["lod_transition"] for s in samples]
+    batch["lod_transition"] = max(set(transitions), key=transitions.count)
     return batch
