@@ -1,12 +1,23 @@
 #!/usr/bin/env python3
 """
-LODiffusion Data CLI — freeze & pregen pipeline orchestrator.
+LODiffusion Data CLI — RCON world freeze & pregen orchestrator.
 
 Automates the Minecraft world freeze + Chunky chunk pregeneration pipeline
 needed to produce clean, deterministic training data for LODiffusion.
 
 Requires a Minecraft server running with RCON enabled, Carpet mod, and
 Chunky installed.  Use --dry-run to print commands without sending them.
+
+Canonical pipeline order
+-----------------------
+  1) python data-cli.py pregen    ← THIS TOOL (RCON to server)
+  2) /voxy import world <name>    ← manual in-game command
+  3) python pipeline.py extract   ← see pipeline.py
+  4) python pipeline.py column-heights
+  5) python pipeline.py build-pairs
+  6) python pipeline.py train
+  7) python pipeline.py export
+  8) python pipeline.py deploy
 
 Usage examples
 --------------
@@ -15,21 +26,8 @@ Usage examples
   python data-cli.py pregen --radius 2048 --dry-run
 
   # Execute against a running server (RCON must be enabled):
-  # Full pipeline order:
-  #   1) freeze → 2) pregen → 3) extract → 4) build-pairs → 5) python pipeline.py train
-
-  # Steps 1-2 (RCON required):
   python data-cli.py pregen --host localhost --port 25575 --password secret \\
       --world minecraft:overworld --center 0 0 --radius 2048
-
-  # Step 3 (no server needed, auto-detects Voxy DB):
-  python data-cli.py extract
-  python data-cli.py extract --saves-dir C:/path/to/saves  # explicit path
-  python data-cli.py extract --clean                        # wipe existing NPZs first
-
-  # Step 4 (no server needed, runs Mipper once over all chunks):
-  python data-cli.py build-pairs
-  python data-cli.py build-pairs --clean                    # force rebuild
 
   # Other RCON helpers:
   python data-cli.py freeze --host localhost --port 25575 --password secret
@@ -48,18 +46,14 @@ from __future__ import annotations
 import argparse
 import socket
 import struct
-import subprocess
 import sys
 import textwrap
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
 
 # Absolute path to THIS file's directory (VoxelTree root)
 _HERE = Path(__file__).resolve().parent
-# Default Minecraft saves folder (relative to the standard MC/ repo layout)
-_DEFAULT_SAVES_DIR = _HERE.parent / "LODiffusion" / "run" / "saves"
 
 # ---------------------------------------------------------------------------
 # Minimal RCON client (no external dependencies)
@@ -83,7 +77,7 @@ class RconClient:
         self._port = port
         self._password = password
         self._timeout = timeout
-        self._sock: Optional[socket.socket] = None
+        self._sock: socket.socket | None = None
         self._req_id = 1
 
     def connect(self) -> None:
@@ -162,8 +156,6 @@ class PipelineConfig:
     radius: int = 2048
     shape: str = "square"
     verbose: bool = False
-    saves_dir: Path = field(default_factory=lambda: _DEFAULT_SAVES_DIR)
-    clean: bool = False
 
 
 # Gamerule commands that freeze the world for deterministic data collection.
@@ -293,7 +285,8 @@ def cmd_pregen(cfg: PipelineConfig) -> None:
     if not cfg.dry_run:
         print(
             "\n  Next step: extract Voxy data into training NPZ files.\n"
-            f'    python data-cli.py extract --saves-dir "{cfg.saves_dir}"'
+            "    1) In-game: /voxy import world <world_name>\n"
+            "    2) python pipeline.py extract"
         )
 
 
@@ -336,62 +329,6 @@ def cmd_info(cfg: PipelineConfig) -> None:  # noqa: ARG001
     """
         ).strip()
     )
-
-
-def cmd_build_pairs(cfg: PipelineConfig) -> None:
-    """Pre-compute LOD pair caches (Phase 1b) via pipeline.py build-pairs."""
-    pipeline_py = _HERE / "pipeline.py"
-    if not pipeline_py.exists():
-        print(f"ERROR: pipeline.py not found at {pipeline_py}")
-        sys.exit(1)
-
-    cmd: list[str] = [sys.executable, str(pipeline_py), "build-pairs"]
-    if cfg.clean:
-        cmd.append("--clean")
-
-    if cfg.dry_run:
-        print("\n  [DRY-RUN] Would run:")
-        print("   ", " ".join(cmd))
-        return
-
-    print("\nBuilding LOD training pair caches ...")
-    result = subprocess.run(cmd, cwd=str(_HERE))
-    if result.returncode != 0:
-        print(f"\nERROR: build-pairs failed (exit code {result.returncode})")
-        sys.exit(result.returncode)
-    print("\n  Pair cache written to data/voxy/")
-    print("  Next step: python pipeline.py train --epochs 20")
-
-
-def cmd_extract(cfg: PipelineConfig) -> None:
-    """Extract Voxy RocksDB training data → NPZ files via pipeline.py extract."""
-    saves_dir = cfg.saves_dir
-    if not saves_dir.exists():
-        print(f"ERROR: saves directory not found: {saves_dir}")
-        print("  Use --saves-dir to specify the path explicitly.")
-        sys.exit(1)
-
-    pipeline_py = _HERE / "pipeline.py"
-    if not pipeline_py.exists():
-        print(f"ERROR: pipeline.py not found at {pipeline_py}")
-        sys.exit(1)
-
-    cmd: list[str] = [sys.executable, str(pipeline_py), "extract", "--voxy-dir", str(saves_dir)]
-    if cfg.clean:
-        cmd.append("--clean")
-
-    if cfg.dry_run:
-        print("\n  [DRY-RUN] Would run:")
-        print("   ", " ".join(cmd))
-        return
-
-    print(f"\nExtracting Voxy training data from {saves_dir} ...")
-    result = subprocess.run(cmd, cwd=str(_HERE))
-    if result.returncode != 0:
-        print(f"\nERROR: extraction failed (exit code {result.returncode})")
-        sys.exit(result.returncode)
-    print("\n  Extraction complete. Training data written to data/voxy/")
-    print("  Next step: python data-cli.py build-pairs")
 
 
 # ---------------------------------------------------------------------------
@@ -488,44 +425,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="Print pipeline plan (no server connection needed)",
     )
 
-    extract_p = sub.add_parser(
-        "extract",
-        help="Extract Voxy RocksDB data → NPZ training files (no server needed)",
-        parents=[],
-    )
-    extract_p.add_argument(
-        "--saves-dir",
-        type=Path,
-        default=_DEFAULT_SAVES_DIR,
-        metavar="DIR",
-        help=f"Minecraft saves directory (default: {_DEFAULT_SAVES_DIR})",
-    )
-    extract_p.add_argument(
-        "--clean",
-        action="store_true",
-        help="Delete existing data/voxy/ before extracting",
-    )
-    extract_p.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Print command that would be run without executing it",
-    )
-
-    bp_p = sub.add_parser(
-        "build-pairs",
-        help="Pre-compute LOD pair caches from extracted NPZ chunks (no server needed)",
-    )
-    bp_p.add_argument(
-        "--clean",
-        action="store_true",
-        help="Delete existing *_pairs_v1.npz files before rebuilding",
-    )
-    bp_p.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Print command that would be run without executing it",
-    )
-
     return parser
 
 
@@ -544,8 +443,6 @@ def main() -> None:
         radius=getattr(args, "radius", 2048),
         shape=getattr(args, "shape", "square"),
         verbose=getattr(args, "verbose", False),
-        saves_dir=getattr(args, "saves_dir", _DEFAULT_SAVES_DIR),
-        clean=getattr(args, "clean", False),
     )
 
     dispatch = {
@@ -554,8 +451,6 @@ def main() -> None:
         "pregen": cmd_pregen,
         "status": cmd_status,
         "info": cmd_info,
-        "extract": cmd_extract,
-        "build-pairs": cmd_build_pairs,
     }
     dispatch[args.subcommand](cfg)
 

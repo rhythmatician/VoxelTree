@@ -1,319 +1,180 @@
-# 🤖 Copilot Instructions — VoxelTree (Expanded)
+# Copilot Instructions — VoxelTree
 
-> **Purpose:** This file guides GitHub Copilot (and human contributors) to build VoxelTree
-> consistently. It encodes our LOD-first design, data pipeline rules, training strategy,
-> acceptance criteria, and CI checks.
-
----
-
-## 🌲 Project Purpose
-
-VoxelTree trains a **LOD-aware voxel super‑resolution model** for **vanilla terrain** (no structures in Phase‑1). The model runs in the **LODiffusion** mod to render huge distances **just‑in‑time**: only compute what the player can notice **right now**.
+> **Purpose:** Guide GitHub Copilot (and human contributors) to work within
+> VoxelTree's single canonical pipeline. Last synced: 2026-03-08.
 
 ---
 
-## ✅ Non‑Negotiables (Phase‑1)
+## RULE #1 — No New Files
 
-* **Terrain‑only data**: `generate-structures=false` during worldgen.
-* **Deterministic inference**: same inputs ⇒ same outputs (CPU).
-* **Static ONNX**: opset ≥ 17, **no dynamic axes**, outputs named `block_logits`, `air_mask`.
-* **Disk hygiene**: batch data is deleted after each train iteration; obey high‑watermark.
-* **Truthful labels**: extract from **Voxy RocksDB** databases (canonical vocabulary); **no synthetic fallbacks**.
-* **Just‑in‑time**: far LODs avoid the heavy 16³ head; refine only when entering near bands.
+**MODIFY existing files. NEVER create new ones** without explicit user approval.
+
+This project has had repeated problems with Copilot generating new scripts
+(`train_progressive_quick.py`, `run_training.py`, etc.) instead of editing the
+canonical file. The result is a pile of dead code that must be deleted later.
+
+If you think a new file is needed, **ask first**. The answer is almost always
+"update the existing file instead."
+
+### Canonical file list (exhaustive)
+
+| Role | File | Notes |
+|---|---|---|
+| **Orchestrator** | `pipeline.py` | Subprocess phases: extract → column-heights → build-pairs → train → export → deploy |
+| **Training** | `train.py` | THE training script. 4 progressive models. |
+| **RCON CLI** | `data-cli.py` | freeze / pregen / status — RCON only, no training |
+| **Extraction** | `scripts/extract_voxy_training_data.py` | Voxy RocksDB → NPZ |
+| **Voxy reader** | `scripts/voxy_reader.py` | RocksDB reader |
+| **Column heights** | `scripts/add_column_heights.py` | Post-extraction heightmap enrichment |
+| **Pair builder** | `scripts/build_pairs.py` | NPZ → LOD transition pair NPZs |
+| **Mipper** | `scripts/mipper.py` | Canonical LOD coarsening (Voxy algorithm) |
+| **Class weights** | `scripts/compute_class_weights.py` | `--class-weights auto` support |
+| **ONNX export** | `scripts/export_lod.py` | 4 ONNX models from checkpoint |
+| **Dataset** | `train/multi_lod_dataset.py` | Pair cache + DataLoader |
+| **Models** | `train/progressive_lod_models.py` | 4 progressive model architectures |
+| **Conditioning** | `train/anchor_conditioning.py` | Height planes + biome fusion |
+| **UNet** | `train/unet3d.py` | SimpleFlexibleUNet3D + SimpleFlexibleConfig |
+| **Vocab** | `config/voxy_vocab.json` | 1102-entry block vocabulary |
+
+Tests live in `tests/test_*.py`. Add tests to existing files or create
+`tests/test_<module>.py` for NEW modules only.
+
+**Everything else was deleted.** Do not recreate it.
 
 ---
 
-## 🧭 Acceptance Criteria (excerpt)
+## What NOT to create
 
-* **LOD1→LOD0 (8³→16³)**: Air/solid IoU ≥ 0.99, frequent‑set block top‑1 ≥ 0.99, overall ≥ 0.98.
-* **Coarser transitions (incremental refinement)**:
-  * LOD2→LOD1: frequent‑set ≥ 0.985
-  * LOD3→LOD2: frequent‑set ≥ 0.98
-  * LOD4→LOD3: frequent‑set ≥ 0.975
-* **Full rollout LOD4→LOD3→LOD2→LOD1→LOD0** (self‑fed): frequent‑set at final LOD0 ≥ 0.985.
-* **Runtime**: ≤ 100 ms median per 16³; ≤ 150 ms p95; ≤ 2 MB incremental mem.
-* **Integration**: DJL harness loads ONNX; `max_abs_diff ≤ 1e‑4` vs PyTorch on test vectors.
+These have been **deliberately removed**. Do not recreate or reference them:
 
-> Full AC lives in `docs/AC.md`. Keep this file in sync.
+- `config_multi_lod.yaml` — config lives in checkpoint now
+- `x_router6` / router6 inputs — dropped; biome IS router6 output
+- `train/losses.py`, `train/metrics.py`, `train/trainer.py`, `train/dataset.py` — consolidated into `train.py`
+- `scripts/extraction/` — MCA extraction removed; Voxy only
+- `scripts/worldgen/` — no longer needed
+- `scripts/verify_onnx.py` — test vectors embedded in export
+- `scripts/seed_inputs/` — dropped
+- Any `train_*.py` or `run_*.py` variant at project root
 
 ---
 
-## 🗂 Directory & Files (authoritative)
+## Project Purpose
+
+VoxelTree trains a **progressive LOD voxel model** for vanilla Minecraft terrain.
+The model runs in the **LODiffusion** mod to render distant terrain just-in-time.
+LOD0 is NOT generated — vanilla terrain handles full resolution.
+
+---
+
+## Architecture — 4 Separate Progressive Models
+
+| Step | Input | Output | Architecture |
+|---|---|---|---|
+| Init→LOD4 | conditioning only | 1×1×1 | tiny MLP |
+| LOD4→LOD3 | 1³ parent | 2×2×2 | small Conv3D |
+| LOD3→LOD2 | 2³ parent | 4×4×4 | medium Conv3D |
+| LOD2→LOD1 | 4³ parent | 8×8×8 | medium-large Conv3D |
+
+All models receive anchor conditioning:
+- `x_height_planes`: [1, 5, 16, 16] float32 — surface, ocean_floor, slope_x, slope_z, curvature
+- `x_biome`: [1, 16, 16] int64 — vanilla biome index
+- `x_y_index`: [1] int64 — vertical 16-slab index
+
+Refinement models additionally receive:
+- `x_parent`: [1, 1, P, P, P] float32 — parent occupancy
+
+All models output:
+- `block_logits`: [1, N_blocks, D, D, D] float32
+- `air_mask`: [1, 1, D, D, D] float32
+
+Config is stored in checkpoints as `SimpleFlexibleConfig` — no external YAML.
+
+---
+
+## Canonical Pipeline
 
 ```
-VoxelTree/
-├─ pipeline.py                   # Two-phase orchestrator: extract→train→export→deploy
-├─ train_multi_lod.py            # CLI: multi-LOD training with Voxy vocab
-├─ config_multi_lod.yaml         # Model + training config
-├─ config/
-│  └─ voxy_vocab.json            # Canonical Voxy-native block vocabulary (1102 entries)
-├─ train/
-│  ├─ multi_lod_dataset.py       # Loads NPZ patches; builds multi‑LOD inputs
-│  ├─ unet3d.py                  # 8→16 SR UNet (SimpleFlexibleUNet3D)
-│  ├─ anchor_conditioning.py     # Height planes + router6 conditioning
-│  ├─ losses.py                  # CE + air losses
-│  └─ metrics.py                 # Per‑step and rollout metrics
-├─ scripts/
-│  ├─ extract_voxy_training_data.py  # Voxy RocksDB → NPZ patches
-│  ├─ voxy_reader.py             # RocksDB reader (SaveLoadSystem3 decoder)
-│  ├─ mipper.py                  # Voxy Mipper (canonical LOD coarsening)
-│  ├─ export_lod.py              # Static ONNX export (opset ≥17)
-│  ├─ verify_onnx.py             # export + test_vectors + model_config
-│  ├─ extraction/                # Legacy MCA extraction (kept for reference)
-│  └─ worldgen/bootstrap.py      # Fabric + Chunky; structures=false
-├─ docs/AC.md
-├─ tests/                        # PyTest (unit + mini E2E)
-├─ models/                       # checkpoints/onnx (ignored in git)
-├─ data/                         # temp batch data (ignored)
-└─ tools/                        # JARs, CLI (Chunky, Fabric, cubiomes)
+1. python data-cli.py pregen          # RCON: freeze world + Chunky pregen
+2. /voxy import world <name>          # manual in-game command
+3. python pipeline.py extract         # Voxy RocksDB → NPZ
+4. python pipeline.py column-heights  # enrich NPZs with heightmap_surface/ocean_floor
+5. python pipeline.py build-pairs     # NPZ → LOD transition pairs
+6. python pipeline.py train           # train 4 progressive models
+7. python pipeline.py export          # checkpoint → 4 ONNX files
+8. python pipeline.py deploy          # copy to LODiffusion config dir
 ```
 
----
-
-## 🧠 Model I/O Contract (v2 — Anchor Conditioning)
-
-**Inputs**
-
-* `x_parent`: **\[1,1,8,8,8] float32** — binary occupancy (Mipper-derived from child or prev pred)
-* `x_height_planes`: **\[1,5,16,16] float32** — surface, ocean\_floor, slope\_x, slope\_z, curvature
-* `x_router6`: **\[1,6,16,16] float32** — temperature, vegetation, continents, erosion, depth, ridges
-* `x_biome`: **\[1,16,16] int64** — vanilla biome index per (x,z)
-* `x_y_index`: **\[1] int64** — vertical 16‑slab index
-* `x_lod`: **\[1] int64** — coarseness token (1 for native 8→16; >1 when parent was coarsened in train)
-
-**Outputs**
-
-* `block_logits`: **\[1, 1102, 16,16,16] float32** — Voxy-native vocab (1102 block types)
-* `air_mask`: **\[1,1,16,16,16] float32** — P(air)
-
-> ONNX: **static shapes only**. No dict inputs/outputs.
-> Block vocabulary: 1102 entries from canonical Voxy vocabulary (`config/voxy_vocab.json`), air=0.
+Or run steps 3-8 in one shot: `python pipeline.py run`
 
 ---
 
-## 📦 Data Extraction Rules
+## Non-Negotiables
 
-* **Parse truth from MCA**: use `anvil-parser2` to read each section’s `palette` and bitpacked `block_states.data`.
-* **Block IDs**: resolve `Name` → integer via **auto‑discovered `block_vocab.json`** (ID 0 reserved for `minecraft:air`). Never hardcode giant enums.
-* **Biomes**: use the chunk’s vanilla biomes; collapse to 2D **16×16** surface grid for `biome_patch`.
-* **Heightmap**: motion‑blocking height per (x,z); normalize to `[0,1]` by world max Y.
-* **Seed‑derived maps**: produce 2D **16×16** multinoise fields (optional in v1; recommended later).
-* **Full region sweep**: iterate **32×32 chunks** per region; skip missing/corrupt chunks (don’t synthesize air).
-* **Save as NPZ**: `np.savez_compressed` with typed arrays; keep keys stable.
-
-**Required NPZ keys per patch** (minimum):
-
-```
-labels16:  int (HWC=[16,16,16])  # block IDs
-occ16:     bool/uint8            # (non‑air)
-biome16:   int16/int32  (16,16)
-height16:  float32      (1,16,16) normalized
-river16:   float32      (1,16,16) [optional]
-```
+- **Terrain only**: `generate-structures=false` during worldgen
+- **Deterministic inference**: same inputs → same outputs (CPU)
+- **Static ONNX**: opset ≥ 17, NO dynamic axes
+- **Truthful labels**: extract from Voxy RocksDB only — no synthetic fallbacks
+- **No fallbacks**: every input is required. No Optional with fallback defaults.
+- **No router6**: dropped entirely. Do not add router6/multinoise inputs.
+- **heightmap_surface required**: every NPZ must have `heightmap_surface` and
+  `heightmap_ocean_floor` (added by `scripts/add_column_heights.py`)
 
 ---
 
-## 🔁 Building the LOD Pyramid (Targets)
+## Data Format
 
-From `labels16` build coarser labels using the **Voxy Mipper algorithm** (not OR-pool or
-probability pooling).
+NPZ files in `data/voxy/` contain per-patch arrays. Required keys:
 
-* **Single source of truth**: `scripts/mipper.py` — `mip_once_numpy`, `mip_volume_numpy`,
-  `mip_volume_torch`.
-* **Opacity tiers**: air = 0, water/lava/glass/leaves/etc. = 1, all other solids = 15.
-* **Selection rule**: score = `(opacity << 4) | corner_priority` — highest score wins.
-  When all 8 corners are identical opacity the **I₁₁₁ corner** (axis-order: x=1,z=1,y=1)
-  always wins (priority 7).
-* **Occupancy**: derived automatically from the Mipper output (non-air ⇒ occupied).
+| Key | Shape | Dtype | Source |
+|---|---|---|---|
+| `labels16` | (16,16,16) | int16/int32 | Voxy block IDs |
+| `biome_patch` | (16,16) | int16/int32 | vanilla biome index |
+| `heightmap_patch` | (1,16,16) | float32 | section-level height |
+| `y_index` | scalar | int | vertical slab index |
+| `heightmap_surface` | (16,16) | float32 | column-level surface height |
+| `heightmap_ocean_floor` | (16,16) | float32 | column-level ocean floor |
 
-**Invariant tests** (unit):
-
-* Mipper occupancy is ≤ OR-pool occupancy (it can only be equal or denser, never more)
-* All-air input → all-air output
-* Single opaque voxel in a 2³ window → that voxel wins
+Block vocabulary: 1102 entries from `config/voxy_vocab.json`. Air = 0.
 
 ---
 
-## ✦✦✦✦ Training Strategy (single static model — incremental refinement)
+## Mipper (LOD Coarsening)
 
-* Always predict **16³** from an **8³** parent (both nearest-upsampled to canonical sizes).
-* Each training sample represents a **single LOD step**: the target is one level
-  finer than the parent, not always LOD0.
-* Randomly draw **coarsening factor** `f ∈ {2,4,8,16}` per sample:
+Single source of truth: `scripts/mipper.py`
 
-  * Parent: `mip_volume_numpy(labels16, f)` → nearest‑upsample to **8³**
-  * Target: `mip_volume_numpy(labels16, f//2)` → nearest‑upsample to **16³**
-    (for f=2 the target is `labels16` itself — full‑detail LOD0)
-  * `lod_token = log2(f)` (1,2,3,4)
-  * `lod_transition = "lod{N}to{N-1}"` (lod1to0, lod2to1, lod3to2, lod4to3)
-* At runtime, LODiffusion chains: LOD4→LOD3→LOD2→LOD1→LOD0, each step feeding
-  the previous prediction as the next parent.
-* **Scheduled sampling** (anti‑drift): with p≈0.1→0.3, derive the parent from the model's
-  **previous** pred (run argmax on logits, then `mip_volume_torch`) instead of truth.
-* **Loss**: `CE(block_logits, target_labels) + λ_air * BCEWithLogits(air_mask, target_occ)`; start `λ_air=0.25`.
-* **Metrics**: per‑step (by transition) and **full rollout** LOD4→…→LOD0 (self‑fed).
+- Opacity tiers: air=0, water/lava/glass/leaves=1, other solids=15
+- Selection: `score = (opacity << 4) | corner_priority` — highest wins
+- When all 8 corners equal opacity, corner I₁₁₁ wins (priority 7)
 
 ---
 
-## 🧱 Worldgen Rules
+## Implementation Guardrails
 
-* Always write `server.properties` before first boot:
-
-  ```
-  level-seed=<numeric>
-  generate-structures=false
-  difficulty=peaceful
-  spawn-npcs=false
-  spawn-animals=false
-  spawn-monsters=false
-  ```
-* **Terrain purity** (see `tests/test_terrain_purity.py`):
-  After server ready, **before Chunky starts**, send:
-  1. Gamerules: `randomTickSpeed 0`, `doFireTick false`, `mobGriefing false`,
-     `doWeatherCycle false`, `doDaylightCycle false`, `doMobSpawning false`
-  2. `/tick freeze` (MC 1.20.3+) — halts ALL ticking (water flow, leaf decay, etc.)
-  This ensures chunks are saved in their exact as-generated state.
-* Constants live in `scripts/worldgen/bootstrap.py`: `TERRAIN_PURITY_GAMERULES`,
-  `TICK_FREEZE_COMMAND`, `STRUCTURE_ONLY_BLOCKS`.
-* Launch Fabric server headless (`nogui`) with `-Xmx` from config; never hardcode Java path—use `JAVA_HOME` or `which java`.
-* Use **Chunky** commands (`center`, `radius`, `start`) and wait for region files to complete before shutdown.
-* Generate into a **temp directory**; on success, copy `.mca` into the batch dir; then delete the temp world.
+- Python 3.11+; use `pathlib.Path`
+- `rocksdict` + `zstandard` for Voxy RocksDB; `torch` + `numpy` for training
+- Validate shapes/dtypes at boundaries
+- No global mutable state
+- No `Optional` with silent fallbacks — if data is missing, error or skip with message
 
 ---
 
-## 🧰 Implementation Guardrails
+## When editing code
 
-* Python **3.11+**; use `pathlib.Path`; avoid global state when possible.
-* `rocksdict` + `zstandard` for Voxy RocksDB extraction; `torch` + `numpy` for training.
-* Keep tensors typed/sized exactly as the contract; validate in `dataset.__getitem__`.
-* Limit batch RAM; stream from NPZ; pin shapes in `collate_fn`.
-* Respect disk cap (10–20 GB); delete batch outputs after training unless `--keep`.
-* Use `pipeline.py` to orchestrate extract→train→export→deploy.
+1. **Find the canonical file** from the table above
+2. **Modify it in place** — do not create a new file
+3. **Update tests** in the corresponding `tests/test_*.py`
+4. **Update this file** if the I/O contract or file list changes
 
 ---
 
-## 🧪 Tests (what to write first)
+## Tests
 
-* **Terrain purity**: constants are complete; gamerules + tick freeze sent before Chunky;
-  server.properties has all required settings; structure-only blocks detectable in vocab.
-* **Mipper invariants**: all-air→all-air; single opaque voxel wins; occupancy ≤ OR-pool.
-* **Voxy extraction**: round-trip vocab mapping; NPZ shapes/dtypes match contract.
-* **Dataset contract**: shapes/dtypes are exact; raise if not.
-* **Mini E2E**: extract(Voxy DB, ≥ 64 chunks) → pair → 1 epoch → export ONNX → onnxruntime forward.
+Existing test files:
+- `tests/test_mipper.py` — Mipper invariants
+- `tests/test_voxy_extraction.py` — Voxy reader + NPZ round-trip
+- `tests/test_conditioning.py` — anchor conditioning
+- `tests/test_forward_pass.py` — model forward pass shapes
+- `tests/test_lod_embedding.py` — LOD embedding behavior
+- `tests/test_unet3d.py` — UNet architecture
 
----
-
-## 🚀 Export & Model Config
-
-* Use `scripts/export_lod.py` to export **static** ONNX (opset ≥ 17): ordered inputs/outputs only.
-* Export also writes `model_config.json` with:
-
-  * Inputs/outputs (name, dtype, shape, normalization)
-  * `block_mapping` from `config/voxy_vocab.json` (Voxy-native block→ID)
-  * `block_id_to_name` reverse mapping
-  * MC version, git SHA, dataset ID
-* Ship `test_vectors.npz` (inputs + outputs) for DJL verification.
-* LODiffusion's `VoxyBlockMapper` reads `block_mapping` from `model_config.json` at runtime.
-
----
-
-## 🧱 CI Expectations
-
-Your existing Windows CI runs **lint/typecheck/tests**. Add two jobs (or steps) after tests:
-
-1. **Export ONNX + vectors** (CPU Torch + onnxruntime)
-2. **DJL verify**: Java loads ONNX; forward pass OK; (optional) compare to vectors with `max_abs_diff ≤ 1e‑4`.
-
-See `docs/AC.md` for a ready workflow. Keep the Windows runner for parity with your dev environment.
-
----
-
-## 🔁 TDD Cycle & Commit Rules
-
-* **RED → GREEN → REFACTOR** as three commits per feature.
-* Work in `feat/*` branches; merge to `main` only after REFACTOR with docs updated.
-* Record assumptions & decisions in commit messages and link to `docs/AC.md` sections when relevant.
-
----
-
-## 🧼 Do / Don’t
-
-**Do**
-
-* Validate shapes/dtypes aggressively at boundaries.
-* Log per‑step metrics (f=1,2,4,8,16) and **rollout** results.
-* Delete temp worlds & batches after use.
-
-**Don’t**
-
-* Don’t synthesize air/stone when chunk read fails—**skip** chunk.
-* Don’t export ONNX with dynamic axes or dict I/O.
-* Don’t hardcode Java paths or OS‑specific separators.
-
----
-
-## 📎 Snippets Copilot Can Reuse
-
-**3D OR‑pool (2×2×2):**
-
-```python
-occ8 = (
-  occ16[0::2,0::2,0::2] | occ16[1::2,0::2,0::2] | occ16[0::2,1::2,0::2] | occ16[1::2,1::2,0::2] |
-  occ16[0::2,0::2,1::2] | occ16[1::2,0::2,1::2] | occ16[0::2,1::2,1::2] | occ16[1::2,1::2,1::2]
-)
-```
-
-**Voxy Mipper (canonical LOD coarsening):**
-
-```python
-from scripts.mipper import build_opacity_table, mip_volume_numpy, mip_volume_torch
-
-# NumPy (data pipeline, extraction)
-tbl = build_opacity_table(n_blocks=4096)          # air=0, transparent=1, solid=15
-labels8, occ8 = mip_volume_numpy(labels16, 2, tbl)  # 16³ → 8³
-labels4, occ4 = mip_volume_numpy(labels16, 4, tbl)  # 16³ → 4³  (recursive inside)
-
-# PyTorch (training, inference)
-tbl_t = torch.from_numpy(tbl).long().to(device)
-labels8_t, occ8_t = mip_volume_torch(labels16_t.long(), 2, tbl_t)  # (B,D,H,W), (B,D//2,H//2,W//2)
-```
-
-**Incremental refinement pair generation in dataset:**
-
-```python
-from scripts.mipper import build_opacity_table, mip_volume_numpy
-import math, numpy as np
-
-tbl = build_opacity_table(n_blocks=4096)
-for f in (2, 4, 8, 16):
-    # Parent: LOD N, coarsened by f, upsampled to 8³
-    parent_labels, parent_occ = mip_volume_numpy(labels16, f, tbl)
-    parent_8 = np.repeat(np.repeat(np.repeat(
-        parent_occ, 8 // parent_occ.shape[0], axis=0),
-        8 // parent_occ.shape[1], axis=1),
-        8 // parent_occ.shape[2], axis=2)  # → 8³
-
-    # Target: LOD N-1 (one level finer), upsampled to 16³
-    f_target = f // 2
-    if f_target == 1:
-        target = labels16  # LOD0, already 16³
-    else:
-        tgt, _ = mip_volume_numpy(labels16, f_target, tbl)
-        up = 16 // tgt.shape[0]
-        target = np.repeat(np.repeat(np.repeat(tgt, up, 0), up, 1), up, 2)
-
-    lod_token = int(math.log2(f))  # 1, 2, 3, 4
-    transition = f"lod{lod_token}to{lod_token - 1}"  # lod1to0, lod2to1, ...
-```
-
----
-
-## 🧩 Stretch (post‑Phase‑1)
-
-* Add tiny **surface (2D)** and/or **coarse 8³** heads to color far LODs without 16³.
-* Add multinoise inputs (if not already) to tighten long‑range fidelity.
-* Explore INT8/FP16 quantization (verify opset + accuracy).
-
----
-
-**Keep this file aligned with `docs/AC.md`. If they diverge, update both in the same PR.**
+Run: `python -m pytest tests/ -q`

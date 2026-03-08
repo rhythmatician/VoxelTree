@@ -1,30 +1,60 @@
-# Per-LOD Vanilla Noise Design
+# Per-LOD Noise & Conditioning Design
 
-> How much vanilla noise does each LOD transition need, and where does it come from?
+> What conditioning inputs does each LOD transition need, and why router6 was dropped.
 
 ---
 
-## 1. Problem Statement
+## 1. Decision: Router6 Dropped (March 2026)
 
-The model accepts `x_router6 [1,6,16,16] float32` as a conditioning input — six
-2D noise maps (temperature, vegetation, continentalness, erosion, depth, ridges).
-Today, this input is **fake on both sides**:
+The model originally accepted `x_router6 [1,6,16,16] float32` — six 2D noise
+maps (temperature, vegetation, continentalness, erosion, depth, ridges). This
+input has been **removed from the architecture entirely**.
 
-| Side | What happens | Result |
-|------|-------------|--------|
-| **Training (Python)** | NPZ files contain no noise data. `approximate_router6_from_biome()` builds crude linear proxies from biome ID + heightmap. | Model sees redundant info it already gets from biome & height inputs. |
-| **Runtime (Java)** | `LodGenerationService` uses synthetic sine/cosine heightmaps + hardcoded `biome=1`. Router6 approximated from those fakes. | Noise conditioning is meaningless. |
+### Why it was dropped
 
-The `NoiseTap` infrastructure exists on the Java side (15 router fields, 4
-performance tiers, benchmarked) but is **not wired into** the generation loop.
-On the Python side, no mechanism exists to extract real noise during data
-preparation.
+| Observation | Implication |
+|-------------|------------|
+| **Biome IS the output of router6.** MC's multi-noise system feeds temperature, vegetation, continentalness, erosion, depth, and ridges into a lookup table that produces a biome ID. The biome index already encodes the *outcome* of those 6 fields. | Router6 → biome is a many-to-one mapping. Giving the model both is largely redundant. |
+| **Heightmap IS the output of depth/continentalness/erosion/ridges.** The terrain shape is determined by those noise fields. The heightmap captures their combined effect. | 4 of 6 router6 channels are already represented by the heightmap. |
+| **No real router6 data existed.** All 53K+ NPZ training files contain only `labels16`, `biome_patch`, `heightmap_patch`, and `y_index`. Router6 was always approximated — `approximate_router6_from_biome()` was literally reconstructing a crude inverse of the biome→noise mapping, feeding the model information it already had. | The model was trained on circular/redundant data. Removing it loses nothing. |
+| **No LOD0 generation.** We only generate LOD4→LOD1 (coarse terrain). Vanilla Minecraft handles LOD0 (block-level). At these coarse resolutions, biome + heightmap + y_index provide sufficient spatial context. | Router6's value would only appear at fine-grained (LOD0) cave/overhang detail. |
+| **Massive simplification.** Dropping router6 eliminates the need for cubiomes CLI extensions, NoiseTap runtime wiring, and offline Java extractors — all of which were unbuilt infrastructure blocking training. | Unblocks the entire data pipeline with zero new tooling. |
 
-### What "real noise" means
+### What the model uses now
+
+| Input | Shape | Type | What it provides |
+|-------|-------|------|-----------------|
+| `height_planes` | `[B, 5, 16, 16]` | float32 | 5 normalised height features: raw heightmap, surface height, surface - slab_y, normalised Y position, height variance |
+| `biome_idx` | `[B, 16, 16]` | int64 | Biome index per column → learned embedding (256 biomes) |
+| `y_index` | `[B]` | int64 | Vertical slab index (0–23) → learned embedding. Tells the model "how deep" this section is. |
+| `parent_voxel` | `[B, 1, P, P, P]` | float32 | Binary occupancy from parent LOD (refinement models only; P ∈ {1,2,4}) |
+
+### ONNX contract (v3, post router6 removal)
+
+```
+Init model (init→LOD4):
+  Inputs:  x_height_planes [1,5,16,16] float32
+           x_biome         [1,16,16]   int64
+           x_y_index       [1]         int64
+  Outputs: block_logits    [1,V,1,1,1] float32
+           air_mask        [1,1,1,1,1] float32
+
+Refinement models (LOD4→3, LOD3→2, LOD2→1):
+  Inputs:  x_height_planes [1,5,16,16] float32
+           x_biome         [1,16,16]   int64
+           x_y_index       [1]         int64
+           x_parent        [1,1,P,P,P] float32
+  Outputs: block_logits    [1,V,D,D,D] float32
+           air_mask        [1,1,D,D,D] float32
+```
+
+---
+
+## 2. What Router6 Was (Reference)
 
 Minecraft 1.18+ determines biomes and terrain shape via the **multi-noise
-system** (the "NoiseRouter"). Six of its density functions correspond directly
-to our router6 channels:
+system** (the "NoiseRouter"). Six of its density functions were the router6
+channels:
 
 | Channel | NoiseRouter Field | cubiomes Enum | What it controls |
 |---------|------------------|---------------|-----------------|
@@ -36,70 +66,116 @@ to our router6 channels:
 | 5 | Ridges/Weirdness | `NP_WEIRDNESS` | Peak shapes, cavern floors |
 
 These are deterministic for a given seed + (x, y, z). They vary slowly in the
-horizontal plane (biome scale ≈ 1:4) but provide spatial structure that the
-model cannot recover from biome IDs alone.
+horizontal plane (biome scale ≈ 1:4).
+
+**Key insight:** biome = f(temperature, vegetation, continentalness, erosion,
+depth, ridges). Giving the model both the inputs and the output of this function
+is redundant for coarse LOD generation.
 
 ---
 
-## 2. Per-LOD Tier Mapping
+## 3. Per-LOD Conditioning (Current)
 
-Not every LOD transition needs the same noise fidelity. Coarse transitions
-predict large-scale structure (land vs ocean, rough height bands) where 2D
-climate fields suffice. Fine transitions reconstruct block-level detail where
-3D density influences caves and overhangs.
+All 4 LOD transitions use the same conditioning inputs — biome, heightmap,
+and y_index. The LOD token tells the model which resolution it's operating at.
 
-### Chosen mapping
+| Transition | Parent → Target | What's predicted | Conditioning |
+|-----------|----------------|-----------------|-------------|
+| Init→LOD4 | — → 1³ | Single-voxel seed | biome + height + y_index |
+| LOD4→LOD3 | 1³ → 2³ | Continent outline | biome + height + y_index + parent |
+| LOD3→LOD2 | 2³ → 4³ | Biome-scale terrain | biome + height + y_index + parent |
+| LOD2→LOD1 | 4³ → 8³ | Regional detail | biome + height + y_index + parent |
 
-| Transition | Parent → Target | What's predicted | Noise tier | Router fields | Est. cost (Java) |
-|-----------|----------------|-----------------|-----------|--------------|-----------------|
-| LOD4→LOD3 | 1³ → 2³ | Continent outline | **CORE** | 6 (temp, veg, cont, eros, depth, ridges) | ~15 ms |
-| LOD3→LOD2 | 2³ → 4³ | Biome-scale terrain | **CORE** | 6 | ~15 ms |
-| LOD2→LOD1 | 4³ → 8³ | Regional detail | **CORE** | 6 | ~15 ms |
-| LOD1→LOD0 | 8³ → 16³ | Block-level detail | **CORE** | 6 | ~15 ms |
-
-> **Phase-1 simplification**: All transitions use CORE (6 fields).
-> The ONNX contract has a fixed `x_router6 [1,6,16,16]` shape — this is
-> already the right shape for CORE. Expanding later requires changing the
-> model input channels, so we start uniform and add complexity only when
-> ablation studies show a gain.
-
-### Future expansion (post Phase-1)
-
-If cave quality at LOD1→LOD0 proves insufficient:
-
-| Transition | Noise tier | Fields added | Extra cost |
-|-----------|-----------|-------------|-----------|
-| LOD1→LOD0 | CAVE_AWARE | +`INITIAL_DENSITY_NO_JAG`, `FINAL_DENSITY` | ~50 ms |
-| LOD2→LOD1 | EXTENDED | +`FLUID_FLOODEDNESS`, `FLUID_SPREAD`, `LAVA`, `BARRIER` | ~17 ms |
-
-This would require widening `x_router6` from 6→8 or 6→12 channels and
-retraining. The `AnchorConditioningFusion` module already parameterises
-`router6_channels` so the architecture change is trivial; the data pipeline
-change is the real cost.
+> LOD1→LOD0 (8³ → 16³) is **not generated** — vanilla Minecraft handles
+> full-resolution terrain. This is also the transition where router6 would
+> have provided the most value (cave shapes, overhangs).
 
 ---
 
-## 3. Where to Get Real Noise
+## 4. Architecture: AnchorConditioningFusion
 
-### 3a. Training side (Python)
+The conditioning fusion module was simplified from 3 streams to 2:
 
-The training pipeline runs **offline** — it reads pre-extracted Voxy RocksDB
-data, not live Minecraft chunks. It cannot call `DensityFunction.sample()`.
+### Before (with router6)
+```
+height_planes [B,5,H,W] → Conv → quarter of channels
+router6       [B,6,H,W] → Conv → half of channels     ← REMOVED
+biome_indices [B,H,W]   → Embedding → Conv → quarter of channels
+                                  ↓
+                    concat + y_embed → fusion MLP → [B, C, H, W]
+```
 
-**Options evaluated:**
+### After (without router6)
+```
+height_planes [B,5,H,W] → Conv → third of channels
+biome_indices [B,H,W]   → Embedding → Conv → third of channels
+                                  ↓
+                    concat + y_embed → fusion MLP → [B, C, H, W]
+```
 
-| Approach | Status | Notes |
-|---------|--------|-------|
-| **pyubiomes** (Python wrapper for cubiomes C library) | **BROKEN** — v0.2.0 fails to compile on Python 3.13 / MSVC (javarnd.h syntax errors). No maintained fork. | Only version on PyPI; stale upstream. |
-| **cubiomes-wrapper**, **pycubiomes** | **Don't exist** on PyPI. | |
-| **Existing CLI** (`tools/voxeltree_cubiomes_cli.exe`) | Works, but only supports `biome` and `height` commands — **no router6**. | Prebuilt binary, no source in repo. |
-| **Extend cubiomes CLI** for `climate` command | **Best option** — cubiomes C library exposes `sampleBiomeNoise(bn, np, x, y, z, ...)` which populates `np[6]` with all climate parameters. Need to add a `climate <seed> <x> <z> <w> <h>` command that outputs the 6 noise values per coordinate. | Requires rebuilding the CLI from cubiomes source. |
-| **NoiseDumper command** (`/dumpnoise`) | **Already implemented** in LODiffusion. Dumps CORE router6 + heightmaps + biomes to JSON per chunk from a running MC client. | Requires a live MC session; limited to loaded chunks. Best for spot-checking / validation, not bulk extraction. |
-| **Offline Java extractor** | Write a standalone Java tool that initialises `NoiseConfig` from a seed and samples DensityFunctions without a running server. | Most accurate — uses the exact same code as MC. Heavy setup (needs Minecraft mappings/classpath). |
+The biome stream is larger now (third vs quarter), which makes sense — biome
+carries the information that router6 used to provide.
 
-#### Recommended: Extend cubiomes CLI
+---
 
-Add a new command to the cubiomes CLI:
+## 5. Existing Noise Infrastructure (Preserved but Unused)
+
+The following infrastructure still exists and could be reactivated if a
+future ablation study shows value in raw noise conditioning:
+
+### Python side (VoxelTree)
+
+| File | Purpose | Current status |
+|------|---------|---------------|
+| `scripts/extraction/chunk_extractor.py` | Voxy DB → NPZ extraction | Passes through router6 if present in source data (never is) |
+| `scripts/dataset_respec.py` | Normalisation utilities | Has router6 normalisation code (unused) |
+| `tools/voxeltree_cubiomes_cli.exe` | Cubiomes CLI | `biome` + `height` commands only; no `climate` command was ever added |
+
+### Java side (LODiffusion)
+
+| File | Purpose | Current status |
+|------|---------|---------------|
+| `NoiseTap.java` | Interface — 15 router fields, 4 tiers | **Ready** but not used by model |
+| `NoiseTapImpl.java` | DensityFunction sampling | **Ready** |
+| `NoiseDumperCommand.java` | `/dumpnoise` validation command | **Ready** — useful for debugging |
+| `AnchorSampler.java` | Chunk → biome/height extraction | Biome + heightmap extraction still used; router6 path unused |
+
+### What the Java runtime needs now
+
+With router6 removed, `LodGenerationService` needs:
+1. **Real heightmaps** from `NoiseTap` cache or chunk data (replaces synthetic sine)
+2. **Real biomes** from chunk biome access (replaces hardcoded biome=1)
+3. **y_index** from the section's Y coordinate
+
+Router6 tensor construction can be removed from `UnifiedModelRunner`.
+
+---
+
+## 6. Future: When Would Router6 Come Back?
+
+Router6 reintroduction would only be justified if:
+
+1. **LOD0 generation is added** (8³ → 16³ block-level detail), where cave
+   shapes depend on depth/ridges/erosion at specific Y values.
+2. **An ablation study** on LOD2→LOD1 shows measurably better terrain quality
+   with raw noise vs biome-only conditioning.
+3. **Real noise data is available** — not approximated from biome IDs.
+
+If reintroduced, the path would be:
+- Extend cubiomes CLI with a `climate` command (design in Section 7 below)
+- Re-extract training data with `router6_patch (6, 16, 16) float32` in NPZ files
+- Widen `AnchorConditioningFusion` back to 3 streams
+- Update ONNX contract to include `x_router6 [1,6,16,16]`
+- Wire `NoiseTap` into `LodGenerationService` (GAP-5)
+
+---
+
+## 7. Reference: Cubiomes CLI Extension Design (Deferred)
+
+> This section is preserved for future reference. The CLI extension was never
+> built because router6 was dropped before it was needed.
+
+To add a `climate` command to the cubiomes CLI:
 
 ```
 voxeltree_cubiomes_cli climate <seed> <x> <z> <w> <h> [--y <y>] [--scale <s>]
@@ -108,7 +184,7 @@ voxeltree_cubiomes_cli climate <seed> <x> <z> <w> <h> [--y <y>] [--scale <s>]
 Output: 6 floats per coordinate (temperature, humidity, continentalness,
 erosion, depth, weirdness), one row per (x, z) position.
 
-The cubiomes API call is:
+The cubiomes API call:
 
 ```c
 BiomeNoise bn;
@@ -120,152 +196,15 @@ sampleBiomeNoise(&bn, np, x, y, z, NULL, 0);
 // np[] now contains fixed-point climate values (divide by 10000.0 for float)
 ```
 
-This runs in microseconds per sample — extracting a 16×16 grid takes <1 ms.
-For the full training set (~150k patches × 16×16 = ~38.4M samples), extraction
-would take ~40 seconds.
-
-#### Integration into extraction pipeline
-
-Update `scripts/extract_voxy_training_data.py` to:
-
-1. For each extracted NPZ patch, compute its world-space (x, z) range from
-   the section key.
-2. Shell out to the extended CLI (or use ctypes/cffi binding) to get the 6
-   climate values on a 16×16 grid at surface Y.
-3. Save as `router6_patch (6, 16, 16) float32` in the NPZ file.
-
-Downstream, `MultiLODDataset.__getitem__()` loads `router6_patch` when present
-and falls back to `approximate_router6_from_biome()` when absent (backward
-compat).
-
-### 3b. Runtime side (Java)
-
-The infrastructure is already built:
-
-- **`NoiseTap.java`** — interface with `captureAll(fields, heightmaps)` → `Cache`
-- **`NoiseTapImpl.java`** — samples `DensityFunction.sample()` at 16×16×16
-- **`NoiseDumperCommand.java`** — `/dumpnoise` command for validation
-- **`AnchorSampler.java`** — `sample()` method extracts biomes + heightmap +
-  router6 from a Chunk (uses `NoiseTap` under the hood)
-
-**What's missing** is the wiring in `LodGenerationService.inferAndPushSection()`:
-
-```
-Current:  buildHeightmap() → synthetic sine
-          biome → hardcoded 1
-          router6 → approximateRouter6() from fakes
-
-Needed:   NoiseTap.bind(chunk, noiseConfig, biomeAccess, seed)
-          → captureAll(CORE_FIELDS, DEFAULT_HEIGHTMAPS)
-          → use cache.heightmaps16, cache.biomes4, cache.router for model inputs
-```
-
-This is GAP-5 from the Java audit. The fix is to:
-1. Plumb `NoiseConfig` into `LodGenerationService` (currently unavailable —
-   needs reflection or API hook, same as `NoiseDumperCommand.tryGetNoiseConfig`)
-2. Replace `buildHeightmap()` with `cache.getHeightmap(WORLD_SURFACE_WG)`
-3. Replace hardcoded `biome=1` with `cache.biomes4` (upsampled 4×4→16×16)
-4. Replace `approximateRouter6()` with real router data from cache
+Extraction of 38.4M samples (~150k patches × 16×16) would take ~40 seconds.
 
 ---
 
-## 4. 2D vs 3D Noise
+## 8. Cubiomes ↔ MC Noise Mapping (Reference)
 
-The ONNX contract uses `x_router6 [1,6,16,16]` — **2D** (one value per (x,z)
-column). But noise router fields are actually **3D** — they vary with Y.
+For future validation and cross-checking:
 
-| Field | Y-variation | Impact |
-|-------|------------|--------|
-| Temperature | Negligible (2D noise at biome scale) | 2D is fine |
-| Vegetation (Humidity) | Negligible | 2D is fine |
-| Continentalness | Negligible | 2D is fine |
-| Erosion | Negligible | 2D is fine |
-| Depth | **Strong** — changes linearly with Y (depth = surface - y) | 2D fails underground |
-| Ridges (Weirdness) | Moderate — affects cave shape at boundaries | 2D adequate for surface |
-
-For Phase-1 (terrain-only, no caves), 2D sampling at surface Y is sufficient.
-The `y_index` input already tells the model which vertical slab it's
-reconstructing, which compensates for the lack of Y-varying depth.
-
-For cave support (post Phase-1), we would need to either:
-- Sample noise at the section's midpoint Y rather than surface Y
-- Expand to 3D: `x_router6 [1,6,16,16,16]` (adds 15× more data per sample)
-- Add separate depth/ridges channels sampled at section Y alongside 2D climate
-
----
-
-## 5. ONNX Shape Constraint
-
-The model contract is fixed for Phase-1:
-
-```
-x_router6: [1, 6, 16, 16] float32
-```
-
-All 6 channels are always populated. The LOD token (`x_lod`) tells the model
-which transition it's performing; the router6 content is the same real noise
-regardless of LOD level.
-
-The key insight: **the model can learn to use different noise channels at
-different LOD levels** via the LOD token conditioning, even though the input
-shape is identical. At LOD4→LOD3 it may attend primarily to continentalness
-and temperature; at LOD1→LOD0 it may attend more to erosion and ridges.
-
----
-
-## 6. Implementation Roadmap
-
-### Phase 1a: Extend cubiomes CLI (training data)
-
-1. **Build cubiomes CLI from source** with a new `climate` command
-   - Input: `climate <seed> <x> <z> <w> <h>`
-   - Output: 6 floats per (x, z) coordinate: temp, humidity, cont, erosion, depth, weirdness
-   - Uses `sampleBiomeNoise()` at sea level Y=63
-
-2. **Add `--cli-path` option to extraction script**
-   - `extract_voxy_training_data.py --cli-path tools/voxeltree_cubiomes_cli.exe`
-   - Appends `router6_patch` to each NPZ file
-
-3. **Update dataset loader**
-   - Load `router6_patch` from NPZ when present
-   - Fall back to `approximate_router6_from_biome()` when absent
-   - Log warning ratio so we know how many patches have real vs approximate noise
-
-### Phase 1b: Wire NoiseTap into runtime (Java)
-
-4. **Plumb `NoiseConfig`** into `LodGenerationService`
-   - Use same reflection approach as `NoiseDumperCommand.tryGetNoiseConfig()`
-   - Cache at service startup; log warning if unavailable (graceful degradation)
-
-5. **Replace synthetic inputs** in `inferAndPushSection()`
-   - Real heightmap from `cache.getHeightmap(WORLD_SURFACE_WG)`
-   - Real biomes from `cache.biomes4` → upsample 4→16
-   - Real router6 from `cache.router` (CORE tier)
-   - Fall back to approximation if `NoiseConfig` unavailable
-
-### Phase 1c: Validate
-
-6. **Spot-check consistency**: Use `/dumpnoise` to dump real router6 from a
-   running MC session, compare against cubiomes CLI output for the same seed
-   + coordinates. They should be close (cubiomes is a clean-room reimplementation
-   so minor floating-point differences are expected).
-
-7. **Ablation study**: Train two models — one with real noise, one with
-   approximate noise — and compare metrics. This quantifies the value of real
-   noise conditioning.
-
-### Phase 2: Expand noise tiers (if needed)
-
-8. Add EXTENDED/CAVE_AWARE fields when cave quality metrics warrant it.
-   This touches: CLI output, NPZ format, model input channels, ONNX contract.
-
----
-
-## 7. Cubiomes ↔ MC Noise Mapping
-
-For validation and cross-checking:
-
-| cubiomes enum | cubiomes `np[]` index | MC NoiseRouter field | NoiseTap `RouterField` | router6 channel |
+| cubiomes enum | `np[]` index | MC NoiseRouter field | NoiseTap `RouterField` | Former router6 channel |
 |----|---|---|---|---|
 | `NP_TEMPERATURE` | 0 | `temperature` | `TEMPERATURE` | 0 |
 | `NP_HUMIDITY` | 1 | `vegetation` | `VEGETATION` | 1 |
@@ -279,50 +218,21 @@ get the float equivalent. MC's `DensityFunction.sample()` returns raw doubles.
 
 ---
 
-## 8. Current Infrastructure Inventory
+## 9. Code Changes (March 2026)
 
-### Python side (VoxelTree)
+Files modified to remove router6:
 
-| File | Purpose | Noise status |
-|------|---------|-------------|
-| `scripts/extract_voxy_training_data.py` | Voxy DB → NPZ | **No noise** — outputs labels16, biome, height, y_index only |
-| `train/anchor_conditioning.py` | Router6 approximation + fusion | `approximate_router6_from_biome()` — crude linear proxy |
-| `train/multi_lod_dataset.py` | Dataset loader | Always calls approximate; no NPZ router6 loading |
-| `train/unet3d.py` | Model | Accepts router6 as optional kwarg |
-| `tools/voxeltree_cubiomes_cli.exe` | Cubiomes CLI | `biome` + `height` only, no climate |
-| `scripts/extraction/cubiomes_integration.py` | Cubiomes helper | Uses `find` command not available in current CLI |
+| File | What changed |
+|------|-------------|
+| `train/anchor_conditioning.py` | Removed `approximate_router6_from_biome()`, ROUTER_* constants. Rewrote `AnchorConditioningFusion` from 3 streams to 2 (height + biome). `router6_channels` kept as ignored ctor arg for checkpoint compat. |
+| `train/unet3d.py` | Removed `router6_channels` from `SimpleFlexibleConfig`. `forward()` accepts but ignores `router6` kwarg for backward compat. |
+| `train/multi_lod_dataset.py` | Removed router6 from pair generation, saving, loading, `__getitem__`, and `collate_multi_lod_batch`. |
+| `train_multi_lod.py` | Removed `--router6-channels` CLI arg and `router6` from `forward_step()`. |
+| `train_progressive_quick.py` | Removed router6 from all model calls and dummy data. |
+| `scripts/build_pairs.py` | Updated docstring and warning messages (no longer references router6). |
+| `scripts/export_lod.py` | Removed `x_router6` from ONNX adapters, dummy inputs, input specs, sidecar config, and test vectors. |
 
-### Java side (LODiffusion)
-
-| File | Purpose | Noise status |
-|------|---------|-------------|
-| `NoiseTap.java` | Interface — 15 fields, 4 tiers | **Ready** |
-| `NoiseTapImpl.java` | Implementation — DensityFunction sampling | **Ready** |
-| `NoiseDumperCommand.java` | `/dumpnoise` command → JSON | **Ready** (dumps CORE fields) |
-| `AnchorSampler.java` | Chunk → biome/height/router6 | **Ready** but NOT wired in |
-| `LodGenerationService.java` | Generation loop | **Uses fakes** — sine heightmap, biome=1 |
-| `UnifiedModelRunner.java` | Tensor construction | v2 contract correct, feeds whatever input it receives |
-
----
-
-## 9. Risk & Mitigations
-
-| Risk | Likelihood | Mitigation |
-|------|-----------|-----------|
-| cubiomes noise doesn't match MC noise exactly | Medium — cubiomes is clean-room C reimpl | Validate with `/dumpnoise` on same seed; accept ≤5% deviation |
-| Extending CLI requires C toolchain on Windows | Low — we already have MSVC | Use CMake from cubiomes repo |
-| Real noise doesn't improve metrics vs approximate | Low — but possible for coarse LODs | If so, keep approximate for coarse; use real for LOD1→LOD0 only |
-| `NoiseConfig` reflection breaks in future MC versions | Medium | Graceful fallback to approximation; log warnings |
-
----
-
-## 10. Key Decision: Train with Real Noise from the Start
-
-Rather than training with approximate noise now and retraining later, **we should
-extend the CLI first** and re-extract training data with real router6 values.
-This avoids:
-- Wasting a training run on data we know is suboptimal
-- Needing to re-extract 150k patches later
-- Risk of the model learning to ignore the router6 input (since approximate ≈ biome + height)
-
-The extraction overhead is minimal: ~40 seconds for 38M samples via cubiomes CLI.
+### Files NOT modified (secondary, conditional usage):
+- `scripts/dataset_respec.py` — router6 normalisation (only runs if data present)
+- `scripts/extraction/chunk_extractor.py` — passes through router6 if in source (never is)
+- `scripts/pairing/patch_pairer.py`, `seed_input_linker.py` — older pairing scripts (unused)

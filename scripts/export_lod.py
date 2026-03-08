@@ -12,7 +12,6 @@ LOD0 is NOT exported — vanilla terrain handles full resolution.
 
 Each model receives anchor conditioning inputs:
   x_height_planes : [1, 5, 16, 16]   float32
-  x_router6       : [1, 6, 16, 16]   float32
   x_biome         : [1, 16, 16]      int64
   x_y_index       : [1]              int64
 
@@ -27,7 +26,6 @@ All models output:
 from __future__ import annotations
 
 import argparse
-import inspect
 import json
 import logging
 import subprocess
@@ -37,7 +35,6 @@ from typing import Any, Dict
 
 import numpy as np
 import torch
-import yaml
 
 # Ensure the repo root (VoxelTree/) is on sys.path
 _REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -108,12 +105,7 @@ def collect_export_provenance() -> Dict:
 def embed_block_mapping(model_config: Dict) -> Dict:
     """Embed Voxy vocabulary into model config for self-contained export."""
     try:
-        # Prefer Voxy-native vocabulary
         vocab_path = Path("config/voxy_vocab.json")
-        if not vocab_path.exists():
-            # Fallback to legacy VoxelTree mapping
-            vocab_path = Path("scripts/extraction/complete_block_mapping.json")
-
         if vocab_path.exists():
             with open(vocab_path, "r") as f:
                 block_mapping = json.load(f)
@@ -136,7 +128,6 @@ class InitModelAdapter(torch.nn.Module):
 
     ONNX inputs:
       x_height_planes : [1, 5, 16, 16]  float32
-      x_router6       : [1, 6, 16, 16]  float32
       x_biome         : [1, 16, 16]     int64
       x_y_index       : [1]             int64
 
@@ -152,13 +143,11 @@ class InitModelAdapter(torch.nn.Module):
     def forward(
         self,
         x_height_planes: torch.Tensor,
-        x_router6: torch.Tensor,
         x_biome: torch.Tensor,
         x_y_index: torch.Tensor,
     ):
         out = self.model(
             height_planes=x_height_planes,
-            router6=x_router6,
             biome_indices=x_biome,
             y_index=x_y_index,
         )
@@ -170,7 +159,6 @@ class RefinementModelAdapter(torch.nn.Module):
 
     ONNX inputs:
       x_height_planes : [1, 5, 16, 16]   float32
-      x_router6       : [1, 6, 16, 16]   float32
       x_biome         : [1, 16, 16]      int64
       x_y_index       : [1]              int64
       x_parent        : [1, 1, P, P, P]  float32
@@ -187,14 +175,12 @@ class RefinementModelAdapter(torch.nn.Module):
     def forward(
         self,
         x_height_planes: torch.Tensor,
-        x_router6: torch.Tensor,
         x_biome: torch.Tensor,
         x_y_index: torch.Tensor,
         x_parent: torch.Tensor,
     ):
         out = self.model(
             height_planes=x_height_planes,
-            router6=x_router6,
             biome_indices=x_biome,
             y_index=x_y_index,
             x_parent=x_parent,
@@ -205,64 +191,54 @@ class RefinementModelAdapter(torch.nn.Module):
 # ─── Export logic ────────────────────────────────────────────────────────
 
 
-def load_config(path: Path) -> Dict:
-    with open(path, "r") as f:
-        return yaml.safe_load(f)
-
-
 def export_step(
     adapter: torch.nn.Module,
     step_name: str,
     output_size: int,
     parent_size: int,
     onnx_filename: str,
-    cfg: Dict,
+    config: SimpleFlexibleConfig,
     out_dir: Path,
 ) -> Path:
     """Export a single progressive step to ONNX with sidecar config + test vectors."""
     out_dir.mkdir(parents=True, exist_ok=True)
     adapter.eval()
 
-    biome_vocab = cfg.get("model", {}).get("biome_vocab_size", 256)
-    block_vocab = cfg.get("model", {}).get("block_vocab_size", 1102)
+    biome_vocab = config.biome_vocab_size
+    block_vocab = config.block_vocab_size
 
     # Build dummy inputs
     dummy_height = torch.rand(1, 5, 16, 16)
-    dummy_router = torch.rand(1, 6, 16, 16)
     dummy_biome = torch.randint(0, biome_vocab, (1, 16, 16), dtype=torch.long)
     dummy_y = torch.tensor([12], dtype=torch.long)
 
     if parent_size == 0:
         # Init model — no parent
-        dummy = (dummy_height, dummy_router, dummy_biome, dummy_y)
-        input_names = ["x_height_planes", "x_router6", "x_biome", "x_y_index"]
+        dummy = (dummy_height, dummy_biome, dummy_y)
+        input_names = ["x_height_planes", "x_biome", "x_y_index"]
         inputs_spec = {
             "x_height_planes": [1, 5, 16, 16],
-            "x_router6": [1, 6, 16, 16],
             "x_biome": [1, 16, 16],
             "x_y_index": [1],
         }
         input_dtypes = {
             "x_height_planes": "float32",
-            "x_router6": "float32",
             "x_biome": "int64",
             "x_y_index": "int64",
         }
     else:
         # Refinement model — with parent
         dummy_parent = torch.rand(1, 1, parent_size, parent_size, parent_size)
-        dummy = (dummy_height, dummy_router, dummy_biome, dummy_y, dummy_parent)
-        input_names = ["x_height_planes", "x_router6", "x_biome", "x_y_index", "x_parent"]
+        dummy = (dummy_height, dummy_biome, dummy_y, dummy_parent)
+        input_names = ["x_height_planes", "x_biome", "x_y_index", "x_parent"]
         inputs_spec = {
             "x_height_planes": [1, 5, 16, 16],
-            "x_router6": [1, 6, 16, 16],
             "x_biome": [1, 16, 16],
             "x_y_index": [1],
             "x_parent": [1, 1, parent_size, parent_size, parent_size],
         }
         input_dtypes = {
             "x_height_planes": "float32",
-            "x_router6": "float32",
             "x_biome": "int64",
             "x_y_index": "int64",
             "x_parent": "float32",
@@ -300,7 +276,6 @@ def export_step(
         "assumptions": {
             "y_index_range": [0, 23],
             "height_planes_normalized": True,
-            "router6_normalized": True,
         },
         "biome_vocab_size": biome_vocab,
         "block_vocab_size": block_vocab,
@@ -318,7 +293,6 @@ def export_step(
 
     vectors = {
         "x_height_planes": dummy_height.cpu().numpy(),
-        "x_router6": dummy_router.cpu().numpy(),
         "x_biome": dummy_biome.cpu().numpy(),
         "x_y_index": dummy_y.cpu().numpy(),
         "block_logits": block_logits.cpu().numpy(),
@@ -335,14 +309,23 @@ def export_step(
 
 
 def load_progressive_checkpoint(
-    config: SimpleFlexibleConfig,
     checkpoint_path: Path,
-) -> Dict[str, torch.nn.Module]:
-    """Load a multi-model checkpoint and return per-step models.
+) -> tuple[SimpleFlexibleConfig, Dict[str, torch.nn.Module]]:
+    """Load a multi-model checkpoint and return config + per-step models.
 
-    Supports the new per-step checkpoint format with ``model_state_dicts``.
+    Reads the ``SimpleFlexibleConfig`` stored in the checkpoint by
+    ``train.py`` so no external YAML config is needed.
     """
     ckpt = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+
+    if "config" not in ckpt:
+        raise ValueError(
+            f"Checkpoint {checkpoint_path} has no 'config' key. "
+            "Expected a checkpoint from train.py with an embedded "
+            f"SimpleFlexibleConfig. Available keys: {list(ckpt.keys())}"
+        )
+    config: SimpleFlexibleConfig = ckpt["config"]
+    LOGGER.info("Loaded config from checkpoint: %s", config)
 
     if "model_state_dicts" in ckpt:
         state_dicts = ckpt["model_state_dicts"]
@@ -350,7 +333,7 @@ def load_progressive_checkpoint(
     else:
         raise ValueError(
             f"Checkpoint {checkpoint_path} has no 'model_state_dicts' key. "
-            "Expected a multi-model checkpoint from train_multi_lod.py. "
+            "Expected a multi-model checkpoint from train.py. "
             f"Available keys: {list(ckpt.keys())}"
         )
 
@@ -364,7 +347,7 @@ def load_progressive_checkpoint(
             LOGGER.warning("No state dict for %s — using random weights", key)
         models[key] = model
 
-    return models
+    return config, models
 
 
 def main():
@@ -372,16 +355,10 @@ def main():
         description="Export progressive LOD models to 4 separate ONNX files"
     )
     parser.add_argument(
-        "--config",
-        type=Path,
-        default=Path("config_multi_lod.yaml"),
-        help="Training config YAML (for model hyperparams)",
-    )
-    parser.add_argument(
         "--checkpoint",
         type=Path,
         required=True,
-        help="Multi-model .pt checkpoint from train_multi_lod.py",
+        help="Multi-model .pt checkpoint from train.py",
     )
     parser.add_argument(
         "--out-dir",
@@ -394,16 +371,8 @@ def main():
 
     logging.basicConfig(level=getattr(logging, args.log_level.upper()))
 
-    cfg = load_config(args.config)
-
-    # Build SimpleFlexibleConfig from YAML
-    mcfg = cfg.get("model", {})
-    valid_fields = set(inspect.signature(SimpleFlexibleConfig).parameters.keys())
-    filtered = {k: v for k, v in mcfg.items() if k in valid_fields}
-    config = SimpleFlexibleConfig(**filtered)
-
-    # Load per-step models from checkpoint
-    models = load_progressive_checkpoint(config, args.checkpoint)
+    # Load config + per-step models from checkpoint (no external YAML needed)
+    config, models = load_progressive_checkpoint(args.checkpoint)
 
     LOGGER.info("Exporting 4 progressive LOD models to %s", args.out_dir)
 
@@ -421,7 +390,7 @@ def main():
             output_size=output_size,
             parent_size=parent_size,
             onnx_filename=onnx_filename,
-            cfg=cfg,
+            config=config,
             out_dir=args.out_dir,
         )
         exported.append(path)

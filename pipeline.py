@@ -2,13 +2,14 @@
 """pipeline.py — Data-prep + training pipeline for VoxelTree.
 
 Stage 1 — Data preparation (idempotent, world-locked):
-  Phase 1a  extract:      Voxy RocksDB  →  data/voxy/*.npz (raw LOD0 chunks)
-  Phase 1b  build-pairs:  data/voxy/    →  data/voxy/*_pairs_v1.npz
-                          Runs the Mipper once; 4 LOD transitions per chunk.
+  Phase 1a  extract:         Voxy RocksDB  →  data/voxy/*.npz (raw LOD0 chunks)
+  Phase 1a½ column-heights:  Enrich NPZs with column-level heightmap_surface
+  Phase 1b  build-pairs:     data/voxy/    →  data/voxy/*_pairs_v1.npz
+                             Runs the Mipper once; 4 LOD transitions per chunk.
 
 Stage 2 — Training:
-  Phase 2   train:        *_pairs_v1.npz  →  model weights
-  Phase 3   export:       checkpoint      →  production/model.onnx
+  Phase 2   train:           *_pairs_v1.npz  →  model weights
+  Phase 3   export:          checkpoint      →  production/model.onnx
 
 The pipeline supports:
 - Single-shot: extract once, build-pairs once, train once
@@ -132,6 +133,34 @@ def phase1_extract(
     return n_files
 
 
+def phase1a_column_heights(data_dir: Path) -> bool:
+    """Phase 1a½: Compute column-level surface heights for all extracted NPZs.
+
+    This enriches each NPZ with ``heightmap_surface`` and ``heightmap_ocean_floor``
+    (world-Y coordinates) by scanning all Y-slabs at each (x, z) column.  Must
+    run after extraction and before build-pairs.
+
+    Returns True on success.
+    """
+    print()
+    print("=" * 70)
+    print("  PHASE 1a½: Compute column-level surface heights")
+    print("=" * 70)
+    print()
+
+    cmd = [
+        sys.executable,
+        "scripts/add_column_heights.py",
+        str(data_dir),
+    ]
+
+    result = subprocess.run(cmd, cwd=str(Path(__file__).parent))
+    if result.returncode != 0:
+        print("ERROR: add_column_heights failed with exit code %d" % result.returncode)
+        return False
+    return True
+
+
 def phase1b_build_pairs(
     data_dir: Path,
     *,
@@ -219,7 +248,7 @@ def phase2_train(
     cmd = [
         sys.executable,
         "-u",
-        "train_multi_lod.py",
+        "train.py",
         "--data-dir",
         str(data_dir),
         "--output-dir",
@@ -267,11 +296,10 @@ def phase2_train(
 def phase3_export(
     checkpoint: Path,
     export_dir: Path,
-    *,
-    config_yaml: Path = Path("config_multi_lod.yaml"),
 ) -> Path | None:
     """Phase 3: Export ONNX model for LODiffusion.
 
+    Config is read from the checkpoint — no external YAML needed.
     Returns the path to the exported ONNX file, or None on failure.
     """
     print()
@@ -287,8 +315,6 @@ def phase3_export(
     cmd = [
         sys.executable,
         "scripts/export_lod.py",
-        "--config",
-        str(config_yaml),
         "--checkpoint",
         str(checkpoint),
         "--out-dir",
@@ -418,6 +444,13 @@ def main() -> None:
         "--clean", action="store_true", help="Delete existing data before extraction"
     )
 
+    # -- column-heights ---
+    p_ch = sub.add_parser(
+        "column-heights",
+        help="Phase 1a½: Compute column-level surface heights in extracted NPZs",
+    )
+    p_ch.add_argument("--data-dir", type=Path, default=DEFAULT_DATA_DIR)
+
     # -- build-pairs ---
     p_bp = sub.add_parser(
         "build-pairs",
@@ -445,7 +478,6 @@ def main() -> None:
     p_exp = sub.add_parser("export", help="Phase 3: Export ONNX")
     p_exp.add_argument("--checkpoint", type=Path, required=True)
     p_exp.add_argument("--export-dir", type=Path, default=DEFAULT_EXPORT_DIR)
-    p_exp.add_argument("--config", type=Path, default=Path("config_multi_lod.yaml"))
 
     # -- deploy ---
     p_dep = sub.add_parser("deploy", help="Copy ONNX to LODiffusion config")
@@ -494,6 +526,10 @@ def main() -> None:
             clean_first=args.clean,
         )
 
+    elif args.command == "column-heights":
+        if not phase1a_column_heights(args.data_dir):
+            sys.exit(1)
+
     elif args.command == "build-pairs":
         phase1b_build_pairs(
             args.data_dir,
@@ -515,13 +551,13 @@ def main() -> None:
         )
 
     elif args.command == "export":
-        phase3_export(args.checkpoint, args.export_dir, config_yaml=args.config)
+        phase3_export(args.checkpoint, args.export_dir)
 
     elif args.command == "deploy":
         deploy_onnx(args.export_dir, args.lodiffusion_config)
 
     elif args.command == "run":
-        # Stage 1: data prep
+        # Stage 1a: extract
         n = phase1_extract(
             args.voxy_dir,
             args.data_dir,
@@ -533,6 +569,12 @@ def main() -> None:
             print("No data extracted — aborting")
             sys.exit(1)
 
+        # Stage 1a½: column-level heights
+        if not phase1a_column_heights(args.data_dir):
+            print("Column heights failed — aborting")
+            sys.exit(1)
+
+        # Stage 1b: build pairs
         if not args.skip_build_pairs:
             result = phase1b_build_pairs(
                 args.data_dir,

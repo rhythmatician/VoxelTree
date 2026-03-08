@@ -25,9 +25,13 @@ import torch.nn.functional as F
 
 from .anchor_conditioning import (
     AnchorConditioningFusion,
-    approximate_router6_from_biome,
     compute_height_planes,
 )
+
+# NOTE: router6 has been removed from conditioning.
+# Biome already encodes the outcome of temperature/vegetation/continentalness/
+# erosion/ridges, and heightmap encodes the outcome of depth.
+# See docs/ChatGPTconversation.md for the feature-selection rationale.
 
 
 def get_timestep_embedding(timesteps: torch.Tensor, embedding_dim: int) -> torch.Tensor:
@@ -71,7 +75,6 @@ class SimpleFlexibleConfig:
 
     # Anchor conditioning channels
     height_channels: int = 5  # surface, ocean_floor, slope_x, slope_z, curvature
-    router6_channels: int = 6  # temp, veg, continentalness, erosion, depth, ridges
     y_embed_dim: int = 16  # Y-slab embedding dimension
 
     # Input conditioning (kept for backward compat)
@@ -148,10 +151,9 @@ class SimpleFlexibleUNet3D(nn.Module):
             nn.ReLU(inplace=True),
         )
 
-        # Anchor conditioning fusion (replaces SimpleConditioningFusion)
+        # Anchor conditioning fusion (no router6 — biome encodes that info)
         self.conditioning_fusion = AnchorConditioningFusion(
             height_channels=config.height_channels,
-            router6_channels=config.router6_channels,
             biome_vocab_size=config.biome_vocab_size,
             biome_embed_dim=config.biome_embed_dim,
             y_embed_dim=config.y_embed_dim,
@@ -209,17 +211,16 @@ class SimpleFlexibleUNet3D(nn.Module):
         y_index: torch.Tensor,
         lod: torch.Tensor,
         height_planes: Optional[torch.Tensor] = None,
-        router6: Optional[torch.Tensor] = None,
+        router6: Optional[torch.Tensor] = None,  # ignored, kept for compat
     ) -> Dict[str, torch.Tensor]:
         """
         Forward pass with flexible input/output sizes and anchor conditioning.
 
-        Legacy inputs (biome_patch, heightmap_patch) are always accepted.
-        If height_planes / router6 are None, they are computed from the legacy
-        inputs so that old training data and the v1 ONNX adapter still work.
+        Conditioning inputs: biome_patch, heightmap_patch (or height_planes),
+        y_index, lod.  Router6 has been removed from the architecture.
 
         For ONNX export (v2 contract) biome_patch should be int64 indices [B,H,W]
-        and height_planes / router6 should be pre-computed float32 tensors.
+        and height_planes should be pre-computed float32 tensors.
         """
         input_size = parent_voxel.shape[-1]
         target_size = input_size * 2
@@ -252,25 +253,14 @@ class SimpleFlexibleUNet3D(nn.Module):
         else:
             biome_indices = biome_patch  # already (B,H,W)
 
-        if router6 is None:
-            import warnings
-
-            warnings.warn(
-                "router6 not provided — approximating from biome+heightmap. "
-                "This produces a fundamentally different distribution than "
-                "real noise-router values and WILL cause quality loss.",
-                stacklevel=2,
-            )
-            router6 = approximate_router6_from_biome(biome_indices, hm)  # [B,6,H,W]
-
         # ------------------------------------------------------------------
-        # Conditioning
+        # Conditioning (biome + height_planes + y_index; no router6)
         # ------------------------------------------------------------------
         lod_emb = get_timestep_embedding(lod.flatten(), self.lod_embed_dim)
         lod_emb = self.lod_projection(lod_emb)  # (B, D)
 
         conditioning = self.conditioning_fusion(
-            height_planes, router6, biome_indices.long(), y_index
+            height_planes, biome_indices.long(), y_index
         )  # [B, base_channels, H, W]
 
         # Pad input to 16³ for processing

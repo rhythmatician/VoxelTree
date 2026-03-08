@@ -1,467 +1,817 @@
-#!/usr/bin/env python3
 """
-VoxelTree Training CLI - Main orchestration script for full-scale training
+Multi-LOD Training Script — Separate Models per LOD Step
 
-This script coordinates the complete training pipeline:
-1. Dataset generation and validation
-2. Model training with metrics and logging
-3. Checkpoint management and resumption
-4. Export verification
+Trains 4 separate progressive models (no LOD0 — vanilla handles that):
+  - Init→LOD4:  1×1×1  (tiny MLP, conditioning only)
+  - LOD4→LOD3:  2×2×2  (small Conv3D)
+  - LOD3→LOD2:  4×4×4  (medium Conv3D)
+  - LOD2→LOD1:  8×8×8  (medium-large Conv3D)
 
-Usage:
-    python train.py --config config.yaml --action [generate|train|export]
-    python train.py --help
+Each model is sized to its fixed input/output tensors, yielding better
+ONNX Runtime performance and per-step capacity tuning vs. a unified model.
 """
 
 import argparse
-import logging
-import shutil
+import itertools
+import json
+import random
+import sys
 import time
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+import numpy as np
+
 import torch
-import yaml
-from torch.utils.data import DataLoader
+import torch.nn as nn
+import torch.optim as optim
+from torch.utils.data import DataLoader, Subset
+from tqdm import tqdm
 
-from train.dataset import TrainingDataCollator, VoxelTreeDataset
-from train.logger import TrainingLogger
-from train.trainer import VoxelTrainer
+# Add train directory to path
+sys.path.append(str(Path(__file__).parent / "train"))
 
+from train.multi_lod_dataset import MultiLODDataset, collate_multi_lod_batch
+from train.progressive_lod_models import (
+    ProgressiveLODModel0_Initial,
+    create_init_model,
+    create_lod2_to_lod1_model,
+    create_lod3_to_lod2_model,
+    create_lod4_to_lod3_model,
+)
+from train.unet3d import SimpleFlexibleConfig
+from scripts.mipper import build_opacity_table as _build_opacity_table
+from scripts.mipper import mip_volume_torch as _mip_volume_torch
 
-def setup_logging(log_level: str = "INFO") -> None:
-    """Configure logging for the training pipeline."""
-    logging.basicConfig(
-        level=getattr(logging, log_level.upper()),
-        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-        handlers=[logging.StreamHandler(), logging.FileHandler("training.log")],
-    )
-
-
-def load_config(config_path: Path) -> Dict[str, Any]:
-    """Load and validate configuration from YAML file."""
-    if not config_path.exists():
-        raise FileNotFoundError(f"Config file not found: {config_path}")
-
-    with open(config_path, "r") as f:
-        config = yaml.safe_load(f)
-
-    # Validate required sections
-    required_sections = ["worldgen", "training", "data"]
-    for section in required_sections:
-        if section not in config:
-            raise ValueError(f"Missing required config section: {section}")
-
-    return config
+# Default Voxy vocabulary path
+DEFAULT_VOCAB_PATH = Path("config/voxy_vocab.json")
 
 
-def generate_dataset(config: Dict[str, Any]) -> None:
-    """Generate the full training corpus using the extraction pipeline."""
-    from scripts.extraction.chunk_extractor import ChunkExtractor
-    from scripts.pairing.patch_pairer import PatchPairer
-    from scripts.pairing.seed_input_linker import SeedInputLinker
-    from scripts.worldgen.bootstrap import WorldGenBootstrap
+class MultiLODLoss(nn.Module):
+    """
+    Combined loss for air mask and block type prediction across all LOD levels.
+    Optionally includes a surface-consistency term that penalises the model
+    when its predicted top-surface height deviates from the heightmap anchor.
 
-    logger = logging.getLogger(__name__)
-    logger.info("Starting dataset generation pipeline...")
+    Args:
+        class_weights: Optional float32 tensor of shape [block_vocab_size].
+            Computed by scripts/compute_class_weights.py (median-frequency
+            balancing). Weight 0 means ignore that class (used for air=0 and
+            unseen blocks). Passed to F.cross_entropy at forward time so it
+            moves to the correct device automatically.
+    """
 
-    # Step 1: Generate world chunks
-    logger.info("Step 1: Generating world chunks...")
-    bootstrap = WorldGenBootstrap(
-        seed=config["worldgen"].get("seed", "VoxelTree"),
-        java_heap=config["worldgen"].get("java_heap", "4G"),
-    )
-    world_dir = bootstrap.generate_world_regions()
+    def __init__(
+        self,
+        air_loss_weight: float = 0.25,
+        surface_consistency_weight: float = 0.0,
+        class_weights: Optional[torch.Tensor] = None,
+    ):
+        super().__init__()
+        self.air_loss_weight = air_loss_weight
+        self.surface_consistency_weight = surface_consistency_weight
+        # Register as buffer so .to(device) / .cuda() move it automatically
+        self.register_buffer("class_weights", class_weights)  # None is fine
+        # pos_weight > 1 up-weights the minority class (solid ~25%)
+        # This compensates for the 75/25 air/solid imbalance
+        self.air_loss_fn = nn.BCEWithLogitsLoss(pos_weight=torch.tensor([3.0]))
 
-    # Step 2: Extract chunks to NPZ format
-    logger.info("Step 2: Extracting chunks to NPZ...")
-    extractor = ChunkExtractor()
+    def forward(
+        self,
+        predictions: Dict[str, torch.Tensor],
+        targets: Dict[str, torch.Tensor],
+    ) -> Dict[str, torch.Tensor]:
+        """Compute multi-LOD loss.
 
-    # Find all .mca files in the world directory
-    region_dir = world_dir / "region"
-    mca_files = list(region_dir.glob("*.mca"))
-    logger.info(f"Found {len(mca_files)} .mca files to extract")
+        Args:
+            predictions: Dict with 'air_mask_logits' and 'block_type_logits'.
+            targets: Dict with 'target_blocks', 'target_occupancy', and
+                     optionally 'height_planes' (B, 5, 16, 16).
+        Returns:
+            Dict with individual and total losses.
+        """
+        air_mask_logits = predictions["air_mask_logits"]
+        block_type_logits = predictions["block_type_logits"]
 
-    # Extract using parallel processing
-    chunk_output_paths = extractor.extract_regions_parallel(mca_files)
-    chunk_output_dir = extractor.output_dir
-    logger.info(f"Extracted {len(chunk_output_paths)} chunks to {chunk_output_dir}")
+        target_blocks = targets["target_blocks"]
+        target_occupancy = targets["target_occupancy"]
 
-    # Step 3: Create LOD patch pairs
-    logger.info("Step 3: Creating LOD patch pairs...")
-    pairer = PatchPairer()
-    pairs_output_dir = Path("data/pairs")
-    pairs_output_dir.mkdir(parents=True, exist_ok=True)
-    total_pairs = pairer.process_batch(chunk_output_dir, pairs_output_dir)
-    logger.info(f"Created {total_pairs} training pairs")
+        # Block type loss (cross-entropy)
+        # Reshape for cross-entropy: (B*H*W*D, C) and (B*H*W*D,)
+        B, C, H, W, D = block_type_logits.shape
+        block_logits_flat = block_type_logits.permute(0, 2, 3, 4, 1).reshape(-1, C)
+        target_blocks_flat = target_blocks.reshape(-1)
 
-    # Step 4: Link with seed inputs
-    logger.info("Step 4: Linking with seed inputs...")
-    linker = SeedInputLinker()
+        block_loss = torch.nn.functional.cross_entropy(
+            block_logits_flat,
+            target_blocks_flat,
+            weight=self.class_weights if isinstance(self.class_weights, torch.Tensor) else None,
+            ignore_index=0,
+        )
 
-    # Create output directory for linked examples
-    linked_output_dir = Path("data/linked")
-    linked_output_dir.mkdir(parents=True, exist_ok=True)
+        # Air mask loss (binary cross-entropy)
+        # Polarity: positive logit = SOLID, matching Java runtime convention
+        target_solid = (target_occupancy > 0).float()
+        if target_solid.dim() == 4:  # (B, H, W, D) -> add channel dim
+            target_solid = target_solid.unsqueeze(1)  # (B, 1, H, W, D)
 
-    # Process the pairs and link with seed inputs
-    linked_count = linker.process_batch_linking(
-        pairs_output_dir, linker.seed_inputs_dir, linked_output_dir
-    )
-    logger.info(f"Created {linked_count} linked training examples")
-    final_dataset_dir = linked_output_dir
+        air_loss = self.air_loss_fn(air_mask_logits, target_solid)
 
-    # Step 5: Split into train/val/test
-    logger.info("Step 5: Splitting dataset...")
-    split_dataset(final_dataset_dir, config["data"])
+        # Surface consistency loss (optional)
+        # Penalise mismatch between the predicted top-occupancy surface and
+        # the height_planes[0] (normalised WORLD_SURFACE_WG) anchor.
+        surface_loss = block_type_logits.new_zeros(1).squeeze()
+        if self.surface_consistency_weight > 0 and "height_planes" in targets:
+            height_planes = targets["height_planes"]  # (B, 5, 16, 16)
+            surface_anchor = height_planes[:, 0, :, :]  # (B, 16, 16) normalised 0..1
 
-    logger.info(f"Dataset generation complete! Output: {final_dataset_dir}")
+            # Predicted solid prob: sigmoid of air_mask_logits, shape (B,1,D,H,W)
+            # (positive = solid after polarity fix)
+            solid_prob_5d = torch.sigmoid(air_mask_logits)  # (B,1,D,H,W)
+            # Top surface = first solid slab from above (dim=2, y-axis)
+            # Approximate as the y-coordinate of maximum solid probability, normalised
+            solid_prob = solid_prob_5d.squeeze(1)  # (B, D, H, W)
+            y_weights = torch.linspace(0, 1, D, device=solid_prob.device)
+            # Shape: (B, H, W)  — weighted average y of solid voxels per column
+            predicted_surface = (solid_prob * y_weights[None, :, None, None]).sum(dim=1)  # (B,H,W)
+            predicted_surface = predicted_surface / (solid_prob.sum(dim=1).clamp(min=1e-6))
+            surface_loss = torch.nn.functional.l1_loss(predicted_surface, surface_anchor)
 
+        # Combined loss
+        total_loss = (
+            block_loss
+            + self.air_loss_weight * air_loss
+            + self.surface_consistency_weight * surface_loss
+        )
 
-def split_dataset(dataset_dir: Path, data_config: Dict[str, Any]) -> None:
-    """Split the dataset into train/validation/test sets."""
-    logger = logging.getLogger(__name__)
-
-    # Get all patch files
-    patch_files = list(Path(dataset_dir).glob("*.npz"))
-    total_files = len(patch_files)
-
-    if total_files == 0:
-        raise ValueError(f"No .npz files found in {dataset_dir}")
-
-    # Split ratios (default: 70% train, 20% val, 10% test)
-    train_ratio = data_config.get("train_split", 0.7)
-    val_ratio = data_config.get("val_split", 0.2)
-    # test_ratio not needed explicitly; derived as remainder
-
-    # Calculate splits
-    train_count = int(total_files * train_ratio)
-    val_count = int(total_files * val_ratio)
-    test_count = total_files - train_count - val_count
-
-    logger.info(
-        f"Splitting {total_files} files: {train_count} train, {val_count} val, {test_count} test"
-    )
-
-    # Create split directories
-    splits_dir = Path(data_config["processed_data_dir"])
-    train_dir = splits_dir / "train"
-    val_dir = splits_dir / "val"
-    test_dir = splits_dir / "test"
-
-    for split_dir in [train_dir, val_dir, test_dir]:
-        split_dir.mkdir(parents=True, exist_ok=True)
-
-    # Move files to split directories
-    for i, patch_file in enumerate(patch_files):
-        if i < train_count:
-            dest_dir = train_dir
-        elif i < train_count + val_count:
-            dest_dir = val_dir
-        else:
-            dest_dir = test_dir
-
-        dest_path = dest_dir / patch_file.name
-        shutil.copy2(patch_file, dest_path)
-
-    logger.info("Dataset split completed successfully")
-
-
-def audit_dataset(config: Dict[str, Any]) -> None:
-    """Perform data quality audit on the generated dataset."""
-    from scripts.pairing.patch_validator import PatchValidator
-
-    logger = logging.getLogger(__name__)
-    logger.info("Starting dataset quality audit...")
-
-    processed_dir = Path(config["data"]["processed_data_dir"])
-
-    for split in ["train", "val", "test"]:
-        split_dir = processed_dir / split
-        if not split_dir.exists():
-            logger.warning(f"Split directory not found: {split_dir}")
-            continue
-
-        logger.info(f"Auditing {split} split...")
-        validator = PatchValidator()
-
-        # Get sample of files for audit
-        patch_files = list(split_dir.glob("*.npz"))
-        sample_size = min(100, len(patch_files))  # Audit up to 100 files per split
-
-        for patch_file in patch_files[:sample_size]:
-            try:
-                audit_result = validator.audit_patch_quality(patch_file)
-                logger.debug(f"Audit result for {patch_file.name}: {audit_result}")
-            except Exception as e:
-                logger.error(f"Failed to audit {patch_file}: {e}")
-
-    logger.info("Dataset audit completed")
-
-
-def train_model(config: Dict[str, Any], resume_checkpoint: Optional[Path] = None) -> None:
-    """Train the VoxelTree model with full logging and checkpointing."""
-    logger = logging.getLogger(__name__)
-    logger.info("Starting model training...")
-
-    # Setup directories
-    runs_dir = Path("runs") / f"run_{int(time.time())}"
-    runs_dir.mkdir(parents=True, exist_ok=True)
-
-    # Save config used for this run
-    with open(runs_dir / "config.yaml", "w") as f:
-        yaml.dump(config, f, default_flow_style=False)
-
-    # Create datasets
-    data_config = config["data"]
-    processed_dir = Path(data_config["processed_data_dir"])
-
-    train_dataset = VoxelTreeDataset(processed_dir / "train")
-    val_dataset = VoxelTreeDataset(processed_dir / "val")
-
-    # Create data loaders
-    batch_size = config["training"]["batch_size"]
-    collator = TrainingDataCollator()
-    train_loader = DataLoader(
-        train_dataset,
-        batch_size=batch_size,
-        shuffle=True,
-        num_workers=data_config.get("num_workers", 4),
-        collate_fn=collator,
-    )
-    val_loader = DataLoader(
-        val_dataset,
-        batch_size=batch_size,
-        shuffle=False,
-        num_workers=data_config.get("num_workers", 4),
-        collate_fn=collator,
-    )
-
-    # Initialize trainer
-    trainer = VoxelTrainer(config)
-
-    # Initialize logger
-    training_logger = TrainingLogger(
-        log_dir=runs_dir / "logs", use_tensorboard=config["training"].get("use_tensorboard", True)
-    )
-
-    # Resume from checkpoint if provided
-    if resume_checkpoint:
-        logger.info(f"Resuming training from {resume_checkpoint}")
-        trainer.resume_from_checkpoint(resume_checkpoint)
-
-    # Training loop
-    epochs = config["training"]["epochs"]
-    save_every = config["training"].get("save_every", 10)
-
-    for epoch in range(trainer.current_epoch, epochs):
-        logger.info(f"Starting epoch {epoch + 1}/{epochs}")
-
-        # Training phase
-        trainer.model.train()
-        train_metrics = trainer.train_one_epoch(train_loader)
-
-        # Validation phase
-        trainer.model.eval()
-        val_metrics = trainer.validate_one_epoch(val_loader)
-
-        # Log metrics
-        epoch_metrics = {
-            **train_metrics,
-            **{f"val_{k}": v for k, v in val_metrics.items()},
-            "epoch": epoch + 1,
-            "lr": trainer.optimizer.param_groups[0]["lr"],
+        return {
+            "total_loss": total_loss,
+            "block_loss": block_loss,
+            "air_loss": air_loss,
+            "surface_loss": surface_loss,
         }
-        training_logger.log_metrics(epoch_metrics)
-
-        # Save checkpoint periodically
-        if (epoch + 1) % save_every == 0:
-            checkpoint_path = runs_dir / f"checkpoint_epoch_{epoch + 1}.pt"
-            trainer.save_checkpoint(checkpoint_path, epoch + 1, train_metrics["loss"])
-            logger.info(f"Saved checkpoint: {checkpoint_path}")
-
-        # Save best model
-        if train_metrics["loss"] < trainer.best_loss:
-            trainer.best_loss = train_metrics["loss"]
-            best_model_path = runs_dir / "best_model.pt"
-            trainer.save_checkpoint(best_model_path, epoch + 1, train_metrics["loss"])
-            logger.info(f"New best model saved: {best_model_path}")
-
-    # Final checkpoint
-    final_checkpoint = runs_dir / "final_checkpoint.pt"
-    trainer.save_checkpoint(final_checkpoint, epochs, trainer.best_loss)
-
-    # Close logger
-    training_logger.close()
-
-    logger.info(f"Training completed! Results saved to {runs_dir}")
 
 
-def export_model(config: Dict[str, Any], checkpoint_path: Path) -> None:
-    """Export trained model to ONNX format and verify parity."""
-    logger = logging.getLogger(__name__)
-    logger.info("Starting model export...")
+def compute_metrics(
+    predictions: Dict[str, torch.Tensor], targets: Dict[str, torch.Tensor]
+) -> Dict[str, float]:
+    """Compute evaluation metrics for multi-LOD predictions."""
 
-    # Load trained model
-    trainer = VoxelTrainer(config)
-    trainer.load_checkpoint(checkpoint_path)
-    trainer.model.eval()
+    with torch.no_grad():
+        air_mask_logits = predictions["air_mask_logits"]
+        block_type_logits = predictions["block_type_logits"]
 
-    # Create dummy input for export (static batch=1 for deployment simplicity)
-    dummy_input = (
-        torch.randn(1, 1, 8, 8, 8),  # parent_voxel
-        torch.randint(0, config["model"].get("biome_vocab_size", 256), (1, 16, 16)),  # biome_patch
-        torch.randn(1, 1, 16, 16),  # heightmap_patch
-        torch.randint(0, 24, (1,)),  # y_index
-        torch.randint(1, 5, (1,)),  # lod
-    )
+        target_blocks = targets["target_blocks"]
+        target_occupancy = targets["target_occupancy"]
 
-    export_cfg = config.get("export", {})
-    opset = export_cfg.get("opset_version", 17)
-    onnx_path = checkpoint_path.parent / "model.onnx"
+        # Air mask accuracy (positive = solid, matching Java convention)
+        air_pred = (torch.sigmoid(air_mask_logits) > 0.5).float()
+        target_solid = (target_occupancy > 0).float().unsqueeze(1)
+        air_acc = (air_pred == target_solid).float().mean().item()
 
-    # Wrap model forward if needed to ensure ordered outputs (block_logits, air_mask)
-    class ExportWrapper(torch.nn.Module):
-        def __init__(self, model):
-            super().__init__()
-            self.model = model
+        # Block type accuracy (only on solid voxels)
+        block_pred = block_type_logits.argmax(dim=1)
+        solid_mask = target_occupancy > 0
 
-        def forward(self, parent_voxel, biome_patch, heightmap_patch, y_index, lod):
-            outputs = self.model(
-                parent_voxel=parent_voxel,
-                biome_patch=biome_patch,
-                heightmap_patch=heightmap_patch,
-                y_index=y_index,
-                lod=lod,
+        if solid_mask.sum() > 0:
+            block_acc = (block_pred[solid_mask] == target_blocks[solid_mask]).float().mean().item()
+        else:
+            block_acc = 1.0  # All air, trivially correct
+
+        # Overall accuracy
+        # Air voxels: correct if predicted as air (solid logit < 0.5)
+        # Solid voxels: correct if block type matches
+        air_mask = target_occupancy == 0
+        solid_mask = target_occupancy > 0
+
+        air_correct = (air_pred.squeeze(1)[air_mask] < 0.5).sum()
+        solid_correct = (block_pred[solid_mask] == target_blocks[solid_mask]).sum()
+        total_voxels = target_occupancy.numel()
+
+        overall_acc = (air_correct + solid_correct).float() / total_voxels
+
+        return {
+            "air_accuracy": air_acc,
+            "block_accuracy": block_acc,
+            "overall_accuracy": overall_acc.item(),
+        }
+
+
+# ── LOD transition → model-key mapping ────────────────────────────────────
+# The dataset emits lod_transition strings like "lod4to3"; we map them
+# to model dict keys used throughout training.
+LOD_MODEL_KEY = {
+    "init_to_lod4": "init_to_lod4",
+    "lod4to3": "lod4to3",
+    "lod3to2": "lod3to2",
+    "lod2to1": "lod2to1",
+}
+
+
+def _downsample_targets(blocks: torch.Tensor, occ: torch.Tensor, out_size: int) -> tuple:
+    """Downsample 16³ targets to ``out_size``³ using Voxy Mipper.
+
+    The dataset stores all targets at 16³ for uniform caching.  Each
+    progressive model outputs a different resolution (1/2/4/8), so we
+    mip the targets down before computing loss.
+    """
+    if out_size == 16:
+        return blocks, occ
+
+    if blocks.dim() != 4:
+        raise ValueError(f"Expected blocks shape [B,16,16,16], got {blocks.shape}")
+
+    factor = 16 // out_size
+    tbl = torch.from_numpy(_build_opacity_table(n_blocks=4096)).long().to(blocks.device)
+
+    coarse_blks, coarse_occ = _mip_volume_torch(blocks.long(), factor, tbl)
+    return coarse_blks, coarse_occ.float()
+
+
+def _forward_batch(
+    models: Dict[str, nn.Module],
+    batch: Dict[str, torch.Tensor],
+    device: torch.device,
+) -> Dict[str, torch.Tensor]:
+    """Route a batch to the correct per-step model."""
+    lod_transition: str = batch["lod_transition"]
+    model_key = LOD_MODEL_KEY.get(lod_transition)
+    if model_key is None:
+        raise ValueError(f"Unknown LOD transition: {lod_transition}")
+
+    model = models[model_key]
+
+    # Common conditioning inputs (router6 removed — biome + heightmap suffice)
+    height_planes = batch["height_planes"].to(device)
+    biome_indices = batch["biome_idx"].to(device)
+    y_index = batch["y_index"].to(device)
+
+    if isinstance(model, ProgressiveLODModel0_Initial):
+        # Init model: no parent
+        return model(
+            height_planes=height_planes,
+            biome_indices=biome_indices,
+            y_index=y_index,
+        )
+    else:
+        # Refinement model: needs parent occupancy
+        x_parent = batch["parent_voxel"].to(device)
+        return model(
+            height_planes=height_planes,
+            biome_indices=biome_indices,
+            y_index=y_index,
+            x_parent=x_parent,
+        )
+
+
+def train_epoch(
+    models: Dict[str, nn.Module],
+    dataloader: DataLoader,
+    loss_fn: MultiLODLoss,
+    optimizer: optim.Optimizer,
+    device: torch.device,
+) -> Dict[str, Any]:
+    """Train for one epoch using separate per-step models."""
+
+    for m in models.values():
+        m.train()
+
+    total_loss = 0.0
+    total_block_loss = 0.0
+    total_air_loss = 0.0
+    total_air_acc = 0.0
+    total_block_acc = 0.0
+    total_overall_acc = 0.0
+    num_batches = 0
+
+    lod_counts: dict[str, int] = {}
+
+    total_batches = len(dataloader)
+
+    for batch_idx, batch in tqdm(
+        enumerate(dataloader),
+        total=total_batches,
+        unit="batches",
+        desc="Training",
+        leave=False,
+        dynamic_ncols=True,
+    ):
+        targets = {
+            "target_blocks": batch["target_types"].to(device),
+            "target_occupancy": batch["target_mask"].to(device),
+            "height_planes": batch["height_planes"].to(device),
+        }
+
+        # Track LOD distribution
+        lod_transition: str = batch["lod_transition"]
+        lod_counts[lod_transition] = lod_counts.get(lod_transition, 0) + 1
+
+        # Forward pass through the correct per-step model
+        optimizer.zero_grad()
+        predictions = _forward_batch(models, batch, device)
+
+        # Downsample 16³ targets to match model's native output resolution
+        out_size = predictions["block_type_logits"].shape[-1]
+        if out_size != 16:
+            ds_blocks, ds_occ = _downsample_targets(
+                targets["target_blocks"], targets["target_occupancy"], out_size
             )
-            air_mask_logits = outputs["air_mask_logits"]
-            block_type_logits = outputs["block_type_logits"]
-            # Return in new contract order: block logits first, then air mask
-            return block_type_logits, air_mask_logits
+            targets["target_blocks"] = ds_blocks
+            targets["target_occupancy"] = ds_occ
 
-    export_model_wrapper = ExportWrapper(trainer.model)
-    export_model_wrapper.eval()
+        # Compute loss
+        losses = loss_fn(predictions, targets)
+        loss = losses["total_loss"]
 
-    torch.onnx.export(
-        export_model_wrapper,
-        dummy_input,
-        onnx_path,
-        export_params=True,
-        opset_version=opset,
-        do_constant_folding=True,
-        input_names=["parent_voxel", "biome_patch", "heightmap_patch", "y_index", "lod"],
-        output_names=["block_logits", "air_mask"],
-        dynamic_axes=None,  # Static for simpler runtime integration
-    )
+        # Backward pass
+        loss.backward()
+        optimizer.step()
 
-    logger.info(f"Model exported to ONNX: {onnx_path} (opset {opset})")
+        # Compute metrics
+        metrics = compute_metrics(predictions, targets)
 
-    # Verify ONNX model parity
-    try:
-        import onnx
-        import onnxruntime as ort
+        # Accumulate stats
+        total_loss += loss.item()
+        total_block_loss += losses["block_loss"].item()
+        total_air_loss += losses["air_loss"].item()
+        total_air_acc += metrics["air_accuracy"]
+        total_block_acc += metrics["block_accuracy"]
+        total_overall_acc += metrics["overall_accuracy"]
+        num_batches += 1
 
-        # Load ONNX model
-        onnx_model = onnx.load(onnx_path)
-        onnx.checker.check_model(onnx_model)
+    # Average metrics
+    return {
+        "loss": total_loss / num_batches,
+        "block_loss": total_block_loss / num_batches,
+        "air_loss": total_air_loss / num_batches,
+        "air_accuracy": total_air_acc / num_batches,
+        "block_accuracy": total_block_acc / num_batches,
+        "overall_accuracy": total_overall_acc / num_batches,
+        "lod_distribution": lod_counts,
+    }
 
-        # Create ONNX runtime session
-        ort_session = ort.InferenceSession(str(onnx_path))
 
-        # Run inference with both models
-        with torch.no_grad():
-            # Torch output using contract wrapper for parity
-            with torch.no_grad():
-                torch_block_logits, torch_air_mask = export_model_wrapper(*dummy_input)
+def validate_epoch(
+    models: Dict[str, nn.Module],
+    dataloader: DataLoader,
+    loss_fn: MultiLODLoss,
+    device: torch.device,
+) -> Dict[str, float]:
+    """Validate for one epoch."""
 
-            # Prepare ONNX input (respect positional order)
-            onnx_input = {
-                "parent_voxel": dummy_input[0].numpy(),
-                "biome_patch": dummy_input[1].numpy(),
-                "heightmap_patch": dummy_input[2].numpy(),
-                "y_index": dummy_input[3].numpy(),
-                "lod": dummy_input[4].numpy(),
+    for m in models.values():
+        m.eval()
+
+    total_loss = 0.0
+    total_block_loss = 0.0
+    total_air_loss = 0.0
+    total_air_acc = 0.0
+    total_block_acc = 0.0
+    total_overall_acc = 0.0
+    num_batches = 0
+
+    lod_metrics = {}
+
+    with torch.no_grad():
+        for batch in dataloader:
+            targets = {
+                "target_blocks": batch["target_types"].to(device),
+                "target_occupancy": batch["target_mask"].to(device),
+                "height_planes": batch["height_planes"].to(device),
             }
 
-            onnx_output = ort_session.run(None, onnx_input)
+            lod_transition = batch["lod_transition"]
 
-        # Check parity
-        torch_block_types = torch_block_logits.numpy()
-        torch_air_mask_np = torch_air_mask.numpy()
-        onnx_block_types = onnx_output[0]
-        onnx_air_mask = onnx_output[1]
+            # Forward pass through the correct per-step model
+            predictions = _forward_batch(models, batch, device)
 
-        block_diff = abs(torch_block_types - onnx_block_types).max()
-        air_diff = abs(torch_air_mask_np - onnx_air_mask).max()
+            # Downsample 16³ targets to match model's native output resolution
+            out_size = predictions["block_type_logits"].shape[-1]
+            if out_size != 16:
+                ds_blocks, ds_occ = _downsample_targets(
+                    targets["target_blocks"], targets["target_occupancy"], out_size
+                )
+                targets["target_blocks"] = ds_blocks
+                targets["target_occupancy"] = ds_occ
 
-        logger.info(f"ONNX parity check - block_logits max diff: {block_diff:.6f}")
-        logger.info(f"ONNX parity check - air_mask max diff: {air_diff:.6f}")
+            # Compute loss
+            losses = loss_fn(predictions, targets)
 
-        if block_diff < 1e-5 and air_diff < 1e-5:
-            logger.info("ONNX export parity check PASSED")
-        else:
-            logger.warning("ONNX export parity check FAILED - differences too large")
+            # Compute metrics
+            metrics = compute_metrics(predictions, targets)
 
-    except ImportError:
-        logger.warning("ONNX verification skipped - onnx and onnxruntime not installed")
-    except Exception as e:
-        logger.error(f"ONNX verification failed: {e}")
+            # Accumulate overall stats
+            total_loss += losses["total_loss"].item()
+            total_block_loss += losses["block_loss"].item()
+            total_air_loss += losses["air_loss"].item()
+            total_air_acc += metrics["air_accuracy"]
+            total_block_acc += metrics["block_accuracy"]
+            total_overall_acc += metrics["overall_accuracy"]
+            num_batches += 1
+
+            # Accumulate per-LOD stats
+            if lod_transition not in lod_metrics:
+                lod_metrics[lod_transition] = {
+                    "count": 0,
+                    "loss": 0.0,
+                    "air_accuracy": 0.0,
+                    "block_accuracy": 0.0,
+                    "overall_accuracy": 0.0,
+                }
+
+            lod_stats = lod_metrics[lod_transition]
+            lod_stats["count"] += 1
+            lod_stats["loss"] += losses["total_loss"].item()
+            lod_stats["air_accuracy"] += metrics["air_accuracy"]
+            lod_stats["block_accuracy"] += metrics["block_accuracy"]
+            lod_stats["overall_accuracy"] += metrics["overall_accuracy"]
+
+    # Average overall metrics
+    results = {
+        "loss": total_loss / num_batches,
+        "block_loss": total_block_loss / num_batches,
+        "air_loss": total_air_loss / num_batches,
+        "air_accuracy": total_air_acc / num_batches,
+        "block_accuracy": total_block_acc / num_batches,
+        "overall_accuracy": total_overall_acc / num_batches,
+    }
+
+    # Average per-LOD metrics
+    for lod_transition, stats in lod_metrics.items():
+        if stats["count"] > 0:
+            results[f"{lod_transition}_loss"] = stats["loss"] / stats["count"]
+            results[f"{lod_transition}_air_acc"] = stats["air_accuracy"] / stats["count"]
+            results[f"{lod_transition}_block_acc"] = stats["block_accuracy"] / stats["count"]
+            results[f"{lod_transition}_overall_acc"] = stats["overall_accuracy"] / stats["count"]
+
+    return results
 
 
 def main():
-    """Main CLI entry point."""
-    parser = argparse.ArgumentParser(description="VoxelTree Training Pipeline")
+    parser = argparse.ArgumentParser(description="Train Multi-LOD Flexible Model")
     parser.add_argument(
-        "--config", type=Path, default="config.yaml", help="Path to config YAML file"
+        "--data-dir", type=str, required=True, help="Path to training data directory"
     )
     parser.add_argument(
-        "--action",
-        choices=["generate", "audit", "train", "export"],
-        required=True,
-        help="Action to perform",
+        "--output-dir", type=str, default="./multi_lod_training", help="Output directory"
     )
-    parser.add_argument("--resume", type=Path, help="Path to checkpoint to resume training from")
-    parser.add_argument("--checkpoint", type=Path, help="Path to checkpoint for export")
+    parser.add_argument("--epochs", type=int, default=100, help="Number of training epochs")
+    parser.add_argument("--batch-size", type=int, default=4, help="Batch size")
+    parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate")
+    parser.add_argument("--base-channels", type=int, default=32, help="Base number of channels")
+    parser.add_argument("--air-loss-weight", type=float, default=0.25, help="Weight for air loss")
+    parser.add_argument("--device", type=str, default="auto", help="Device (auto, cpu, cuda)")
+    parser.add_argument("--save-every", type=int, default=10, help="Save checkpoint every N epochs")
+    parser.add_argument("--validate-every", type=int, default=5, help="Validate every N epochs")
     parser.add_argument(
-        "--log-level",
-        default="INFO",
-        choices=["DEBUG", "INFO", "WARNING", "ERROR"],
-        help="Logging level",
+        "--surface-loss-weight",
+        type=float,
+        default=0.0,
+        help="Weight for surface-consistency loss (0=disabled, 0.1 recommended with anchor data)",
+    )
+    parser.add_argument(
+        "--height-channels",
+        type=int,
+        default=5,
+        help="Height-plane channels for anchor conditioning",
+    )
+    # --router6-channels removed: router6 is no longer used as conditioning input
+    parser.add_argument(
+        "--num-workers",
+        type=int,
+        default=0,
+        help="DataLoader workers (0=main process, safest on Windows CPU)",
+    )
+    parser.add_argument(
+        "--vocab",
+        type=Path,
+        default=DEFAULT_VOCAB_PATH,
+        help="Path to Voxy vocabulary JSON (default: config/voxy_vocab.json)",
+    )
+    parser.add_argument(
+        "--resume",
+        type=Path,
+        default=None,
+        help="Path to checkpoint .pt to resume training from",
+    )
+    parser.add_argument(
+        "--no-pair-cache",
+        action="store_true",
+        help="DEPRECATED: pair cache is now mandatory.  Ignored.",
+    )
+    parser.add_argument(
+        "--max-samples",
+        type=int,
+        default=None,
+        metavar="N",
+        help=(
+            "Limit training to N randomly-sampled pairs per run (val = N//10). "
+            "Use for quick smoke-tests, e.g. --max-samples 2000 finishes in ~2 min "
+            "vs ~60 min for a full epoch."
+        ),
+    )
+    parser.add_argument(
+        "--class-weights",
+        type=str,
+        default=None,
+        metavar="PATH_OR_AUTO",
+        help=(
+            "Path to class_weights.npz (from scripts/compute_class_weights.py), "
+            "or 'auto' to compute from the data dir on the fly. "
+            "Applies median-frequency balancing to the block-type loss so rare "
+            "blocks (granite, dirt, wood…) are trained as aggressively as stone."
+        ),
     )
 
     args = parser.parse_args()
 
-    # Setup logging
-    setup_logging(args.log_level)
-    logger = logging.getLogger(__name__)
+    # Setup device
+    if args.device == "auto":
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    else:
+        device = torch.device(args.device)
 
-    # Load configuration
-    try:
-        config = load_config(args.config)
-        logger.info(f"Loaded configuration from {args.config}")
-    except Exception as e:
-        logger.error(f"Failed to load configuration: {e}")
-        return 1
+    print(f"Using device: {device}")
 
-    # Execute requested action
-    try:
-        if args.action == "generate":
-            generate_dataset(config)
-        elif args.action == "audit":
-            audit_dataset(config)
-        elif args.action == "train":
-            train_model(config, args.resume)
-        elif args.action == "export":
-            if not args.checkpoint:
-                logger.error("--checkpoint required for export action")
-                return 1
-            export_model(config, args.checkpoint)
-    except Exception as e:
-        logger.error(f"Action '{args.action}' failed: {e}")
-        return 1
+    # Load Voxy vocabulary for block_vocab_size
+    vocab_path: Path = args.vocab
+    if vocab_path.exists():
+        with open(vocab_path) as f:
+            voxy_vocab = json.load(f)
+        block_vocab_size = len(voxy_vocab)
+        print(f"Voxy vocabulary: {block_vocab_size} block types from {vocab_path}")
+    else:
+        block_vocab_size = 1102  # fallback if no vocab file
+        print(f"Warning: vocab file {vocab_path} not found, using default size {block_vocab_size}")
 
-    logger.info(f"Action '{args.action}' completed successfully!")
-    return 0
+    # Create output directory
+    output_dir = Path(args.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Create per-step models (separate ONNX export targets)
+    config = SimpleFlexibleConfig(
+        base_channels=args.base_channels,
+        biome_vocab_size=256,
+        block_vocab_size=block_vocab_size,
+        height_channels=args.height_channels,
+    )
+
+    models: Dict[str, nn.Module] = {
+        "init_to_lod4": create_init_model(config).to(device),
+        "lod4to3": create_lod4_to_lod3_model(config).to(device),
+        "lod3to2": create_lod3_to_lod2_model(config).to(device),
+        "lod2to1": create_lod2_to_lod1_model(config).to(device),
+    }
+
+    total_params = sum(sum(p.numel() for p in m.parameters()) for m in models.values())
+    print(f"Total parameters across 4 models: {total_params:,}")
+    for name, m in models.items():
+        n = sum(p.numel() for p in m.parameters())
+        print(f"  {name}: {n:,} params")
+
+    # Create datasets
+    if args.no_pair_cache:
+        print("WARNING: --no-pair-cache is deprecated and ignored. " "Pair cache is now mandatory.")
+    print("Loading datasets...")
+    train_dataset = MultiLODDataset(
+        data_dir=args.data_dir,
+        split="train",
+        lod_sampling_weights={
+            # No LOD0 — vanilla handles that.
+            # init_to_lod4 included only if dataset supports it.
+            "init_to_lod4": 0.15,
+            "lod4to3": 0.25,
+            "lod3to2": 0.30,
+            "lod2to1": 0.30,
+        },
+    )
+
+    val_dataset = MultiLODDataset(
+        data_dir=args.data_dir,
+        split="val",
+    )
+
+    # ── Subset for quick test runs (--max-samples) ────────────────────────
+    if args.max_samples is not None:
+        n_train = min(args.max_samples, len(train_dataset))
+        n_val = min(max(1, args.max_samples // 10), len(val_dataset))
+        train_idx = random.sample(range(len(train_dataset)), n_train)
+        val_idx = random.sample(range(len(val_dataset)), n_val)
+        train_dataset = Subset(train_dataset, train_idx)
+        val_dataset = Subset(val_dataset, val_idx)
+        print(
+            f"--max-samples: using {n_train} train + {n_val} val samples "
+            f"({n_train / 80000 * 100:.1f}% of a full epoch)"
+        )
+
+    # Create data loaders
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=args.batch_size,
+        shuffle=True,
+        collate_fn=collate_multi_lod_batch,
+        num_workers=args.num_workers,
+        pin_memory=True if device.type == "cuda" else False,
+    )
+
+    val_loader = DataLoader(
+        val_dataset,
+        batch_size=args.batch_size,
+        shuffle=False,
+        collate_fn=collate_multi_lod_batch,
+        num_workers=args.num_workers,
+        pin_memory=True if device.type == "cuda" else False,
+    )
+
+    print(f"Train samples: {len(train_dataset)}")
+    print(f"Val samples: {len(val_dataset)}")
+
+    # ── Class weights for block-type loss ──────────────────────────────────
+    class_weights_tensor: Optional[torch.Tensor] = None
+    if args.class_weights is not None:
+        from scripts.compute_class_weights import compute_weights, load_weights  # noqa: E402
+
+        cw_arg = args.class_weights.strip()
+        if cw_arg.lower() == "auto":
+            cw_path = Path(args.data_dir) / "class_weights.npz"
+            if cw_path.exists():
+                print(f"Loading cached class weights: {cw_path}")
+                cw_arr = load_weights(cw_path)
+            else:
+                print("Computing class weights from training pairs (auto)…")
+                cw_arr = compute_weights(
+                    data_dir=Path(args.data_dir),
+                    vocab_size=block_vocab_size,
+                    verbose=True,
+                )
+                np.savez_compressed(cw_path, class_weights=cw_arr)
+                print(f"  Cached → {cw_path}")
+        else:
+            cw_path = Path(cw_arg)
+            if not cw_path.exists():
+                raise FileNotFoundError(f"--class-weights file not found: {cw_path}")
+            print(f"Loading class weights: {cw_path}")
+            cw_arr = load_weights(cw_path)
+
+        class_weights_tensor = torch.tensor(cw_arr, dtype=torch.float32)
+        nonzero = int((class_weights_tensor > 0).sum())
+        print(f"  Class weights loaded: {nonzero} / {len(cw_arr)} non-zero classes")
+        print(
+            f"  Weight range (non-zero): "
+            f"{class_weights_tensor[class_weights_tensor > 0].min():.3f} … "
+            f"{class_weights_tensor.max():.3f}"
+        )
+
+    # Create loss function and optimizer (shared across all models)
+    loss_fn = MultiLODLoss(
+        air_loss_weight=args.air_loss_weight,
+        surface_consistency_weight=args.surface_loss_weight,
+        class_weights=class_weights_tensor,
+    )
+    all_params = list(itertools.chain.from_iterable(m.parameters() for m in models.values()))
+    optimizer = optim.AdamW(all_params, lr=args.lr, weight_decay=1e-4)
+
+    # Learning rate scheduler
+    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs)
+
+    # Resume from checkpoint if requested
+    start_epoch = 1
+    best_val_loss = float("inf")
+
+    if args.resume is not None:
+        ckpt = torch.load(args.resume, map_location=device, weights_only=False)
+
+        # Load per-model state dicts (new format) or skip (old unified format)
+        model_states = ckpt.get("model_state_dicts", {})
+        loaded_any = False
+        for name, m in models.items():
+            if name in model_states:
+                m.load_state_dict(model_states[name])
+                loaded_any = True
+            else:
+                print(f"  Warning: no saved state for model '{name}', using fresh weights")
+
+        if not loaded_any and "model_state_dict" in ckpt:
+            print(
+                "  Note: checkpoint is from old unified model architecture. "
+                "All 4 models will start with fresh weights."
+            )
+            # Don't inherit epoch/optimizer from incompatible architecture
+            ckpt.pop("optimizer_state_dict", None)
+            ckpt.pop("epoch", None)
+            ckpt.pop("val_loss", None)
+
+        # Load optimizer state only if it matches the current param count
+        try:
+            if "optimizer_state_dict" in ckpt:
+                optimizer.load_state_dict(ckpt["optimizer_state_dict"])
+        except (ValueError, KeyError) as e:
+            print(f"  Warning: could not restore optimizer state ({e}), using fresh optimizer")
+
+        start_epoch = ckpt.get("epoch", 0) + 1
+        best_val_loss = ckpt.get("val_loss", float("inf"))
+        # Advance scheduler to match resumed epoch
+        for _ in range(start_epoch - 1):
+            scheduler.step()
+        print(
+            f"Resumed from {args.resume} "
+            f"(epoch {start_epoch - 1}, "
+            f"best_val_loss={best_val_loss:.4f})"
+        )
+
+    start_time = time.time()
+    print("Starting training...")
+
+    for epoch in tqdm(
+        range(start_epoch, args.epochs + 1),
+        unit="epochs",
+        dynamic_ncols=True,
+        desc="Training  Epochs",
+    ):
+        epoch_start = time.time()
+
+        # Train
+        train_metrics = train_epoch(models, train_loader, loss_fn, optimizer, device)
+
+        # Update learning rate
+        scheduler.step()
+
+        # Print training stats
+        print(f"Epoch {epoch}/{args.epochs}")
+        print(
+            f"  Train Loss: {train_metrics['loss']:.4f} "
+            f"(Block: {train_metrics['block_loss']:.4f}, Air: {train_metrics['air_loss']:.4f})"
+        )
+        print(
+            f"  Train Acc: Overall {train_metrics['overall_accuracy']:.3f}, "
+            f"Air {train_metrics['air_accuracy']:.3f}, Block {train_metrics['block_accuracy']:.3f}"
+        )
+        print(f"  LOD Distribution: {train_metrics['lod_distribution']}")
+
+        # Validate
+        if epoch % args.validate_every == 0:
+            val_metrics = validate_epoch(models, val_loader, loss_fn, device)
+
+            print(f"  Val Loss: {val_metrics['loss']:.4f}")
+            print(
+                f"  Val Acc: Overall {val_metrics['overall_accuracy']:.3f}, "
+                f"Air {val_metrics['air_accuracy']:.3f}, Block {val_metrics['block_accuracy']:.3f}"
+            )
+
+            # Print per-LOD validation metrics
+            for lod_transition in ["init_to_lod4", "lod4to3", "lod3to2", "lod2to1"]:
+                if f"{lod_transition}_overall_acc" in val_metrics:
+                    acc = val_metrics[f"{lod_transition}_overall_acc"]
+                    print(f"  {lod_transition}: {acc:.3f}")
+
+            # Save best model
+            if val_metrics["loss"] < best_val_loss:
+                best_val_loss = val_metrics["loss"]
+                torch.save(
+                    {
+                        "epoch": epoch,
+                        "model_state_dicts": {name: m.state_dict() for name, m in models.items()},
+                        "optimizer_state_dict": optimizer.state_dict(),
+                        "config": config,
+                        "val_loss": val_metrics["loss"],
+                        "val_metrics": val_metrics,
+                    },
+                    output_dir / "best_model.pt",
+                )
+                print(f"  ** New best model saved (val_loss: {best_val_loss:.4f})")
+
+        # Save checkpoint
+        if epoch % args.save_every == 0:
+            torch.save(
+                {
+                    "epoch": epoch,
+                    "model_state_dicts": {name: m.state_dict() for name, m in models.items()},
+                    "optimizer_state_dict": optimizer.state_dict(),
+                    "config": config,
+                },
+                output_dir / f"checkpoint_epoch_{epoch}.pt",
+            )
+
+        epoch_time = time.time() - epoch_start
+        print(f"  Epoch time: {epoch_time:.1f}s")
+        print()
+
+    total_time = time.time() - start_time
+    print(f"Training completed in {total_time/3600:.2f} hours")
+
+    # Save final model (all 4 per-step models in one checkpoint)
+    torch.save(
+        {
+            "epoch": args.epochs,
+            "model_state_dicts": {name: m.state_dict() for name, m in models.items()},
+            "optimizer_state_dict": optimizer.state_dict(),
+            "config": config,
+        },
+        output_dir / "final_model.pt",
+    )
+
+    print(f"Final model saved to {output_dir / 'final_model.pt'}")
 
 
 if __name__ == "__main__":
-    exit(main())
+    main()
