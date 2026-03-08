@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""add_column_heights.py — Merge vanilla heightmaps from /dumpnoise JSON into NPZs.
+"""add_column_heights.py — Merge vanilla heightmaps and biomes from /dumpnoise JSON into NPZs.
 
 The Java runtime computes heightmaps via ``ChunkGenerator.getHeight()`` with
 ``Heightmap.Type.WORLD_SURFACE_WG`` — this is pure vanilla terrain-generation
 math that works for ANY coordinate, including chunks that have never been
-loaded.  The ``/dumpnoise`` command exports these exact values to JSON files.
+loaded.  The ``/dumpnoise`` command exports heightmaps and biome names to JSON.
 
 This script:
   1. Loads all ``chunk_<cx>_<cz>.json`` files from the noise-dump directory
@@ -12,10 +12,13 @@ This script:
   3. Matches each NPZ to its chunk JSON by (x, z) coordinate
   4. Stores ``heightmap_surface`` [16, 16] float32 and ``heightmap_ocean_floor``
      [16, 16] float32 in each NPZ — values are world-Y coordinates (e.g. 65.0)
-  5. Re-saves each NPZ with the new fields added
+  5. Stores ``biome_patch`` [16, 16] int32 — canonical biome IDs from
+     ``biome_mapping.py`` (alphabetical overworld biome ordering, 0–53)
+  6. Re-saves each NPZ with the new fields added
 
-The training code normalises these by ``/ 320`` to match the Java runtime's
-``AnchorSampler.computeHeightPlanes()``.
+The training code normalises heights by ``/ 320`` to match the Java runtime's
+``AnchorSampler.computeHeightPlanes()``.  Biome IDs index into a learned
+``nn.Embedding(256, 32)`` in the model.
 
 Usage::
 
@@ -38,13 +41,16 @@ from pathlib import Path
 import numpy as np
 from tqdm import tqdm
 
+from biome_mapping import BIOME_NAME_TO_ID, UNKNOWN_BIOME_ID
 
-def load_noise_dumps(noise_dump_dir: Path) -> dict[tuple[int, int], dict[str, list[float]]]:
+
+def load_noise_dumps(noise_dump_dir: Path) -> dict[tuple[int, int], dict]:
     """Load all chunk_<cx>_<cz>.json files into a dict keyed by (cx, cz).
 
     Each JSON contains:
       - ``heightmap_surface``: flat 256-element array (x-major, 16×16)
       - ``heightmap_ocean_floor``: flat 256-element array (x-major, 16×16)
+      - ``biome_names``: flat 256-element string array (x-major, 16×16)
       - ``chunk_x``, ``chunk_z``: chunk coordinates
 
     Returns:
@@ -85,9 +91,25 @@ def parse_heightmap(flat_array: list[int | float]) -> np.ndarray:
     return arr.T  # → (z, x)
 
 
+def parse_biome_names(flat_names: list[str]) -> np.ndarray:
+    """Convert a flat 256-element biome name list to (16, 16) int32.
+
+    Maps each biome name (e.g. ``"minecraft:plains"``) to its canonical
+    integer ID using the shared ``biome_mapping.BIOME_NAME_TO_ID`` dict.
+    Unknown biomes map to ``UNKNOWN_BIOME_ID`` (255).
+
+    Layout follows the same x-major → (z, x) transpose as heightmaps.
+    """
+    ids = np.array(
+        [BIOME_NAME_TO_ID.get(name, UNKNOWN_BIOME_ID) for name in flat_names],
+        dtype=np.int32,
+    ).reshape(16, 16)  # (x, z)
+    return ids.T  # → (z, x)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Merge vanilla heightmaps from /dumpnoise JSON into training NPZ files.",
+        description="Merge vanilla heightmaps and biomes from /dumpnoise JSON into training NPZ files.",
     )
     parser.add_argument(
         "data_dir",
@@ -172,10 +194,15 @@ def main() -> None:
         data = dict(np.load(fpath))
         data["heightmap_surface"] = surface
         data["heightmap_ocean_floor"] = ocean_floor
+
+        # Overlay biome_patch if biome_names present in dump
+        if "biome_names" in dump:
+            data["biome_patch"] = parse_biome_names(dump["biome_names"])
+
         np.savez_compressed(fpath, **data)
         updated += 1
 
-    print(f"\nUpdated {updated} NPZ files with vanilla heightmaps")
+    print(f"\nUpdated {updated} NPZ files with vanilla heightmaps + biomes")
     if skipped:
         print(f"Skipped {skipped} files (no matching noise dump)")
     if missing_chunks:
@@ -204,6 +231,12 @@ def main() -> None:
             hof = d["heightmap_ocean_floor"]
             print(
                 f"  heightmap_ocean_floor: shape={hof.shape} min={hof.min():.1f} max={hof.max():.1f}"
+            )
+        if "biome_patch" in d:
+            bp = d["biome_patch"]
+            print(
+                f"  biome_patch:           shape={bp.shape} unique={len(np.unique(bp))} "
+                f"range=[{bp.min()},{bp.max()}]"
             )
 
 
