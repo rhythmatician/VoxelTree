@@ -64,7 +64,14 @@ def compute_column_surface_heights(
 
     for section_y, fpath in column_files:
         data = np.load(fpath)
-        block_ids = data["labels16"]  # (16, 16, 16) — (y, z, x)
+        # terrain_labels required: terrain-only blocks (vegetation filtered)
+        # If missing, file was extracted with old code — must re-extract.
+        if "terrain_labels" not in data:
+            raise KeyError(
+                f"{fpath}: missing 'terrain_labels' field. "
+                "File was extracted with old code. Re-run extract_voxy_training_data.py."
+            )
+        block_ids = data["terrain_labels"]  # (16, 16, 16) — (y, z, x), vegetation-filtered
 
         base_y = section_y * 16  # world Y of bottom of this section
 
@@ -80,7 +87,7 @@ def compute_column_surface_heights(
                     if lowest_world_y < floor[z, x]:
                         floor[z, x] = lowest_world_y
 
-    # Clamp floor: if no solid block was found, set to surface
+    # Clamp floor: if no terrain block was found, set to surface
     no_solid = surface <= BOTTOM_Y
     surface[no_solid] = 62.0  # sea level default
     floor[no_solid] = 62.0

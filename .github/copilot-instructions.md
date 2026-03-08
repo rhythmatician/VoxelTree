@@ -141,16 +141,17 @@ python pipeline.py run --voxy-dir LODiffusion/run/saves --epochs 20
 
 NPZ files in `data/voxy/` contain per-patch arrays. Required keys:
 
-| Key | Shape | Dtype | Source |
-|---|---|---|---|
-| `labels16` | (16,16,16) | int16/int32 | Voxy block IDs |
-| `biome_patch` | (16,16) | int16/int32 | vanilla biome index |
-| `heightmap_patch` | (1,16,16) | float32 | section-level height |
-| `y_index` | scalar | int | vertical slab index |
-| `heightmap_surface` | (16,16) | float32 | column-level surface height |
-| `heightmap_ocean_floor` | (16,16) | float32 | column-level ocean floor |
+| Key | Shape | Dtype | Source | Notes |
+|---|---|---|---|---|
+| `labels16` | (16,16,16) | int16/int32 | Voxy block IDs | All blocks including vegetation |
+| `terrain_labels` | (16,16,16) | int32 | Extracted data | **REQUIRED**: Terrain-only blocks (vegetation filtered). Extracted by `scripts/extract_voxy_training_data.py`. |
+| `biome_patch` | (16,16) | int16/int32 | vanilla biome index | |
+| `heightmap_patch` | (1,16,16) | float32 | section-level height | |
+| `y_index` | scalar | int | vertical slab index | |
+| `heightmap_surface` | (16,16) | float32 | column-level surface height | Computed from `terrain_labels` to align with Java MOTION_BLOCKING_NO_LEAVES |
+| `heightmap_ocean_floor` | (16,16) | float32 | column-level ocean floor | Computed from `terrain_labels` |
 
-Block vocabulary: 1102 entries from `config/voxy_vocab.json`. Air = 0.
+**Terrain classification:** Non-terrain blocks (filtered during extraction) include: logs, leaves, saplings, flowers, tall grass, decorations, rail, chain, signs, buttons, fences, doors, gates, walls, carpets, torches, ladders, vines, kelp, coral, mushrooms, lily pads, candles, lanterns, etc. (80+ keywords). Air is always excluded (0). Block vocabulary: 1102 entries from `config/voxy_vocab.json`.
 
 ---
 

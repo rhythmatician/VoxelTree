@@ -13,9 +13,10 @@ Usage::
         --min-solid 0.02
 
 The output NPZ files contain:
-    labels16          (16, 16, 16) int32  — canonical Voxy vocabulary IDs
+    labels16          (16, 16, 16) int32  — canonical Voxy vocabulary IDs (all blocks)
+    terrain_labels    (16, 16, 16) int32  — terrain-only IDs (vegetation zeroed out)
     biome_patch       (16, 16)    int32   — biome IDs (column-wise majority)
-    heightmap_patch   (16, 16)    float32 — normalised max non-air Y per column
+    heightmap_patch   (16, 16)    float32 — placeholder (replaced by add_column_heights.py)
     y_index           scalar      int64   — section Y coordinate
 """
 
@@ -139,6 +140,132 @@ def _compute_biome_2d(biome_ids: np.ndarray) -> np.ndarray:
     return result
 
 
+def build_terrain_block_set(vocab: dict[str, int]) -> set[int]:
+    """Identify terrain block IDs from vocabulary.
+
+    Terrain blocks are solid, natural blocks (stone, dirt, water, etc.).
+    Non-terrain includes vegetation (leaves, saplings, flowers, logs, etc.)
+    and decorations (buttons, signs, fences, rails, etc.).
+
+    Returns set of vocab IDs classified as terrain.
+    """
+    non_terrain_keywords = {
+        "acacia_log",
+        "acacia_wood",
+        "acacia_planks",
+        "acacia_leaves",
+        "birch_log",
+        "birch_wood",
+        "birch_planks",
+        "birch_leaves",
+        "dark_oak_log",
+        "dark_oak_wood",
+        "dark_oak_planks",
+        "dark_oak_leaves",
+        "jungle_log",
+        "jungle_wood",
+        "jungle_planks",
+        "jungle_leaves",
+        "oak_log",
+        "oak_wood",
+        "oak_planks",
+        "oak_leaves",
+        "spruce_log",
+        "spruce_wood",
+        "spruce_planks",
+        "spruce_leaves",
+        "mangrove_log",
+        "mangrove_wood",
+        "mangrove_planks",
+        "mangrove_leaves",
+        "crimson_stem",
+        "crimson_wood",
+        "crimson_planks",
+        "warped_stem",
+        "warped_wood",
+        "warped_planks",
+        "cherry_log",
+        "cherry_wood",
+        "cherry_planks",
+        "cherry_leaves",
+        "bamboo",
+        "bamboo_block",
+        "bamboo_planks",
+        "button",
+        "sign",
+        "hanging_sign",
+        "door",
+        "trapdoor",
+        "fence",
+        "fence_gate",
+        "wall",
+        "gate",
+        "pressure_plate",
+        "tripwire",
+        "repeater",
+        "comparator",
+        "rail",
+        "redstone_dust",
+        "redstone_wire",
+        "lantern",
+        "chain",
+        "rod",
+        "candle",
+        "carpet",
+        "torch",
+        "ladder",
+        "vine",
+        "kelp",
+        "seagrass",
+        "sea_grass",
+        "coral",
+        "mushroom",
+        "shroomlight",
+        "flower",
+        "allium",
+        "azure_bluet",
+        "oxeye_daisy",
+        "poppy",
+        "tulip",
+        "lilac",
+        "peony",
+        "rose_bush",
+        "sunflower",
+        "sapling",
+        "tall_grass",
+        "large_fern",
+        "grass",
+        "seagrass",
+        "double_tall_grass",
+        "painting",
+        "web",
+        "cobweb",
+        "stem",
+        "attached_stem",
+        "nether_wart",
+        "sweet_berry",
+        "cave_vines",
+        "twisting_vines",
+        "weeping_vines",
+        "glow_lichen",
+        "hanging_roots",
+        "azalea",
+        "pitcher_plant",
+        "big_dripleaf",
+        "small_dripleaf",
+        "spore_blossom",
+        "sculk_sensor",
+        "sculk_shrieker",
+    }
+
+    terrain_ids = set()
+    for block_name, vocab_id in vocab.items():
+        is_non_terrain = any(kw in block_name for kw in non_terrain_keywords)
+        if not is_non_terrain:
+            terrain_ids.add(vocab_id)
+    return terrain_ids
+
+
 # ------------------------------------------------------------------
 # Extraction
 # ------------------------------------------------------------------
@@ -153,8 +280,17 @@ def extract(
     max_sections: int | None = None,
     prefix: str = "",
 ) -> int:
-    """Extract training NPZ files from a Voxy RocksDB database."""
+    """Extract training NPZ files from a Voxy RocksDB database.
+
+    Each NPZ includes:
+      - labels16: canonical vocab IDs
+      - terrain_labels: vocab IDs with non-terrain blocks zeroed (for heightmap)
+      - biome_patch: 2D biome IDs
+      - heightmap_patch: placeholder (will be replaced by add_column_heights.py)
+      - y_index: section Y coordinate
+    """
     output_dir.mkdir(parents=True, exist_ok=True)
+    terrain_ids = build_terrain_block_set(vocab)
 
     with VoxyReader(db_path) as reader:
         print(reader.summary())
@@ -188,6 +324,10 @@ def extract(
                 max_id = lut.shape[0] - 1
                 blk_canon = lut[np.clip(blk_voxy, 0, max_id)]
 
+                # Filter to terrain blocks only (zero out vegetation, decorations)
+                terrain_blk = blk_canon.copy()
+                terrain_blk[~np.isin(terrain_blk, list(terrain_ids))] = 0
+
                 solid_frac = float(np.mean(blk_canon > 0))
                 if solid_frac < min_solid_fraction:
                     skipped_empty += 1
@@ -203,6 +343,7 @@ def extract(
                 np.savez_compressed(
                     output_dir / fname,
                     labels16=blk_canon.astype(np.int32),
+                    terrain_labels=terrain_blk.astype(np.int32),
                     biome_patch=biome_2d.astype(np.int32),
                     heightmap_patch=heightmap.astype(np.float32),
                     y_index=np.int64(y_index),
