@@ -93,8 +93,13 @@ class TestConditioning:
         inputs_height_B = base_inputs.copy()
 
         batch_size = base_inputs["heightmap_patch"].shape[0]
-        inputs_height_A["heightmap_patch"] = torch.full((batch_size, 1, 16, 16), 64.0)
-        inputs_height_B["heightmap_patch"] = torch.full((batch_size, 1, 16, 16), 128.0)
+        # Use spatially-varying heightmaps so slope/curvature channels also
+        # differ, not just the surface channel (constant maps produce zero
+        # gradients for both inputs, leaving only 1-of-5 channels different).
+        torch.manual_seed(1)
+        inputs_height_A["heightmap_patch"] = torch.rand(batch_size, 1, 16, 16)
+        torch.manual_seed(2)
+        inputs_height_B["heightmap_patch"] = torch.rand(batch_size, 1, 16, 16)
 
         with torch.no_grad():
             output_A = model(**inputs_height_A)

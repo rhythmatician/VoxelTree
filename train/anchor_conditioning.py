@@ -30,6 +30,15 @@ HEIGHT_SLOPE_X: int = 2
 HEIGHT_SLOPE_Z: int = 3
 HEIGHT_CURVATURE: int = 4
 
+
+def _safe_group_norm(channels: int, desired_groups: int = 4) -> nn.GroupNorm:
+    """Create a GroupNorm where num_groups cleanly divides num_channels."""
+    groups = min(desired_groups, channels)
+    while channels % groups != 0:
+        groups -= 1
+    return nn.GroupNorm(max(groups, 1), channels)
+
+
 # Router6 channels removed — biome already encodes the outcome of
 # temperature/vegetation/continentalness/erosion/ridges, and heightmap
 # encodes the outcome of depth.  For LOD4→LOD1 (no LOD0), the marginal
@@ -111,7 +120,7 @@ class AnchorConditioningFusion(nn.Module):
         # Height planes stream
         self.height_conv = nn.Sequential(
             nn.Conv2d(height_channels, third, 3, padding=1, bias=False),
-            nn.GroupNorm(min(4, third), third),
+            _safe_group_norm(third),
             nn.ReLU(inplace=True),
         )
 
@@ -119,7 +128,7 @@ class AnchorConditioningFusion(nn.Module):
         self.biome_embedding = nn.Embedding(biome_vocab_size, biome_embed_dim)
         self.biome_conv = nn.Sequential(
             nn.Conv2d(biome_embed_dim, third, 3, padding=1, bias=False),
-            nn.GroupNorm(min(4, third), third),
+            _safe_group_norm(third),
             nn.ReLU(inplace=True),
         )
 
@@ -131,13 +140,12 @@ class AnchorConditioningFusion(nn.Module):
         # Fusion (third + third + y_dim channels → out_channels)
         fusion_in = third + third + y_embed_dim
 
-        norm_groups = min(8, out_channels)
         self.fusion = nn.Sequential(
             nn.Conv2d(fusion_in, out_channels, 3, padding=1, bias=False),
-            nn.GroupNorm(norm_groups, out_channels),
+            _safe_group_norm(out_channels, desired_groups=8),
             nn.ReLU(inplace=True),
             nn.Conv2d(out_channels, out_channels, 3, padding=1, bias=False),
-            nn.GroupNorm(norm_groups, out_channels),
+            _safe_group_norm(out_channels, desired_groups=8),
             nn.ReLU(inplace=True),
         )
 
