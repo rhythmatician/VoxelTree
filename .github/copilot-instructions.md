@@ -21,11 +21,11 @@ If you think a new file is needed, **ask first**. The answer is almost always
 | Role | File | Notes |
 |---|---|---|
 | **Orchestrator** | `pipeline.py` | Train → export → deploy; `run` delegates dataprep to data-cli.py |
-| **Dataprep CLI** | `data-cli.py` | Unified dataprep: pregen → voxy-import → extract → column-heights → build-pairs |
+| **Dataprep CLI** | `data-cli.py` | Unified dataprep: pregen → voxy-import → dumpnoise → extract → column-heights → build-pairs |
 | **Training** | `train.py` | THE training script. 4 progressive models. |
 | **Extraction** | `scripts/extract_voxy_training_data.py` | Voxy RocksDB → NPZ |
 | **Voxy reader** | `scripts/voxy_reader.py` | RocksDB reader |
-| **Column heights** | `scripts/add_column_heights.py` | Post-extraction heightmap enrichment |
+| **Column heights** | `scripts/add_column_heights.py` | Merge vanilla heightmaps from /dumpnoise JSON into NPZs |
 | **Pair builder** | `scripts/build_pairs.py` | NPZ → LOD transition pair NPZs |
 | **Mipper** | `scripts/mipper.py` | Canonical LOD coarsening (Voxy algorithm) |
 | **Class weights** | `scripts/compute_class_weights.py` | `--class-weights auto` support |
@@ -93,27 +93,28 @@ Config is stored in checkpoints as `SimpleFlexibleConfig` — no external YAML.
 
 ## Canonical Pipeline
 
-**Data preparation** (steps 1-5) lives in `data-cli.py`:
+**Data preparation** (steps 1-6) lives in `data-cli.py`:
 ```
-# All 5 dataprep steps (RCON → local):
+# All 6 dataprep steps (RCON → local):
 python data-cli.py dataprep --from-step pregen \
     --password secret --world-name "New World" \
     --voxy-dir LODiffusion/run/saves --data-dir data/voxy
 
 # Most common: local steps only (extract → column-heights → build-pairs):
 python data-cli.py dataprep --from-step extract \
-    --voxy-dir LODiffusion/run/saves --data-dir data/voxy
+    --voxy-dir LODiffusion/run/saves --data-dir data/voxy \
+    --noise-dump-dir LODiffusion/run/noise_dumps
 
 # Individual RCON commands still work:
 python data-cli.py pregen --password secret
 python data-cli.py voxy-import --password secret --world-name "New World"
 ```
 
-**Training + deployment** (steps 6-8) lives in `pipeline.py`:
+**Training + deployment** (steps 7-9) lives in `pipeline.py`:
 ```
-6. python pipeline.py train           # train 4 progressive models
-7. python pipeline.py export          # checkpoint → 4 ONNX files
-8. python pipeline.py deploy          # copy to LODiffusion config dir
+7. python pipeline.py train           # train 4 progressive models
+8. python pipeline.py export          # checkpoint → 4 ONNX files
+9. python pipeline.py deploy          # copy to LODiffusion config dir
 ```
 
 Full pipeline (dataprep + train [+ export]):
@@ -133,7 +134,7 @@ python pipeline.py run --voxy-dir LODiffusion/run/saves --epochs 20
 - **No fallbacks**: every input is required. No Optional with fallback defaults.
 - **No router6**: dropped entirely. Do not add router6/multinoise inputs.
 - **heightmap_surface required**: every NPZ must have `heightmap_surface` and
-  `heightmap_ocean_floor` (added by `scripts/add_column_heights.py`)
+  `heightmap_ocean_floor` (merged from `/dumpnoise` JSON by `scripts/add_column_heights.py`)
 
 ---
 
@@ -144,14 +145,13 @@ NPZ files in `data/voxy/` contain per-patch arrays. Required keys:
 | Key | Shape | Dtype | Source | Notes |
 |---|---|---|---|---|
 | `labels16` | (16,16,16) | int16/int32 | Voxy block IDs | All blocks including vegetation |
-| `terrain_labels` | (16,16,16) | int32 | Extracted data | **REQUIRED**: Terrain-only blocks (vegetation filtered). Extracted by `scripts/extract_voxy_training_data.py`. |
 | `biome_patch` | (16,16) | int16/int32 | vanilla biome index | |
 | `heightmap_patch` | (1,16,16) | float32 | section-level height | |
 | `y_index` | scalar | int | vertical slab index | |
-| `heightmap_surface` | (16,16) | float32 | column-level surface height | Computed from `terrain_labels` to align with Java MOTION_BLOCKING_NO_LEAVES |
-| `heightmap_ocean_floor` | (16,16) | float32 | column-level ocean floor | Computed from `terrain_labels` |
+| `heightmap_surface` | (16,16) | float32 | vanilla WORLD_SURFACE_WG | From `/dumpnoise` JSON via `add_column_heights.py`; matches Java `ChunkGenerator.getHeight()` |
+| `heightmap_ocean_floor` | (16,16) | float32 | vanilla OCEAN_FLOOR_WG | From `/dumpnoise` JSON via `add_column_heights.py` |
 
-**Terrain classification:** Non-terrain blocks (filtered during extraction) include: logs, leaves, saplings, flowers, tall grass, decorations, rail, chain, signs, buttons, fences, doors, gates, walls, carpets, torches, ladders, vines, kelp, coral, mushrooms, lily pads, candles, lanterns, etc. (80+ keywords). Air is always excluded (0). Block vocabulary: 1102 entries from `config/voxy_vocab.json`.
+**Heightmap alignment:** Training heightmaps come from the same `ChunkGenerator.getHeight(WORLD_SURFACE_WG)` call that the Java runtime uses at LOD inference time. The `/dumpnoise` command exports these values to JSON; `add_column_heights.py` merges them into NPZs. No block-scanning fallbacks.
 
 ---
 

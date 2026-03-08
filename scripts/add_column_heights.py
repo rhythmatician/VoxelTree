@@ -1,20 +1,17 @@
 #!/usr/bin/env python3
-"""add_column_heights.py — Compute column-level surface heights for training NPZs.
+"""add_column_heights.py — Merge vanilla heightmaps from /dumpnoise JSON into NPZs.
 
-The original extraction stores a per-slab heightmap (highest non-air Y within
-the 16-block section, normalised to [0, 1]).  This is wrong for conditioning
-because the model needs the *column-level* surface height — the real world-Y
-coordinate of the terrain surface — to match what the Java runtime computes
-via ``ChunkGenerator.getHeight()``.
+The Java runtime computes heightmaps via ``ChunkGenerator.getHeight()`` with
+``Heightmap.Type.WORLD_SURFACE_WG`` — this is pure vanilla terrain-generation
+math that works for ANY coordinate, including chunks that have never been
+loaded.  The ``/dumpnoise`` command exports these exact values to JSON files.
 
 This script:
-  1. Scans all ``voxy_lod0_*.npz`` files in a directory
-  2. Groups them by (x, z) column
-  3. For each column, loads all Y slices and computes the true per-column
-     surface height (highest non-air block Y in world coordinates)
-  4. Stores ``heightmap_surface`` [16, 16] float32 in world-Y coordinates
-     (e.g., 65.0 for a block at Y=65) and ``heightmap_ocean_floor`` as
-     the lowest non-air Y per column (a rough approximation)
+  1. Loads all ``chunk_<cx>_<cz>.json`` files from the noise-dump directory
+  2. Scans all ``voxy_lod0_*.npz`` files in the data directory
+  3. Matches each NPZ to its chunk JSON by (x, z) coordinate
+  4. Stores ``heightmap_surface`` [16, 16] float32 and ``heightmap_ocean_floor``
+     [16, 16] float32 in each NPZ — values are world-Y coordinates (e.g. 65.0)
   5. Re-saves each NPZ with the new fields added
 
 The training code normalises these by ``/ 320`` to match the Java runtime's
@@ -22,89 +19,87 @@ The training code normalises these by ``/ 320`` to match the Java runtime's
 
 Usage::
 
-    python scripts/add_column_heights.py data/voxy_subset/train
-    python scripts/add_column_heights.py data/voxy_subset/val
+    python scripts/add_column_heights.py data/voxy/train \\
+        --noise-dump-dir LODiffusion/run/noise_dumps
+
+    python scripts/add_column_heights.py data/voxy/val \\
+        --noise-dump-dir LODiffusion/run/noise_dumps
 """
 
 from __future__ import annotations
 
 import argparse
 import glob
+import json
 import re
 import sys
-from collections import defaultdict
 from pathlib import Path
 
 import numpy as np
 from tqdm import tqdm
 
 
-# World limits
-BOTTOM_Y = -64  # Minecraft 1.18+ overworld bottom
-HEIGHT_RANGE = 384  # -64 to 320
+def load_noise_dumps(noise_dump_dir: Path) -> dict[tuple[int, int], dict]:
+    """Load all chunk_<cx>_<cz>.json files into a dict keyed by (cx, cz).
 
-
-def compute_column_surface_heights(
-    column_files: list[tuple[int, str]],
-) -> tuple[np.ndarray, np.ndarray]:
-    """Compute per-column surface and ocean-floor heights.
-
-    Args:
-        column_files: list of (section_y, file_path) for one (x, z) column,
-                      sorted by section_y ascending.
+    Each JSON contains:
+      - ``heightmap_surface``: flat 256-element array (x-major, 16×16)
+      - ``heightmap_ocean_floor``: flat 256-element array (x-major, 16×16)
+      - ``chunk_x``, ``chunk_z``: chunk coordinates
 
     Returns:
-        surface_height: (16, 16) float32 — highest non-air block Y (world coords)
-        ocean_floor:    (16, 16) float32 — lowest non-air block Y (world coords)
+        dict mapping (chunk_x, chunk_z) → parsed JSON dict
     """
-    # Track highest and lowest non-air block Y for each (z, x) column
-    # Initialise: surface at bottom, floor at top
-    surface = np.full((16, 16), float(BOTTOM_Y), dtype=np.float32)
-    floor = np.full((16, 16), float(BOTTOM_Y + HEIGHT_RANGE), dtype=np.float32)
+    pattern = str(noise_dump_dir / "chunk_*.json")
+    files = glob.glob(pattern)
+    if not files:
+        print(f"ERROR: No chunk_*.json files found in {noise_dump_dir}")
+        sys.exit(1)
 
-    for section_y, fpath in column_files:
-        data = np.load(fpath)
-        # terrain_labels required: terrain-only blocks (vegetation filtered)
-        # If missing, file was extracted with old code — must re-extract.
-        if "terrain_labels" not in data:
-            raise KeyError(
-                f"{fpath}: missing 'terrain_labels' field. "
-                "File was extracted with old code. Re-run extract_voxy_training_data.py."
-            )
-        block_ids = data["terrain_labels"]  # (16, 16, 16) — (y, z, x), vegetation-filtered
+    dumps: dict[tuple[int, int], dict] = {}
+    for fpath in files:
+        with open(fpath) as f:
+            data = json.load(f)
+        cx = data["chunk_x"]
+        cz = data["chunk_z"]
+        dumps[(cx, cz)] = data
 
-        base_y = section_y * 16  # world Y of bottom of this section
+    print(f"Loaded {len(dumps)} noise dump JSON files from {noise_dump_dir}")
+    return dumps
 
-        for z in range(16):
-            for x in range(16):
-                col = block_ids[:, z, x]  # 16 values along Y
-                nz = np.nonzero(col > 0)[0]
-                if len(nz) > 0:
-                    highest_world_y = base_y + float(nz[-1]) + 1.0
-                    lowest_world_y = base_y + float(nz[0])
-                    if highest_world_y > surface[z, x]:
-                        surface[z, x] = highest_world_y
-                    if lowest_world_y < floor[z, x]:
-                        floor[z, x] = lowest_world_y
 
-    # Clamp floor: if no terrain block was found, set to surface
-    no_solid = surface <= BOTTOM_Y
-    surface[no_solid] = 62.0  # sea level default
-    floor[no_solid] = 62.0
-    # If floor ended up above surface (shouldn't happen), clamp
-    floor = np.minimum(floor, surface)
+def parse_heightmap(flat_array: list[int | float]) -> np.ndarray:
+    """Convert a flat 256-element x-major heightmap to (16, 16) float32.
 
-    return surface, floor
+    The Java /dumpnoise command writes heightmaps in x-major order::
+
+        for (int x = 0; x < 16; x++)
+            for (int z = 0; z < 16; z++)
+                append(grid[x][z])
+
+    The NPZ convention uses (z, x) indexing for heightmap arrays, matching
+    the block array layout (y, z, x).  So we reshape to (16, 16) as (x, z)
+    from the flat array and transpose to (z, x).
+    """
+    arr = np.array(flat_array, dtype=np.float32).reshape(16, 16)  # (x, z)
+    return arr.T  # → (z, x)
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Add column-level heightmap_surface to training NPZ files.",
+        description="Merge vanilla heightmaps from /dumpnoise JSON into training NPZ files.",
     )
     parser.add_argument(
         "data_dir",
         type=Path,
-        help="Directory containing voxy_lod0_*.npz files (e.g., data/voxy_subset/train).",
+        help="Directory containing voxy_lod0_*.npz files (e.g. data/voxy/train).",
+    )
+    parser.add_argument(
+        "--noise-dump-dir",
+        type=Path,
+        required=True,
+        metavar="DIR",
+        help="Directory containing /dumpnoise chunk_*.json files.",
     )
     parser.add_argument(
         "--dry-run",
@@ -112,6 +107,9 @@ def main() -> None:
         help="Just report what would be done; don't modify files.",
     )
     args = parser.parse_args()
+
+    # Load noise dumps
+    dumps = load_noise_dumps(args.noise_dump_dir)
 
     # Find all NPZ files
     pattern = str(args.data_dir / "voxy_lod0_*.npz")
@@ -127,18 +125,6 @@ def main() -> None:
 
     print(f"Found {len(files)} NPZ files")
 
-    # Group by (x, z) column
-    columns: dict[tuple[int, int], list[tuple[int, str]]] = defaultdict(list)
-    for f in files:
-        m = re.search(r"x(-?\d+)_y(-?\d+)_z(-?\d+)", f)
-        if not m:
-            print(f"  Skipping (no coord in name): {f}")
-            continue
-        wx, wy, wz = int(m.group(1)), int(m.group(2)), int(m.group(3))
-        columns[(wx, wz)].append((wy, f))
-
-    print(f"Grouped into {len(columns)} unique (x, z) columns")
-
     # Check how many already have heightmap_surface
     sample = np.load(files[0])
     has_surface = "heightmap_surface" in sample
@@ -147,33 +133,78 @@ def main() -> None:
 
     if args.dry_run:
         print("Dry run — no files will be modified")
+        # Still check coverage
+        matched = 0
+        missing = 0
+        for f in files:
+            m = re.search(r"x(-?\d+)_y(-?\d+)_z(-?\d+)", f)
+            if m and (int(m.group(1)), int(m.group(3))) in dumps:
+                matched += 1
+            else:
+                missing += 1
+        print(f"  Would update {matched} files, {missing} have no matching JSON")
         return
 
-    # Process each column
+    # Process each NPZ file
     updated = 0
-    for (wx, wz), col_files in tqdm(columns.items(), desc="Computing column heights"):
-        col_files.sort(key=lambda t: t[0])  # sort by section Y
-        surface, floor = compute_column_surface_heights(col_files)
+    skipped = 0
+    missing_chunks: list[tuple[int, int]] = []
 
-        # Re-save each section's NPZ with the new fields
-        for section_y, fpath in col_files:
-            data = dict(np.load(fpath))
-            data["heightmap_surface"] = surface
-            data["heightmap_ocean_floor"] = floor
-            np.savez_compressed(fpath, **data)
-            updated += 1
+    for fpath in tqdm(files, desc="Merging heightmaps"):
+        m = re.search(r"x(-?\d+)_y(-?\d+)_z(-?\d+)", fpath)
+        if not m:
+            print(f"  Skipping (no coord in name): {fpath}")
+            skipped += 1
+            continue
 
-    print(f"\nUpdated {updated} NPZ files with column-level heightmap_surface")
+        wx = int(m.group(1))  # section x = chunk x
+        wz = int(m.group(3))  # section z = chunk z
+
+        dump = dumps.get((wx, wz))
+        if dump is None:
+            missing_chunks.append((wx, wz))
+            skipped += 1
+            continue
+
+        surface = parse_heightmap(dump["heightmap_surface"])
+        ocean_floor = parse_heightmap(dump["heightmap_ocean_floor"])
+
+        data = dict(np.load(fpath))
+        data["heightmap_surface"] = surface
+        data["heightmap_ocean_floor"] = ocean_floor
+        np.savez_compressed(fpath, **data)
+        updated += 1
+
+    print(f"\nUpdated {updated} NPZ files with vanilla heightmaps")
+    if skipped:
+        print(f"Skipped {skipped} files (no matching noise dump)")
+    if missing_chunks:
+        unique_missing = sorted(set(missing_chunks))
+        print(f"  Missing chunks: {len(unique_missing)} unique (x,z) positions")
+        if len(unique_missing) <= 10:
+            for cx, cz in unique_missing:
+                print(f"    chunk ({cx}, {cz})")
+        else:
+            for cx, cz in unique_missing[:5]:
+                print(f"    chunk ({cx}, {cz})")
+            print(f"    ... and {len(unique_missing) - 5} more")
+
+    if updated == 0:
+        print("\nERROR: No files were updated — check that noise dump coords match NPZ coords")
+        sys.exit(1)
 
     # Verify a sample
     sample_file = files[0]
     d = np.load(sample_file)
-    hs = d["heightmap_surface"]
-    print(f"\nVerification ({Path(sample_file).name}):")
-    print(f"  heightmap_surface:    shape={hs.shape} min={hs.min():.1f} max={hs.max():.1f}")
-    if "heightmap_ocean_floor" in d:
-        hof = d["heightmap_ocean_floor"]
-        print(f"  heightmap_ocean_floor: shape={hof.shape} min={hof.min():.1f} max={hof.max():.1f}")
+    if "heightmap_surface" in d:
+        hs = d["heightmap_surface"]
+        print(f"\nVerification ({Path(sample_file).name}):")
+        print(f"  heightmap_surface:     shape={hs.shape} min={hs.min():.1f} max={hs.max():.1f}")
+        if "heightmap_ocean_floor" in d:
+            hof = d["heightmap_ocean_floor"]
+            print(
+                f"  heightmap_ocean_floor: shape={hof.shape} min={hof.min():.1f} max={hof.max():.1f}"
+            )
 
 
 if __name__ == "__main__":

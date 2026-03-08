@@ -8,9 +8,10 @@ column-height enrichment, and LOD pair cache building.
 Canonical pipeline steps (run all, or start from any step):
   1) pregen          — RCON: freeze world + Chunky chunk generation
   2) voxy-import     — RCON: /voxy import world <name>
-  3) extract         — Voxy RocksDB → data/voxy/*.npz
-  4) column-heights  — Enrich NPZs with heightmap_surface / ocean_floor
-  5) build-pairs     — NPZ → LOD transition pair caches (*_pairs_v2.npz)
+  3) dumpnoise       — RCON: /dumpnoise <radius> → noise_dumps/*.json
+  4) extract         — Voxy RocksDB → data/voxy/*.npz
+  5) column-heights  — Merge vanilla heightmaps from dumpnoise JSON into NPZs
+  6) build-pairs     — NPZ → LOD training pair caches (*_pairs_v2.npz)
 
 Usage examples
 --------------
@@ -66,7 +67,10 @@ VOXY_VOCAB_PATH = _HERE / "config" / "voxy_vocab.json"
 DEFAULT_DATA_DIR = _HERE / "data" / "voxy"
 
 #: Ordered list of dataprep steps.
-DATAPREP_STEPS = ["pregen", "voxy-import", "extract", "column-heights", "build-pairs"]
+DATAPREP_STEPS = ["pregen", "voxy-import", "dumpnoise", "extract", "column-heights", "build-pairs"]
+
+#: Default noise-dump output directory (relative to LODiffusion game run dir).
+DEFAULT_NOISE_DUMP_DIR = _HERE / "LODiffusion" / "run" / "noise_dumps"
 
 # ---------------------------------------------------------------------------
 # Minimal RCON client (no external dependencies)
@@ -368,6 +372,63 @@ def cmd_voxy_import(cfg: PipelineConfig) -> None:
         )
 
 
+def cmd_dumpnoise(cfg: PipelineConfig) -> None:
+    """Send ``/dumpnoise <radius>`` to export vanilla heightmaps to JSON.
+
+    The LODiffusion ``/dumpnoise`` command uses ``ChunkGenerator.getHeight()``
+    with ``WORLD_SURFACE_WG`` to produce the *exact same* vanilla terrain
+    heightmap that the Java runtime computes at LOD inference time.  This
+    ensures training heightmaps match runtime inputs bit-for-bit.
+
+    Output goes to ``<game_dir>/noise_dumps/chunk_<cx>_<cz>.json``, one per
+    chunk.  The ``column-heights`` step later merges these into the NPZ files.
+    """
+    # Convert pregen block-radius to chunk-radius (round up so we cover the area)
+    chunk_radius = max(1, (cfg.radius + 15) // 16)
+    cmd_str = f"dumpnoise {chunk_radius}"
+
+    if cfg.dry_run:
+        print(f"\n  [DRY-RUN] Would send: /{cmd_str}")
+        print(f"  (block radius {cfg.radius} → chunk radius {chunk_radius})")
+        return
+
+    if not cfg.password:
+        print("ERROR: --password required (or use --dry-run to preview).")
+        sys.exit(1)
+
+    total_chunks = (2 * chunk_radius + 1) ** 2
+    print(f"\n  Dumping noise for {total_chunks:,} chunks (radius {chunk_radius} chunks)...")
+
+    with RconClient(cfg.host, cfg.port, cfg.password) as rcon:
+        resp = rcon.command(cmd_str)
+        print(f"  Server response: {resp.strip() or '(no response)'}")
+
+        # /dumpnoise runs on a worker thread — poll for the "Done" message.
+        timeout = cfg.voxy_import_timeout  # reuse the same timeout
+        interval = 5
+        start = time.time()
+        while time.time() - start < timeout:
+            time.sleep(interval)
+            # The server sends a chat feedback when the worker finishes;
+            # unfortunately RCON can't receive async chat messages.  We check
+            # for the output files instead — once the expected count appears
+            # on disk, we're done.
+            # Because the output dir is on the server (game CWD), we simply
+            # wait a generous duration proportional to the chunk count.
+            elapsed = time.time() - start
+            # Heuristic: ~200 chunks/sec is typical
+            estimate = total_chunks / 200.0 + 5.0
+            if elapsed >= estimate:
+                break
+            print(
+                f"  [{time.strftime('%H:%M:%S')}] Waiting for dumpnoise worker "
+                f"(~{int(estimate - elapsed)}s remaining)..."
+            )
+
+        print("\n  Noise dump expected at <game_dir>/noise_dumps/")
+        print(f"  Total chunks requested: {total_chunks:,}")
+
+
 def cmd_status(cfg: PipelineConfig) -> None:
     """Query Chunky pregeneration progress."""
     if cfg.dry_run:
@@ -484,7 +545,7 @@ def _check_prerequisites(from_step: str, args: argparse.Namespace) -> bool:
             return False
         print(f"  ✓ Found {len(dbs)} Voxy database(s)")
 
-    # column-heights → evidence that extract ran: NPZ files exist
+    # column-heights → evidence that extract ran AND noise dumps exist
     if from_step == "column-heights":
         n = _count_source_npz(data_dir)
         if n == 0:
@@ -492,6 +553,13 @@ def _check_prerequisites(from_step: str, args: argparse.Namespace) -> bool:
             print("  Run:  python data-cli.py dataprep --from-step extract ...")
             return False
         print(f"  ✓ {n:,} source NPZ file(s) in {data_dir}")
+        noise_dump_dir: Path = getattr(args, "noise_dump_dir", DEFAULT_NOISE_DUMP_DIR)
+        jsons = list(noise_dump_dir.glob("chunk_*.json")) if noise_dump_dir.is_dir() else []
+        if not jsons:
+            print(f"ERROR: No noise dump JSON files in {noise_dump_dir}")
+            print("  Run:  python data-cli.py dataprep --from-step dumpnoise ...")
+            return False
+        print(f"  ✓ {len(jsons):,} noise dump JSON file(s) in {noise_dump_dir}")
 
     # build-pairs → evidence that column-heights ran: heightmap_surface arrays
     if from_step == "build-pairs":
@@ -518,7 +586,7 @@ def _step_extract(args: argparse.Namespace) -> bool:
     """Extract training data from Voxy RocksDB databases."""
     print()
     print("=" * 70)
-    print("  STEP 3/5: Extract training data from Voxy")
+    print("  STEP 4/6: Extract training data from Voxy")
     print("=" * 70)
     print()
 
@@ -551,15 +619,22 @@ def _step_extract(args: argparse.Namespace) -> bool:
 
 
 def _step_column_heights(args: argparse.Namespace) -> bool:
-    """Compute column-level surface heights for extracted NPZs."""
+    """Merge vanilla heightmaps from dumpnoise JSON into extracted NPZs."""
     print()
     print("=" * 70)
-    print("  STEP 4/5: Compute column-level surface heights")
+    print("  STEP 5/6: Merge vanilla heightmaps into NPZs")
     print("=" * 70)
     print()
 
     data_dir: Path = getattr(args, "data_dir", DEFAULT_DATA_DIR)
-    cmd = [sys.executable, "scripts/add_column_heights.py", str(data_dir)]
+    noise_dump_dir: Path = getattr(args, "noise_dump_dir", DEFAULT_NOISE_DUMP_DIR)
+    cmd = [
+        sys.executable,
+        "scripts/add_column_heights.py",
+        str(data_dir),
+        "--noise-dump-dir",
+        str(noise_dump_dir),
+    ]
     result = subprocess.run(cmd, cwd=str(_HERE))
     return result.returncode == 0
 
@@ -568,7 +643,7 @@ def _step_build_pairs(args: argparse.Namespace) -> bool:
     """Build LOD training pair caches from enriched NPZ chunks."""
     print()
     print("=" * 70)
-    print("  STEP 5/5: Build LOD training pairs")
+    print("  STEP 6/6: Build LOD training pairs")
     print("=" * 70)
     print()
 
@@ -617,12 +692,12 @@ def cmd_dataprep(args: argparse.Namespace) -> None:
         print()
 
     # ---- validate RCON args early if RCON steps are in the plan ----
-    rcon_needed = any(s in steps_to_run for s in ("pregen", "voxy-import"))
+    rcon_needed = any(s in steps_to_run for s in ("pregen", "voxy-import", "dumpnoise"))
     dry_run = getattr(args, "dry_run", False)
     if rcon_needed and not dry_run:
         password = getattr(args, "password", "")
         if not password:
-            print("ERROR: --password is required for RCON steps (pregen, voxy-import).")
+            print("ERROR: --password is required for RCON steps (pregen, voxy-import, dumpnoise).")
             print("  Use --dry-run to preview commands without a server.")
             sys.exit(1)
         if "voxy-import" in steps_to_run:
@@ -653,6 +728,7 @@ def cmd_dataprep(args: argparse.Namespace) -> None:
     step_runners = {
         "pregen": lambda: cmd_pregen(cfg),
         "voxy-import": lambda: cmd_voxy_import(cfg),
+        "dumpnoise": lambda: cmd_dumpnoise(cfg),
         "extract": lambda: _step_extract(args),
         "column-heights": lambda: _step_column_heights(args),
         "build-pairs": lambda: _step_build_pairs(args),
@@ -782,6 +858,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sub.add_parser("status", parents=[shared], help="Query Chunky pregeneration progress")
     sub.add_parser(
+        "dumpnoise",
+        parents=[shared, pregen_args],
+        help="Send /dumpnoise <radius> via RCON to export vanilla heightmaps",
+    )
+    sub.add_parser(
         "info",
         parents=[pregen_args],
         help="Print pipeline plan (no server connection needed)",
@@ -798,8 +879,9 @@ def build_parser() -> argparse.ArgumentParser:
             Steps (in order):
               pregen          RCON — freeze world + Chunky pregeneration
               voxy-import     RCON — /voxy import world <name>
+              dumpnoise       RCON — /dumpnoise <radius> → noise_dumps/*.json
               extract         Voxy RocksDB → per-chunk NPZ files
-              column-heights  Enrich NPZs with heightmap_surface arrays
+              column-heights  Merge vanilla heightmaps from dumpnoise into NPZs
               build-pairs     NPZ → LOD transition pair caches
 
             Examples:
@@ -869,6 +951,14 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="N",
         help="Limit extraction to N chunk sections (optional)",
     )
+    # Column-heights / dumpnoise args
+    p_dp.add_argument(
+        "--noise-dump-dir",
+        type=Path,
+        default=DEFAULT_NOISE_DUMP_DIR,
+        metavar="DIR",
+        help="Directory containing /dumpnoise JSON files (default: LODiffusion/run/noise_dumps)",
+    )
     # Build-pairs args
     p_dp.add_argument(
         "--val-split",
@@ -915,6 +1005,7 @@ def main() -> None:
         "unfreeze": cmd_unfreeze,
         "pregen": cmd_pregen,
         "voxy-import": cmd_voxy_import,
+        "dumpnoise": cmd_dumpnoise,
         "status": cmd_status,
         "info": cmd_info,
     }
