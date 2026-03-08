@@ -10,15 +10,18 @@ This script trains a single flexible model that can handle all LOD transitions:
 
 import argparse
 import json
+import random
 import sys
 import time
 from pathlib import Path
-from typing import Dict
+from typing import Dict, Optional
+
+import numpy as np
 
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Subset
 from tqdm import tqdm
 
 # Add train directory to path
@@ -36,18 +39,26 @@ class MultiLODLoss(nn.Module):
     Combined loss for air mask and block type prediction across all LOD levels.
     Optionally includes a surface-consistency term that penalises the model
     when its predicted top-surface height deviates from the heightmap anchor.
+
+    Args:
+        class_weights: Optional float32 tensor of shape [block_vocab_size].
+            Computed by scripts/compute_class_weights.py (median-frequency
+            balancing). Weight 0 means ignore that class (used for air=0 and
+            unseen blocks). Passed to F.cross_entropy at forward time so it
+            moves to the correct device automatically.
     """
 
     def __init__(
         self,
         air_loss_weight: float = 0.25,
         surface_consistency_weight: float = 0.0,
+        class_weights: Optional[torch.Tensor] = None,
     ):
         super().__init__()
         self.air_loss_weight = air_loss_weight
         self.surface_consistency_weight = surface_consistency_weight
-        # ignore_index=0 → don't train block head on air voxels (75% of data)
-        self.block_loss_fn = nn.CrossEntropyLoss(ignore_index=0)
+        # Register as buffer so .to(device) / .cuda() move it automatically
+        self.register_buffer("class_weights", class_weights)  # None is fine
         # pos_weight > 1 up-weights the minority class (solid ~25%)
         # This compensates for the 75/25 air/solid imbalance
         self.air_loss_fn = nn.BCEWithLogitsLoss(pos_weight=torch.tensor([3.0]))
@@ -78,7 +89,12 @@ class MultiLODLoss(nn.Module):
         block_logits_flat = block_type_logits.permute(0, 2, 3, 4, 1).reshape(-1, C)
         target_blocks_flat = target_blocks.reshape(-1)
 
-        block_loss = self.block_loss_fn(block_logits_flat, target_blocks_flat)
+        block_loss = torch.nn.functional.cross_entropy(
+            block_logits_flat,
+            target_blocks_flat,
+            weight=self.class_weights,
+            ignore_index=0,
+        )
 
         # Air mask loss (binary cross-entropy)
         # Polarity: positive logit = SOLID, matching Java runtime convention
@@ -410,6 +426,29 @@ def main():
         action="store_true",
         help="Force regeneration of training pairs (ignore cached pairs)",
     )
+    parser.add_argument(
+        "--max-samples",
+        type=int,
+        default=None,
+        metavar="N",
+        help=(
+            "Limit training to N randomly-sampled pairs per run (val = N//10). "
+            "Use for quick smoke-tests, e.g. --max-samples 2000 finishes in ~2 min "
+            "vs ~60 min for a full epoch."
+        ),
+    )
+    parser.add_argument(
+        "--class-weights",
+        type=str,
+        default=None,
+        metavar="PATH_OR_AUTO",
+        help=(
+            "Path to class_weights.npz (from scripts/compute_class_weights.py), "
+            "or 'auto' to compute from the data dir on the fly. "
+            "Applies median-frequency balancing to the block-type loss so rare "
+            "blocks (granite, dirt, wood…) are trained as aggressively as stone."
+        ),
+    )
 
     args = parser.parse_args()
 
@@ -469,6 +508,19 @@ def main():
         use_pair_cache=not args.no_pair_cache,
     )
 
+    # ── Subset for quick test runs (--max-samples) ────────────────────────
+    if args.max_samples is not None:
+        n_train = min(args.max_samples, len(train_dataset))
+        n_val = min(max(1, args.max_samples // 10), len(val_dataset))
+        train_idx = random.sample(range(len(train_dataset)), n_train)
+        val_idx = random.sample(range(len(val_dataset)), n_val)
+        train_dataset = Subset(train_dataset, train_idx)
+        val_dataset = Subset(val_dataset, val_idx)
+        print(
+            f"--max-samples: using {n_train} train + {n_val} val samples "
+            f"({n_train / 80000 * 100:.1f}% of a full epoch)"
+        )
+
     # Create data loaders
     train_loader = DataLoader(
         train_dataset,
@@ -491,10 +543,47 @@ def main():
     print(f"Train samples: {len(train_dataset)}")
     print(f"Val samples: {len(val_dataset)}")
 
+    # ── Class weights for block-type loss ──────────────────────────────────
+    class_weights_tensor: Optional[torch.Tensor] = None
+    if args.class_weights is not None:
+        from scripts.compute_class_weights import compute_weights, load_weights  # noqa: E402
+
+        cw_arg = args.class_weights.strip()
+        if cw_arg.lower() == "auto":
+            cw_path = Path(args.data_dir) / "class_weights.npz"
+            if cw_path.exists():
+                print(f"Loading cached class weights: {cw_path}")
+                cw_arr = load_weights(cw_path)
+            else:
+                print("Computing class weights from training pairs (auto)…")
+                cw_arr = compute_weights(
+                    data_dir=Path(args.data_dir),
+                    vocab_size=block_vocab_size,
+                    verbose=True,
+                )
+                np.savez_compressed(cw_path, class_weights=cw_arr)
+                print(f"  Cached → {cw_path}")
+        else:
+            cw_path = Path(cw_arg)
+            if not cw_path.exists():
+                raise FileNotFoundError(f"--class-weights file not found: {cw_path}")
+            print(f"Loading class weights: {cw_path}")
+            cw_arr = load_weights(cw_path)
+
+        class_weights_tensor = torch.tensor(cw_arr, dtype=torch.float32)
+        nonzero = int((class_weights_tensor > 0).sum())
+        print(f"  Class weights loaded: {nonzero} / {len(cw_arr)} non-zero classes")
+        print(
+            f"  Weight range (non-zero): "
+            f"{class_weights_tensor[class_weights_tensor > 0].min():.3f} … "
+            f"{class_weights_tensor.max():.3f}"
+        )
+
     # Create loss function and optimizer
     loss_fn = MultiLODLoss(
         air_loss_weight=args.air_loss_weight,
         surface_consistency_weight=args.surface_loss_weight,
+        class_weights=class_weights_tensor,
     )
     optimizer = optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
 

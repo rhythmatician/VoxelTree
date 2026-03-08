@@ -553,6 +553,13 @@ The system is considered **working** when:
 - Structure-aware generation (two-codebook VQ-style latent system)
 - Vegetation pass (trees, plants, decorations)
 - Structure blending (villages, strongholds, etc.)
+- **Block-vocab reduction for Phase 2**: `blocklist.json` (repo root) contains a
+  `generates_in_structures` field for every block type.  Once Phase 1 training
+  covers all terrain biomes (and thus all terrain-generating blocks), a Phase 2
+  vocabulary can be derived by filtering `blocklist.json` to only
+  `generates_in_structures: "Yes"` entries.  This gives a compact, curated set
+  of structure-specific blocks for a dedicated structure-generation model,
+  without polluting the terrain vocabulary.
 - Quantized inference (INT8 for speed)
 - Adaptive patch size (larger patches for flat terrain)
 
