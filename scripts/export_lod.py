@@ -66,7 +66,7 @@ MODEL_STEPS = [
 # ─── Reusable helpers ────────────────────────────────────────────────────
 
 
-def collect_export_provenance() -> Dict:
+def collect_export_provenance() -> Dict[str, Any]:
     """Collect comprehensive provenance for the exported model."""
     prov: Dict[str, Any] = {}
     # Git commit SHA
@@ -102,7 +102,7 @@ def collect_export_provenance() -> Dict:
     return prov
 
 
-def embed_block_mapping(model_config: Dict) -> Dict:
+def embed_block_mapping(model_config: Dict[str, Any]) -> Dict[str, Any]:
     """Embed Voxy vocabulary into model config for self-contained export."""
     try:
         vocab_path = Path("config/voxy_vocab.json")

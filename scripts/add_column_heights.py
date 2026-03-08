@@ -39,7 +39,7 @@ import numpy as np
 from tqdm import tqdm
 
 
-def load_noise_dumps(noise_dump_dir: Path) -> dict[tuple[int, int], dict]:
+def load_noise_dumps(noise_dump_dir: Path) -> dict[tuple[int, int], dict[str, list[float]]]:
     """Load all chunk_<cx>_<cz>.json files into a dict keyed by (cx, cz).
 
     Each JSON contains:
@@ -56,7 +56,7 @@ def load_noise_dumps(noise_dump_dir: Path) -> dict[tuple[int, int], dict]:
         print(f"ERROR: No chunk_*.json files found in {noise_dump_dir}")
         sys.exit(1)
 
-    dumps: dict[tuple[int, int], dict] = {}
+    dumps: dict[tuple[int, int], dict[str, list[float]]] = {}
     for fpath in files:
         with open(fpath) as f:
             data = json.load(f)
