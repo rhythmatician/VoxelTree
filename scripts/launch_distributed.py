@@ -16,7 +16,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 
 import torch
 import yaml
@@ -48,7 +48,9 @@ def check_gpu_availability() -> int:
         return 0
 
 
-def launch_ddp_training(config_path: Path, num_gpus: int, additional_args: List[str] = None):
+def launch_ddp_training(
+    config_path: Path, num_gpus: int, additional_args: Optional[List[str]] = None
+):
     """Launch distributed training using PyTorch DDP."""
     if additional_args is None:
         additional_args = []
@@ -79,11 +81,12 @@ def launch_ddp_training(config_path: Path, num_gpus: int, additional_args: List[
         return e.returncode
 
 
-def launch_ray_training(config_path: Path, num_gpus: int, additional_args: List[str] = None):
+def launch_ray_training(
+    config_path: Path, num_gpus: int, additional_args: Optional[List[str]] = None
+):
     """Launch distributed training using Ray."""
     try:
-        import ray
-        from ray import tune
+        import ray  # noqa: F401
     except ImportError:
         logging.error("Ray is not installed. Install with: pip install ray[tune]")
         return 1
@@ -106,7 +109,7 @@ def launch_ray_training(config_path: Path, num_gpus: int, additional_args: List[
 
 
 def launch_single_gpu_training(
-    config_path: Path, gpu_id: int = 0, additional_args: List[str] = None
+    config_path: Path, gpu_id: int = 0, additional_args: Optional[List[str]] = None
 ):
     """Launch single GPU training."""
     if additional_args is None:
@@ -131,7 +134,7 @@ def launch_single_gpu_training(
         return e.returncode
 
 
-def launch_cpu_training(config_path: Path, additional_args: List[str] = None):
+def launch_cpu_training(config_path: Path, additional_args: Optional[List[str]] = None):
     """Launch CPU-only training."""
     if additional_args is None:
         additional_args = []

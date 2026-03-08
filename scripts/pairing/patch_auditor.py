@@ -31,7 +31,7 @@ class PatchQualityAuditor:
         """Initialize PatchQualityAuditor with optional config path."""
         self.config_path = config_path
         self.validator = PatchValidator(config_path=config_path)
-        self.metrics_cache = {}
+        self.metrics_cache: Dict[str, Any] = {}
 
         logger.info("PatchQualityAuditor initialized")
 
@@ -516,7 +516,7 @@ class PatchQualityAuditor:
             return {}
 
         # Initialize aggregated metrics
-        aggregate = {
+        aggregate: Dict[str, Any] = {
             "air_ratio_distribution": [],
             "block_type_distribution": Counter(),
             "spatial_entropy_distribution": [],

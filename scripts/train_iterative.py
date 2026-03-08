@@ -70,7 +70,7 @@ def load_config(config_path: Path) -> Dict:
 
 
 def get_current_seed_and_region(
-    base_seed: int, iteration: int, regions_per_seed: int = 16, config: Dict = None
+    base_seed: int, iteration: int, regions_per_seed: int = 16, config: Optional[Dict] = None
 ) -> Tuple[int, int, int]:
     """
     Get the current seed and region coordinates for this iteration.

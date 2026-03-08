@@ -448,7 +448,7 @@ class MultiLODDataset(Dataset):
         )
 
         # Print distribution by LOD transition
-        lod_counts = {}
+        lod_counts: Dict[str, int] = {}
         for pair in self.training_pairs:
             transition = pair["lod_transition"]
             lod_counts[transition] = lod_counts.get(transition, 0) + 1

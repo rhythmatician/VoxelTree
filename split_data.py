@@ -26,6 +26,6 @@ for f in val_files:
 for f in train_files:
     f.rename(train_dir / f.name)
 
-print(f"Done!")
+print("Done!")
 print(f"  Train dir: {len(list(train_dir.glob('*.npz')))} files")
 print(f"  Val dir: {len(list(val_dir.glob('*.npz')))} files")

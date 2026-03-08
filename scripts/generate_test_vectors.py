@@ -9,6 +9,7 @@ These vectors contain sample inputs and expected outputs for ONNX model validati
 import json
 import logging
 from pathlib import Path
+from typing import Any, Dict
 
 import numpy as np
 import torch
@@ -44,17 +45,17 @@ def generate_test_vectors_for_model(
     output_shapes = config.get("outputs", {})
 
     # Generate test samples
-    test_vectors = {}
+    test_vectors: Dict[str, Any] = {}
 
     for sample_idx in range(num_samples):
-        sample_inputs = {}
-        sample_outputs = {}
+        sample_inputs: Dict[str, Any] = {}
+        sample_outputs: Dict[str, Any] = {}
 
         # Generate inputs according to config
         for input_name, shape in input_shapes.items():
             if input_name == "x_parent_prev":
                 # Occupancy: random 0/1
-                sample_inputs[input_name] = np.random.randint(0, 2, size=shape, dtype=np.float32)
+                sample_inputs[input_name] = np.random.randint(0, 2, size=shape).astype(np.float32)
             elif input_name == "x_height_planes":
                 # Heights: random in reasonable range (e.g., 64-200)
                 sample_inputs[input_name] = np.random.uniform(64, 200, size=shape).astype(

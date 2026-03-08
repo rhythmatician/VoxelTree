@@ -22,6 +22,7 @@ import json
 import shutil
 import tempfile
 from pathlib import Path
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -368,7 +369,7 @@ def check_training_data_purity(
     # Build set of structure-only block IDs
     structure_ids = {vocab[b] for b in STRUCTURE_ONLY_BLOCKS if b in vocab}
 
-    result = {
+    result: dict[str, Any] = {
         "files_checked": 0,
         "structure_blocks_found": {},
         "flagged_files": [],

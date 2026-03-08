@@ -18,6 +18,7 @@ import shutil
 import sys
 import time
 from pathlib import Path
+from typing import Any, Dict
 
 import numpy as np
 import torch
@@ -202,7 +203,7 @@ def _generate_missing_seed_inputs(pairs_dir: Path, seed_inputs_dir: Path, seed: 
             )
 
         # Map keys to expected names and include coords
-        save_dict = {
+        save_dict: Dict[str, Any] = {
             "biomes": biomes,  # int64
             "heightmap": heightmap,  # uint16 absolute surface heights
             "chunk_x": np.int32(cx),

@@ -284,7 +284,7 @@ class VoxyReader:
         """
         key = encode_section_key(level, x, y, z)
         try:
-            compressed = bytes(self._ws_cf[key])
+            compressed = bytes(self._ws_cf[key])  # type: ignore[arg-type]
         except KeyError:
             return None
         data = self._dctx.decompress(compressed)
@@ -302,13 +302,16 @@ class VoxyReader:
         ``(key_bytes, compressed_bytes)`` tuples.
         """
         for key in self._ws_cf.keys():
-            key_bytes = bytes(key) if not isinstance(key, bytes) else key
+            if isinstance(key, (bytes, bytearray)):
+                key_bytes = key
+            else:
+                key_bytes = bytes(key)  # type: ignore[arg-type]
             if level is not None:
                 lvl, _, _, _ = decode_section_key(key_bytes)
                 if lvl != level:
                     continue
 
-            compressed = bytes(self._ws_cf[key])
+            compressed = bytes(self._ws_cf[key])  # type: ignore[arg-type]
             if decode:
                 data = self._dctx.decompress(compressed)
                 yield decode_section(data)
@@ -319,7 +322,10 @@ class VoxyReader:
         """Count sections per LOD level.  Returns ``{level: count}``."""
         counts: Dict[int, int] = {}
         for key in self._ws_cf.keys():
-            key_bytes = bytes(key) if not isinstance(key, bytes) else key
+            if isinstance(key, (bytes, bytearray)):
+                key_bytes = key
+            else:
+                key_bytes = bytes(key)  # type: ignore[arg-type]
             lvl, _, _, _ = decode_section_key(key_bytes)
             counts[lvl] = counts.get(lvl, 0) + 1
         return counts
@@ -426,8 +432,11 @@ class VoxyReader:
     def _decode_id_mappings(self) -> None:
         """Parse id_mappings column family to build name tables."""
         for key in self._id_cf.keys():
-            key_bytes = bytes(key) if not isinstance(key, bytes) else key
-            val = bytes(self._id_cf[key])
+            if isinstance(key, (bytes, bytearray)):
+                key_bytes = key
+            else:
+                key_bytes = bytes(key)  # type: ignore[arg-type]
+            val = bytes(self._id_cf[key])  # type: ignore[arg-type]
 
             if len(key_bytes) != 4:
                 continue

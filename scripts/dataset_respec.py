@@ -41,7 +41,7 @@ class LODPyramidBuilder:
         """
         self.air_id = air_id
 
-    def build_pyramid(self, target_blocks: np.ndarray) -> Dict[int, Dict[str, np.ndarray]]:
+    def build_pyramid(self, target_blocks: np.ndarray) -> Dict[int, Dict[str, Any]]:
         """
         Build complete LOD pyramid from 16³ target.
 
@@ -549,7 +549,7 @@ def main():
     args = parser.parse_args()
 
     # Initialize pipeline
-    pipeline = DatasetRespecPipeline(
+    _pipeline = DatasetRespecPipeline(  # noqa: F841
         schema_dir=args.schema_dir,
         output_dir=args.output_dir,
     )

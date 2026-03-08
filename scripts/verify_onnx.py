@@ -15,7 +15,7 @@ import logging
 import sys
 import time
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 
 import numpy as np
 import onnx
@@ -551,7 +551,7 @@ def verify_full_model(
     if not verify_onnx_model(onnx_path):
         return {"success": False, "error": "ONNX model verification failed"}
 
-    results = {
+    results: Dict[str, Any] = {
         "success": True,
         "onnx_path": str(onnx_path),
         "checkpoint_path": str(checkpoint_path),

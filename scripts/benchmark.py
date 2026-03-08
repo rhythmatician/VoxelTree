@@ -14,7 +14,7 @@ import logging
 import sys
 import time
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 import numpy as np
 import psutil
@@ -127,7 +127,7 @@ def create_dummy_dataset(
         )
 
     for i in range(num_examples):
-        example = {
+        example: Dict[str, Any] = {
             # Parent voxel (B×C×D×H×W)
             "parent_voxel": np.random.randint(0, 2, size=parent_shape).astype(np.float32),
             # Biome and condition data
@@ -168,7 +168,7 @@ def benchmark_batch_sizes(
         logger.error(f"Failed to create dataset: {e}")
         raise
 
-    results = {}
+    results: Dict[Any, Any] = {}
 
     # Get baseline memory usage
     baseline_memory = get_memory_usage()
@@ -244,7 +244,11 @@ def benchmark_batch_sizes(
                         }
                     )
 
-                    if torch.cuda.is_available():
+                    if (
+                        torch.cuda.is_available()
+                        and post_iter_gpu is not None
+                        and pre_iter_gpu is not None
+                    ):
                         gpu_usage.append(
                             {
                                 "before": pre_iter_gpu,

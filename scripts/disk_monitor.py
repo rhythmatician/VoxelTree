@@ -26,7 +26,7 @@ import threading
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Set, Tuple
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 import psutil
 
@@ -68,7 +68,7 @@ class DiskMonitor:
         self.threshold_gb = threshold_gb
         self.critical_threshold_gb = critical_threshold_gb
         self.temp_dirs = temp_dirs or []
-        self.monitoring_thread = None
+        self.monitoring_thread: Optional[threading.Thread] = None
         self.stop_event = threading.Event()
         self.monitoring_paths: Set[str] = set()
 
@@ -178,7 +178,7 @@ class DiskMonitor:
 
         return total_freed
 
-    def analyze_disk_usage(self, base_path: str = ".") -> Dict:
+    def analyze_disk_usage(self, base_path: str = ".") -> Dict[str, Any]:
         """
         Analyze disk usage for the given path.
 
@@ -188,7 +188,7 @@ class DiskMonitor:
         Returns:
             Dictionary with usage statistics
         """
-        results = {}
+        results: Dict[str, Any] = {}
 
         # Get overall disk information
         disk_usage = psutil.disk_usage(base_path)

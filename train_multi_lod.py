@@ -14,7 +14,7 @@ import random
 import sys
 import time
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 
 import numpy as np
 
@@ -92,7 +92,7 @@ class MultiLODLoss(nn.Module):
         block_loss = torch.nn.functional.cross_entropy(
             block_logits_flat,
             target_blocks_flat,
-            weight=self.class_weights,
+            weight=self.class_weights if isinstance(self.class_weights, torch.Tensor) else None,
             ignore_index=0,
         )
 
@@ -190,7 +190,7 @@ def train_epoch(
     loss_fn: MultiLODLoss,
     optimizer: optim.Optimizer,
     device: torch.device,
-) -> Dict[str, float]:
+) -> Dict[str, Any]:
     """Train for one epoch."""
 
     model.train()
@@ -234,7 +234,7 @@ def train_epoch(
 
         # Track LOD distribution
         lod_transition: str = batch["lod_transition"]
-        lod_counts[lod_transition]: int = lod_counts.get(lod_transition, 0) + 1
+        lod_counts[lod_transition] = lod_counts.get(lod_transition, 0) + 1
 
         # Forward pass
         optimizer.zero_grad()

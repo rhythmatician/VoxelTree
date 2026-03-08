@@ -116,8 +116,6 @@ class TestTrainingLogger:
             logger._log_to_tensorboard(metrics, step)
 
             # Verify add_scalar was called for each numeric metric
-            expected_calls = [("epoch", 1, 100), ("loss", 0.5, 100), ("lr", 0.001, 100)]
-
             assert mock_writer.add_scalar.call_count == 3
             mock_writer.flush.assert_called_once()
 

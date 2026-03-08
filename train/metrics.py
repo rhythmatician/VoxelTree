@@ -209,11 +209,14 @@ class VoxelMetrics:
             return per_class_acc
 
         # Case 2: Predictions and targets input
+        assert target_classes is not None, "target_classes required for predictions+targets mode"
         # Convert to tensors
         if isinstance(pred_input, np.ndarray):
             pred_logits = torch.from_numpy(pred_input)
-        else:
+        elif isinstance(pred_input, Tensor):
             pred_logits = pred_input
+        else:
+            raise TypeError(f"Expected ndarray or Tensor for pred_input, got {type(pred_input)}")
 
         if isinstance(target_classes, np.ndarray):
             target_classes = torch.from_numpy(target_classes)
@@ -239,6 +242,8 @@ class VoxelMetrics:
                 mask = mask.bool()
 
         # Calculate accuracy for each class
+        if n_classes is None:
+            raise ValueError("n_classes must be provided for predictions+targets mode")
         for c in range(n_classes):
             # Create mask for current class
             class_mask = target_classes == c
@@ -356,8 +361,8 @@ class VoxelMetrics:
 
         # Update confusion matrix
         for i in range(pred_flat.shape[0]):
-            p_class = pred_flat[i].item()
-            t_class = target_flat[i].item()
+            p_class = int(pred_flat[i].item())
+            t_class = int(target_flat[i].item())
             confusion[t_class, p_class] += 1
 
         return confusion
@@ -370,7 +375,7 @@ class VoxelMetrics:
         target_types: Tensor,
         n_classes: int,
         mask_threshold: float = 0.5,
-    ) -> Dict[str, float]:
+    ) -> Dict[str, Any]:
         """
         Compute all metrics for model evaluation.
 
@@ -398,6 +403,7 @@ class VoxelMetrics:
         class_acc = VoxelMetrics.per_class_accuracy(
             pred_type_logits, target_types, n_classes, target_mask
         )
+        assert isinstance(class_acc, dict)  # Case 2 always returns dict
 
         # Compute mean metrics
         mean_iou = batch_iou.mean().item()

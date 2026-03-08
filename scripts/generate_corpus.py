@@ -21,7 +21,7 @@ import shutil
 import sys
 import time
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import psutil
 import yaml
@@ -92,7 +92,7 @@ def generate_world_batch(
     seed: Union[int, str],
     output_dir: Path,
     world_radius: int = 4,
-) -> Path:
+) -> Optional[Path]:
     """Generate a world batch with the specified seed."""
     logger = logging.getLogger(__name__)
 
@@ -134,8 +134,11 @@ def extract_chunks(config: Dict, world_dir: Path, output_dir: Path) -> Path:
 
     # Create extractor and run extraction
     extractor = ChunkExtractor(config["extraction"])
-    chunk_output_dir = extractor.extract_all_chunks(world_dir)
+    region_dir = world_dir / "region"
+    region_files = list(region_dir.glob("*.mca"))
+    extractor.extract_regions_parallel(region_files)
 
+    chunk_output_dir = output_dir / "chunks"
     logger.info(f"Extracted chunks to {chunk_output_dir}")
     return chunk_output_dir
 
@@ -146,7 +149,9 @@ def create_patch_pairs(config: Dict, chunk_dir: Path, output_dir: Path) -> Path:
 
     # Create pairer and generate pairs
     pairer = PatchPairer(config["pairing"])
-    pairs_dir = pairer.create_patch_pairs(chunk_dir)
+    pairs_dir = output_dir / "pairs"
+    pairs_dir.mkdir(parents=True, exist_ok=True)
+    pairer.process_batch(chunk_dir, pairs_dir)
 
     logger.info(f"Created patch pairs in {pairs_dir}")
     return pairs_dir
@@ -158,7 +163,10 @@ def link_with_seed_inputs(config: Dict, pairs_dir: Path, output_dir: Path) -> Pa
 
     # Create linker and link pairs with seed inputs
     linker = SeedInputLinker(config["pairing"])
-    linked_dir = linker.link_pairs_with_seed_inputs(pairs_dir)
+    seed_inputs_dir = output_dir / "seed_inputs"
+    linked_dir = output_dir / "linked"
+    linked_dir.mkdir(parents=True, exist_ok=True)
+    linker.process_batch_linking(pairs_dir, seed_inputs_dir, linked_dir)
 
     logger.info(f"Linked pairs with seed inputs in {linked_dir}")
     return linked_dir
@@ -282,7 +290,7 @@ def audit_split(
         # Block type distribution (aggregate)
         if metrics[0].get("block_type_counts") is not None:
             # Combine all block type counts
-            combined_counts = {}
+            combined_counts: Dict[Any, int] = {}
             for m in metrics:
                 for block_id, count in m["block_type_counts"].items():
                     if block_id in combined_counts:
@@ -337,6 +345,9 @@ def generate_corpus(
 
             # Step 1: Generate world
             world_dir = generate_world_batch(config, seed, seed_dir, world_radius)
+            if world_dir is None:
+                logger.error(f"World generation failed for seed {seed}")
+                continue
 
             # Step 2: Extract chunks
             chunk_dir = extract_chunks(config, world_dir, seed_dir)

@@ -166,7 +166,7 @@ def create_val_dataloader(
 
     # Create indices and sampler
     indices = np.random.choice(dataset_size, val_samples, replace=False)
-    sampler = SubsetRandomSampler(indices)
+    sampler = SubsetRandomSampler(indices.tolist())
 
     # Create dataloader
     dataloader = DataLoader(
@@ -219,7 +219,7 @@ def objective(trial: Trial, base_config: Dict, dataset_path: Path) -> float:
 
         for epoch in range(num_epochs):
             # Train for one epoch
-            train_metrics = trainer.train_one_epoch(val_loader)
+            _train_metrics = trainer.train_one_epoch(val_loader)  # noqa: F841
 
             # Validate
             val_metrics = trainer.validate_one_epoch(val_loader)
@@ -318,11 +318,11 @@ def run_hyperparameter_search(
         fig_importance.write_html(str(output_dir / "param_importances.html"))
 
         logger.info(f"Visualization plots saved to {output_dir}")
-    except:
+    except Exception:
         logger.warning("Failed to generate visualization plots")
 
     # Generate updated config with best hyperparameters
-    best_hyperparams = {}
+    best_hyperparams: Dict[str, Any] = {}
     for param_name, param_value in best_params.items():
         # Map flat parameter names back to nested structure
         if (
@@ -363,8 +363,10 @@ def run_hyperparameter_search(
             [t for t in study.trials if t.state == optuna.trial.TrialState.PRUNED]
         ),
         "study_name": study_name,
-        "study_duration": study.trials[-1].datetime_complete - study.trials[0].datetime_start,
     }
+    _end = study.trials[-1].datetime_complete or study.trials[-1].datetime_start
+    _start = study.trials[0].datetime_start or study.trials[0].datetime_complete
+    study_stats["study_duration"] = str(_end - _start) if _end and _start else "unknown"
 
     with open(output_dir / "study_stats.json", "w") as f:
         json.dump(study_stats, f, indent=2)

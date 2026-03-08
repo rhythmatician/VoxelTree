@@ -306,6 +306,8 @@ class ProgressiveLODModel(nn.Module):
         self.conditioning_fusion = VanillaConditioningFusion(hidden_dim=config.base_channels)
 
         # Parent processing (for all progressive stages >= 2 we have a parent)
+        self.parent_pre: Optional[nn.Sequential]
+        self.parent_post: Optional[nn.Sequential]
         if self.output_size >= 2:
             # Encode parent block logits [B, C, P, P, P] where C=block_vocab_size.
             # Use 1x1 to reduce channel dimension aggressively, then a 3x3 refine.
@@ -385,7 +387,11 @@ class ProgressiveLODModel(nn.Module):
         )  # [B, base_channels, output_size, output_size, output_size]
 
         # Process parent if available
-        if self.parent_pre is not None and x_parent_prev is not None:
+        if (
+            self.parent_pre is not None
+            and self.parent_post is not None
+            and x_parent_prev is not None
+        ):
             # Encode at native parent resolution
             parent_features = self.parent_pre(x_parent_prev)
             # Upsample to match current output_size if needed

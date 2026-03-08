@@ -19,12 +19,15 @@ import logging
 import subprocess
 import sys
 from pathlib import Path
+from typing import Optional
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
 
-def run_command(cmd: str, cwd: Path = None, check: bool = True) -> subprocess.CompletedProcess:
+def run_command(
+    cmd: str, cwd: Optional[Path] = None, check: bool = True
+) -> subprocess.CompletedProcess:
     """Run a shell command with logging."""
     logger.info(f"Running: {cmd}")
     if cwd:

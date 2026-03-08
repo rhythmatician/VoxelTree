@@ -95,7 +95,7 @@ def main():
             "accuracy_threshold", 0.99
         )
 
-        metrics = VoxelMetrics(
+        _metrics = VoxelMetrics(  # noqa: F841
             block_vocab_size=vocab_size,
             frequent_blocks_k=frequent_k,
             accuracy_threshold=accuracy_threshold,
