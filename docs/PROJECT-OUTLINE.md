@@ -431,8 +431,8 @@ or majority vote. Source of truth: `scripts/mipper.py`.
 
 **No double-work:**
 
-- We do not generate proxy terrain then replace with vanilla
-- We generate our terrain once, cache it, and use it
+- We do not generate proxy terrain then replace with vanilla (Late phase 1)
+- We generate our terrain, latent Voxy representations, and training pairs once, cache them, and use them.  Only delete and regenerate with a new world seed for long runs, once everything is built and validated completely (At the very end of phase 1).
 - Vanilla structures/features may be placed on top (Phase 2)
 
 ## 7. Performance Requirements
@@ -463,52 +463,52 @@ or majority vote. Source of truth: `scripts/mipper.py`.
 
 ### Milestone 1: Plumbing & Infrastructure
 
-- [ ] Mod stack launches on 1.21.11
-- [ ] Voxy renders synthetic LOD terrain (no ML yet)
-- [ ] Freeze + pregen pipeline works
-- [ ] Anchor computation + caching functional
+- [x] Mod stack launches on 1.21.11
+- [x] Voxy renders synthetic LOD terrain (no ML yet) *(exceeded: ONNX model now active)*
+- [ ] Freeze + pregen pipeline works *(data-cli.py is a stub; no pregen command exists)*
+- [x] Anchor computation + caching functional
 
 ### Milestone 2: Dataset & Training Prep
 
-- [ ] Extract parent-child samples from vanilla worlds
-- [ ] Build training manifest with provenance
-- [ ] Validate block vocab mapping
-- [ ] Generate `test_vectors.npz` for DJL parity
+- [x] Extract parent-child samples from vanilla worlds *(PatchPairer + data/chunks/ populated)*
+- [x] Build training manifest with provenance *(dataset_respec.py + trainer.py provenance; training ran 8 epochs)*
+- [x] Validate block vocab mapping *(standard_minecraft_blocks.json live in-game via VoxyBlockMapper)*
+- [ ] Generate `test_vectors.npz` for DJL parity *(no .npz test vectors exist)*
 
 ### Milestone 3: Baseline Generator
 
-- [ ] Deterministic non-ML refinement (proof of pipeline)
-- [ ] Rendered via Voxy
-- [ ] Seam strategy validated
+- [x] Deterministic non-ML refinement (proof of pipeline) *(VanillaLikeTerrainGenerator + LodGenerationService sine/cosine heightmap)*
+- [x] Rendered via Voxy *(VoxySectionWriter actively pushing sections; confirmed in game logs)*
+- [ ] Seam strategy validated *(only crude tile-edge factor heuristic; no halo/XZ neighbor context)*
 
 ### Milestone 4: Model Training
 
-- [ ] Train Init model (noise → LOD4)
-- [ ] Train refinement models (LOD4→3, 3→2, 2→1, 1→0)
-- [ ] Achieve 99% accuracy on frequent blocks (goal)
-- [ ] Export all 5 models to ONNX
+- [ ] Train Init model (noise → LOD4) *(architecture pivoted to single unified model; no dedicated init model)*
+- [ ] Train refinement models (LOD4→3, 3→2, 2→1, 1→0) *(training stalled at 8/20 epochs; transitions don't cascade as specified)*
+- [ ] Achieve 99% accuracy on frequent blocks (goal) *(best: ~69% overall; ~70% block accuracy)*
+- [ ] Export all 5 models to ONNX *(1 undertrained unified model exported; pipeline works)*
 
 ### Milestone 5: ONNX Integration
 
-- [ ] In-mod inference works (DJL + ONNX Runtime)
-- [ ] Model outputs visible terrain via Voxy
-- [ ] DJL parity verified (test vectors match)
-- [ ] Performance benchmarks meet targets
+- [x] In-mod inference works (DJL + ONNX Runtime) *(DJL BOM 0.30.0, UnifiedModelRunner, confirmed in game logs)*
+- [x] Model outputs visible terrain via Voxy *(LodGenerationService writing LOD4→1 sections; 200+ sections confirmed in log)*
+- [ ] DJL parity verified (test vectors match) *(no test_vectors.npz generated; no Java parity test)*
+- [ ] Performance benchmarks meet targets *(cold-start 359ms >> 100ms target; warm ~60ms; framework not run vs real model)*
 
 ### Milestone 6: Progressive Refinement
 
-- [ ] Multi-level LOD chain functional
-- [ ] Scheduler prioritizes correctly
-- [ ] Caching prevents recomputation
-- [ ] Seam stability validated
+- [x] Multi-level LOD chain functional *(ProgressiveLODPipeline chains 5 stages; LodGenerationService runs 4 LOD passes confirmed in log)*
+- [x] Scheduler prioritizes correctly *(buildSpiralSections() + PASS_RADIUS; closest sections generated first)*
+- [x] Caching prevents recomputation *(parentCache HashMap in LodGenerationService; coarsened outputs reused across passes)*
+- [ ] Seam stability validated *(no XZ neighbor context; no seam-specific tests)*
 
 ### Milestone 7: Performance Validation
 
-- [ ] Profiling complete
-- [ ] Meets CPU targets (<100ms per patch)
+- [ ] Profiling complete *(PerformanceMonitor + TerrainGenerationBenchmark exist but use simulateWork(), not real ONNX inference)*
+- [ ] Meets CPU targets (<100ms per patch) *(cold-start 359ms; undertrained model only)*
 - [ ] Stable under fast travel (elytra speeds)
 - [ ] No invisible collisions
-- [ ] Restart preserves cached LODs
+- [ ] Restart preserves cached LODs *(in-memory parentCache cleared on restart; rendered Voxy sections persist via RocksDB)*
 
 ## 9. Acceptance Criteria (Phase 1 Complete)
 
@@ -541,19 +541,18 @@ The system is considered **working** when:
 ## 10. Out of Scope (Phase 1)
 
 - Structure generation (Phase 2)
-- Vegetation modeling (Phase 2)
+- Vegetation modeling? (Phase 2? Maybe should be phase 1 though!)
 - Nether/End support (future)
-- Full vanilla parity (we aim for statistical similarity)
+- Custom biomes (We're just training for Vanilla-like terrain)
 - Text-prompt terrain (not part of vision)
 - GPU inference (CPU-only for mod compatibility)
 - Interactive evolution (not part of architecture)
 
-## 11. Long-Term Vision (Phase 2+)
+## 11. Long-Term Ideas (Phase 2+)
 
 - Structure-aware generation (two-codebook VQ-style latent system)
 - Vegetation pass (trees, plants, decorations)
 - Structure blending (villages, strongholds, etc.)
-- Multi-biome transition smoothing
 - Quantized inference (INT8 for speed)
 - Adaptive patch size (larger patches for flat terrain)
 
