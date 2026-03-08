@@ -235,6 +235,13 @@ class SimpleFlexibleUNet3D(nn.Module):
             hm = hm.unsqueeze(1)  # [B,1,H,W]
 
         if height_planes is None:
+            import warnings
+
+            warnings.warn(
+                "height_planes not provided — computing from heightmap. "
+                "This uses zeros for ocean_floor which is incorrect.",
+                stacklevel=2,
+            )
             height_planes = compute_height_planes(hm)  # [B,5,H,W]
 
         # Normalise biome to indices [B,H,W]
@@ -246,6 +253,14 @@ class SimpleFlexibleUNet3D(nn.Module):
             biome_indices = biome_patch  # already (B,H,W)
 
         if router6 is None:
+            import warnings
+
+            warnings.warn(
+                "router6 not provided — approximating from biome+heightmap. "
+                "This produces a fundamentally different distribution than "
+                "real noise-router values and WILL cause quality loss.",
+                stacklevel=2,
+            )
             router6 = approximate_router6_from_biome(biome_indices, hm)  # [B,6,H,W]
 
         # ------------------------------------------------------------------

@@ -137,6 +137,7 @@ def tmp_npz_dir(tmp_path: Path) -> Path:
         labels16=labels16,
         biome16=biome16,
         height16=height16,
+        y_index=np.int64(4),
     )
     return tmp_path
 
@@ -168,12 +169,12 @@ class TestNpzDatasetPipeline:
         # Dataset now produces tensors WITHOUT the batch dim; DataLoader adds it.
         # Here we manually unsqueeze(0) to simulate a batch of 1.
         pv = item["parent_voxel"].unsqueeze(0).float()  # (1,1,8,8,8)
-        tm = item["target_mask"].unsqueeze(0).float()    # (1,1,16,16,16)
-        tt = item["target_types"].unsqueeze(0).long()    # (1,16,16,16)
-        bp = item["biome_patch"].unsqueeze(0)             # (1,256,16,16)
-        hp = item["heightmap_patch"].unsqueeze(0)         # (1,1,16,16)
-        yi = item["y_index"]                              # (1,) already
-        lo = item["lod"]                                  # (1,) already
+        tm = item["target_mask"].unsqueeze(0).float()  # (1,1,16,16,16)
+        tt = item["target_types"].unsqueeze(0).long()  # (1,16,16,16)
+        bp = item["biome_patch"].unsqueeze(0)  # (1,256,16,16)
+        hp = item["heightmap_patch"].unsqueeze(0)  # (1,1,16,16)
+        yi = item["y_index"]  # (1,) already
+        lo = item["lod"]  # (1,) already
 
         batch = {
             "parent_voxel": pv,
@@ -200,7 +201,9 @@ class TestOnnxExportRoundtrip:
     def _skip_if_no_ort(self):
         pytest.importorskip("onnxruntime", reason="onnxruntime not installed")
         pytest.importorskip("onnx", reason="onnx not installed")
-        pytest.importorskip("onnxscript", reason="onnxscript not installed (required by torch.onnx.export)")
+        pytest.importorskip(
+            "onnxscript", reason="onnxscript not installed (required by torch.onnx.export)"
+        )
 
     def _export(self, onnx_path: Path):
         """Export a tiny model to ONNX and return dummy_input tuple."""

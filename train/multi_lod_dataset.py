@@ -61,6 +61,8 @@ def create_lod_training_pairs(
     slope_x: Optional[np.ndarray] = None,
     slope_z: Optional[np.ndarray] = None,
     curvature: Optional[np.ndarray] = None,
+    *,
+    strict: bool = True,
 ) -> List[Dict]:
     """
     Create training pairs for incremental LOD refinement from a single 16³ chunk.
@@ -116,8 +118,58 @@ def create_lod_training_pairs(
     # ------------------------------------------------------------------
     # Compute height_planes tensor [5, 16, 16]
     # ------------------------------------------------------------------
-    surf = heightmap_surface if heightmap_surface is not None else heightmap_norm
-    ofloor = heightmap_ocean_floor if heightmap_ocean_floor is not None else np.zeros_like(surf)
+    if heightmap_surface is not None:
+        surf = heightmap_surface.astype(np.float32)
+        # Detect whether this is raw world-Y coords (values >> 1) or
+        # already normalised legacy data (values in [0, 1]).
+        # Raw world Y: overworld surface is typically 50–100+, max 320.
+        # Normalised legacy: max is 1.0.
+        if surf.max() > 2.0:
+            # Raw world-Y coordinates — normalise to match Java runtime:
+            #   AnchorSampler.computeHeightPlanes divides by HEIGHT_RANGE (320)
+            #   ocean_floor = min(h, SEA_LEVEL=62) / 320
+            SEA_LEVEL = 62.0
+            HEIGHT_RANGE = 320.0
+            if heightmap_ocean_floor is not None:
+                ofloor = heightmap_ocean_floor.astype(np.float32) / HEIGHT_RANGE
+            else:
+                ofloor = np.minimum(surf, SEA_LEVEL) / HEIGHT_RANGE
+            surf = surf / HEIGHT_RANGE
+        else:
+            # Already normalised (legacy or synthetic test data)
+            if heightmap_ocean_floor is not None:
+                ofloor = heightmap_ocean_floor.astype(np.float32)
+            elif strict:
+                raise ValueError(
+                    "heightmap_ocean_floor is required (set strict=False to fall back "
+                    "to zeros — not recommended)"
+                )
+            else:
+                import warnings
+
+                warnings.warn(
+                    "heightmap_ocean_floor missing — falling back to zeros.",
+                    stacklevel=2,
+                )
+                ofloor = np.zeros_like(surf)
+    elif strict:
+        raise ValueError(
+            "heightmap_surface is required for accurate height conditioning. "
+            "Run scripts/add_column_heights.py to add it to existing NPZ files, "
+            "or set strict=False to fall back to per-slab heightmap_norm "
+            "(WARNING: this produces a train/runtime mismatch)."
+        )
+    else:
+        import warnings
+
+        warnings.warn(
+            "heightmap_surface missing — falling back to per-slab heightmap_norm. "
+            "This is a known source of train/runtime mismatch! "
+            "Run scripts/add_column_heights.py to fix.",
+            stacklevel=2,
+        )
+        surf = heightmap_norm  # per-slab normalised — WRONG but won't crash
+        ofloor = np.zeros_like(surf)
 
     if slope_x is None or slope_z is None or curvature is None:
         # Compute via central differences
@@ -143,12 +195,24 @@ def create_lod_training_pairs(
     )  # (5, 16, 16)
 
     # ------------------------------------------------------------------
-    # Compute router6 [6, 16, 16] — use real data or approximate
+    # Compute router6 [6, 16, 16] — real data required
     # ------------------------------------------------------------------
     if router6 is not None:
         router6_tensor = router6.astype(np.float32)  # (6, 16, 16)
+    elif strict:
+        raise ValueError(
+            "router6 is required (set strict=False to approximate from "
+            "biome+heightmap heuristics — NOT recommended, the approximation "
+            "has a fundamentally different distribution than real router values)"
+        )
     else:
-        # Approximate from biome + heightmap using PyTorch helper
+        import warnings
+
+        warnings.warn(
+            "router6 missing — falling back to approximate_router6_from_biome. "
+            "This produces a distribution mismatch vs real noise-router values.",
+            stacklevel=2,
+        )
         with torch.no_grad():
             _bx = torch.from_numpy(biome_idx).unsqueeze(0).float()  # (1,16,16)
             _hx = torch.from_numpy(heightmap_norm[None, None, ...])  # (1,1,16,16)
@@ -326,52 +390,50 @@ class MultiLODDataset(Dataset):
                     skipped_air += 1
                     continue
 
-                biome16 = (
-                    data["biome16"]
-                    if "biome16" in data
-                    else (
-                        data["biome_patch"]
-                        if "biome_patch" in data
-                        else np.zeros((16, 16), dtype=np.int32)
-                    )
-                )
+                # ---- Biome: require real data ----
+                if "biome16" in data:
+                    biome16 = data["biome16"]
+                elif "biome_patch" in data:
+                    biome16 = data["biome_patch"]
+                else:
+                    print(f"Skipping {npz_file}: no biome data (biome16 or biome_patch)")
+                    continue
 
-                height16 = (
-                    data["height16"]
-                    if "height16" in data
-                    else (
-                        data["heightmap_patch"]
-                        if "heightmap_patch" in data
-                        else np.zeros((16, 16), dtype=np.float32)
-                    )
-                )
-
-                # river removed from contract
+                # ---- Heightmap: require real data ----
+                if "height16" in data:
+                    height16 = data["height16"]
+                elif "heightmap_patch" in data:
+                    height16 = data["heightmap_patch"]
+                else:
+                    print(f"Skipping {npz_file}: no heightmap data (height16 or heightmap_patch)")
+                    continue
 
                 # Handle different height formats
                 if height16.ndim == 3:
                     height16 = height16[0]  # Take first channel
 
-                # Generate Y-index — prefer the value stored in the NPZ
-                y_index = int(data["y_index"]) if "y_index" in data else 64
+                # ---- Y-index: require real data ----
+                if "y_index" not in data:
+                    print(f"Skipping {npz_file}: no y_index")
+                    continue
+                y_index = int(data["y_index"])
 
                 # Create training pairs for all LOD transitions
+                # strict=False allows legacy data without anchor fields,
+                # but logs warnings so you can see exactly which samples
+                # are using fallback conditioning.
                 pairs = create_lod_training_pairs(
                     labels16=labels16,
                     biome_patch=biome16,
                     heightmap_patch=height16,
                     y_index=y_index,
-                    # Load real anchor data when available (from NoiseDumper extraction)
-                    router6=data["router6"] if "router6" in data else None,
-                    heightmap_surface=(
-                        data["heightmap_surface"] if "heightmap_surface" in data else None
-                    ),
-                    heightmap_ocean_floor=(
-                        data["heightmap_ocean_floor"] if "heightmap_ocean_floor" in data else None
-                    ),
-                    slope_x=data["slope_x"] if "slope_x" in data else None,
-                    slope_z=data["slope_z"] if "slope_z" in data else None,
-                    curvature=data["curvature"] if "curvature" in data else None,
+                    router6=data.get("router6"),
+                    heightmap_surface=data.get("heightmap_surface"),
+                    heightmap_ocean_floor=data.get("heightmap_ocean_floor"),
+                    slope_x=data.get("slope_x"),
+                    slope_z=data.get("slope_z"),
+                    curvature=data.get("curvature"),
+                    strict=False,  # TODO: flip to True once all data has anchor fields
                 )
 
                 self.training_pairs.extend(pairs)
@@ -427,33 +489,19 @@ class MultiLODDataset(Dataset):
             parent_voxel=np.array(
                 [p["parent_voxel"] for p in self.training_pairs], dtype=np.float32
             ),
-            biome_idx=np.array(
-                [p["biome_idx"] for p in self.training_pairs], dtype=np.int32
-            ),
+            biome_idx=np.array([p["biome_idx"] for p in self.training_pairs], dtype=np.int32),
             heightmap_patch=np.array(
                 [p["heightmap_patch"] for p in self.training_pairs], dtype=np.float32
             ),
             height_planes=np.array(
                 [p["height_planes"] for p in self.training_pairs], dtype=np.float32
             ),
-            router6=np.array(
-                [p["router6"] for p in self.training_pairs], dtype=np.float32
-            ),
-            y_index=np.array(
-                [int(p["y_index"]) for p in self.training_pairs], dtype=np.int64
-            ),
-            lod=np.array(
-                [int(p["lod"]) for p in self.training_pairs], dtype=np.int64
-            ),
-            target_mask=np.array(
-                [p["target_mask"] for p in self.training_pairs], dtype=np.uint8
-            ),
-            target_types=np.array(
-                [p["target_types"] for p in self.training_pairs], dtype=np.int32
-            ),
-            lod_transition=np.array(
-                [p["lod_transition"] for p in self.training_pairs]
-            ),
+            router6=np.array([p["router6"] for p in self.training_pairs], dtype=np.float32),
+            y_index=np.array([int(p["y_index"]) for p in self.training_pairs], dtype=np.int64),
+            lod=np.array([int(p["lod"]) for p in self.training_pairs], dtype=np.int64),
+            target_mask=np.array([p["target_mask"] for p in self.training_pairs], dtype=np.uint8),
+            target_types=np.array([p["target_types"] for p in self.training_pairs], dtype=np.int32),
+            lod_transition=np.array([p["lod_transition"] for p in self.training_pairs]),
             _n_source_files=np.array([len(self.npz_files)]),
             _min_solid_fraction=np.array([self.min_solid_fraction]),
         )
