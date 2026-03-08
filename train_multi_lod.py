@@ -1,14 +1,18 @@
 """
-Multi-LOD Training Script
+Multi-LOD Training Script — Separate Models per LOD Step
 
-This script trains a single flexible model that can handle all LOD transitions:
-- LOD4→LOD3: 1³ → 2³
-- LOD3→LOD2: 2³ → 4³
-- LOD2→LOD1: 4³ → 8³
-- LOD1→LOD0: 8³ → 16³
+Trains 4 separate progressive models (no LOD0 — vanilla handles that):
+  - Init→LOD4:  1×1×1  (tiny MLP, conditioning only)
+  - LOD4→LOD3:  2×2×2  (small Conv3D)
+  - LOD3→LOD2:  4×4×4  (medium Conv3D)
+  - LOD2→LOD1:  8×8×8  (medium-large Conv3D)
+
+Each model is sized to its fixed input/output tensors, yielding better
+ONNX Runtime performance and per-step capacity tuning vs. a unified model.
 """
 
 import argparse
+import itertools
 import json
 import random
 import sys
@@ -28,7 +32,14 @@ from tqdm import tqdm
 sys.path.append(str(Path(__file__).parent / "train"))
 
 from train.multi_lod_dataset import MultiLODDataset, collate_multi_lod_batch
-from train.unet3d import SimpleFlexibleConfig, SimpleFlexibleUNet3D
+from train.progressive_lod_models import (
+    ProgressiveLODModel0_Initial,
+    create_init_model,
+    create_lod2_to_lod1_model,
+    create_lod3_to_lod2_model,
+    create_lod4_to_lod3_model,
+)
+from train.unet3d import SimpleFlexibleConfig
 
 # Default Voxy vocabulary path
 DEFAULT_VOCAB_PATH = Path("config/voxy_vocab.json")
@@ -184,16 +195,67 @@ def compute_metrics(
         }
 
 
+# ── LOD transition → model-key mapping ────────────────────────────────────
+# The dataset emits lod_transition strings like "lod4to3"; we map them
+# to model dict keys used throughout training.
+LOD_MODEL_KEY = {
+    "init_to_lod4": "init_to_lod4",
+    "lod4to3": "lod4to3",
+    "lod3to2": "lod3to2",
+    "lod2to1": "lod2to1",
+}
+
+
+def _forward_batch(
+    models: Dict[str, nn.Module],
+    batch: Dict[str, torch.Tensor],
+    device: torch.device,
+) -> Dict[str, torch.Tensor]:
+    """Route a batch to the correct per-step model."""
+    lod_transition: str = batch["lod_transition"]
+    model_key = LOD_MODEL_KEY.get(lod_transition)
+    if model_key is None:
+        raise ValueError(f"Unknown LOD transition: {lod_transition}")
+
+    model = models[model_key]
+
+    # Common conditioning inputs
+    height_planes = batch["height_planes"].to(device)
+    router6 = batch["router6"].to(device)
+    biome_indices = batch["biome_idx"].to(device)
+    y_index = batch["y_index"].to(device)
+
+    if isinstance(model, ProgressiveLODModel0_Initial):
+        # Init model: no parent
+        return model(
+            height_planes=height_planes,
+            router6=router6,
+            biome_indices=biome_indices,
+            y_index=y_index,
+        )
+    else:
+        # Refinement model: needs parent occupancy
+        x_parent = batch["parent_voxel"].to(device)
+        return model(
+            height_planes=height_planes,
+            router6=router6,
+            biome_indices=biome_indices,
+            y_index=y_index,
+            x_parent=x_parent,
+        )
+
+
 def train_epoch(
-    model: SimpleFlexibleUNet3D,
+    models: Dict[str, nn.Module],
     dataloader: DataLoader,
     loss_fn: MultiLODLoss,
     optimizer: optim.Optimizer,
     device: torch.device,
 ) -> Dict[str, Any]:
-    """Train for one epoch."""
+    """Train for one epoch using separate per-step models."""
 
-    model.train()
+    for m in models.values():
+        m.train()
 
     total_loss = 0.0
     total_block_loss = 0.0
@@ -215,17 +277,6 @@ def train_epoch(
         leave=False,
         dynamic_ncols=True,
     ):
-        # Move to device — include anchor tensors when present
-        inputs = {
-            "parent_voxel": batch["parent_voxel"].to(device),
-            "biome_patch": batch["biome_idx"].to(device),  # integer indices
-            "heightmap_patch": batch["heightmap_patch"].to(device),
-            "y_index": batch["y_index"].to(device),
-            "lod": batch["lod"].to(device),
-            "height_planes": batch["height_planes"].to(device),
-            "router6": batch["router6"].to(device),
-        }
-
         targets = {
             "target_blocks": batch["target_types"].to(device),
             "target_occupancy": batch["target_mask"].to(device),
@@ -236,9 +287,9 @@ def train_epoch(
         lod_transition: str = batch["lod_transition"]
         lod_counts[lod_transition] = lod_counts.get(lod_transition, 0) + 1
 
-        # Forward pass
+        # Forward pass through the correct per-step model
         optimizer.zero_grad()
-        predictions = model(**inputs)
+        predictions = _forward_batch(models, batch, device)
 
         # Compute loss
         losses = loss_fn(predictions, targets)
@@ -273,14 +324,15 @@ def train_epoch(
 
 
 def validate_epoch(
-    model: SimpleFlexibleUNet3D,
+    models: Dict[str, nn.Module],
     dataloader: DataLoader,
     loss_fn: MultiLODLoss,
     device: torch.device,
 ) -> Dict[str, float]:
     """Validate for one epoch."""
 
-    model.eval()
+    for m in models.values():
+        m.eval()
 
     total_loss = 0.0
     total_block_loss = 0.0
@@ -294,17 +346,6 @@ def validate_epoch(
 
     with torch.no_grad():
         for batch in dataloader:
-            # Move to device — include anchor tensors when present
-            inputs = {
-                "parent_voxel": batch["parent_voxel"].to(device),
-                "biome_patch": batch["biome_idx"].to(device),  # integer indices
-                "heightmap_patch": batch["heightmap_patch"].to(device),
-                "y_index": batch["y_index"].to(device),
-                "lod": batch["lod"].to(device),
-                "height_planes": batch["height_planes"].to(device),
-                "router6": batch["router6"].to(device),
-            }
-
             targets = {
                 "target_blocks": batch["target_types"].to(device),
                 "target_occupancy": batch["target_mask"].to(device),
@@ -313,8 +354,8 @@ def validate_epoch(
 
             lod_transition = batch["lod_transition"]
 
-            # Forward pass
-            predictions = model(**inputs)
+            # Forward pass through the correct per-step model
+            predictions = _forward_batch(models, batch, device)
 
             # Compute loss
             losses = loss_fn(predictions, targets)
@@ -475,7 +516,7 @@ def main():
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Create model (include anchor-channel dimensions)
+    # Create per-step models (separate ONNX export targets)
     config = SimpleFlexibleConfig(
         base_channels=args.base_channels,
         biome_vocab_size=256,
@@ -484,8 +525,18 @@ def main():
         router6_channels=args.router6_channels,
     )
 
-    model = SimpleFlexibleUNet3D(config).to(device)
-    print(f"Model parameters: {sum(p.numel() for p in model.parameters()):,}")
+    models: Dict[str, nn.Module] = {
+        "init_to_lod4": create_init_model(config).to(device),
+        "lod4to3": create_lod4_to_lod3_model(config).to(device),
+        "lod3to2": create_lod3_to_lod2_model(config).to(device),
+        "lod2to1": create_lod2_to_lod1_model(config).to(device),
+    }
+
+    total_params = sum(sum(p.numel() for p in m.parameters()) for m in models.values())
+    print(f"Total parameters across 4 models: {total_params:,}")
+    for name, m in models.items():
+        n = sum(p.numel() for p in m.parameters())
+        print(f"  {name}: {n:,} params")
 
     # Create datasets
     print("Loading datasets...")
@@ -493,11 +544,12 @@ def main():
         data_dir=args.data_dir,
         split="train",
         lod_sampling_weights={
-            # Keys must match lod_transition names: "lod{N}to{N-1}"
-            "lod4to3": 0.2,
-            "lod3to2": 0.25,
-            "lod2to1": 0.25,
-            "lod1to0": 0.3,  # Emphasize finest level
+            # No LOD0 — vanilla handles that.
+            # init_to_lod4 included only if dataset supports it.
+            "init_to_lod4": 0.15,
+            "lod4to3": 0.25,
+            "lod3to2": 0.30,
+            "lod2to1": 0.30,
         },
         use_pair_cache=not args.no_pair_cache,
     )
@@ -579,13 +631,14 @@ def main():
             f"{class_weights_tensor.max():.3f}"
         )
 
-    # Create loss function and optimizer
+    # Create loss function and optimizer (shared across all models)
     loss_fn = MultiLODLoss(
         air_loss_weight=args.air_loss_weight,
         surface_consistency_weight=args.surface_loss_weight,
         class_weights=class_weights_tensor,
     )
-    optimizer = optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
+    all_params = list(itertools.chain.from_iterable(m.parameters() for m in models.values()))
+    optimizer = optim.AdamW(all_params, lr=args.lr, weight_decay=1e-4)
 
     # Learning rate scheduler
     scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs)
@@ -596,7 +649,13 @@ def main():
 
     if args.resume is not None:
         ckpt = torch.load(args.resume, map_location=device, weights_only=False)
-        model.load_state_dict(ckpt["model_state_dict"])
+        # Load per-model state dicts
+        model_states = ckpt.get("model_state_dicts", {})
+        for name, m in models.items():
+            if name in model_states:
+                m.load_state_dict(model_states[name])
+            else:
+                print(f"  Warning: no saved state for model '{name}', using fresh weights")
         optimizer.load_state_dict(ckpt["optimizer_state_dict"])
         start_epoch = ckpt.get("epoch", 0) + 1
         best_val_loss = ckpt.get("val_loss", float("inf"))
@@ -621,7 +680,7 @@ def main():
         epoch_start = time.time()
 
         # Train
-        train_metrics = train_epoch(model, train_loader, loss_fn, optimizer, device)
+        train_metrics = train_epoch(models, train_loader, loss_fn, optimizer, device)
 
         # Update learning rate
         scheduler.step()
@@ -640,7 +699,7 @@ def main():
 
         # Validate
         if epoch % args.validate_every == 0:
-            val_metrics = validate_epoch(model, val_loader, loss_fn, device)
+            val_metrics = validate_epoch(models, val_loader, loss_fn, device)
 
             print(f"  Val Loss: {val_metrics['loss']:.4f}")
             print(
@@ -649,7 +708,7 @@ def main():
             )
 
             # Print per-LOD validation metrics
-            for lod_transition in ["lod4to3", "lod3to2", "lod2to1", "lod1to0"]:
+            for lod_transition in ["init_to_lod4", "lod4to3", "lod3to2", "lod2to1"]:
                 if f"{lod_transition}_overall_acc" in val_metrics:
                     acc = val_metrics[f"{lod_transition}_overall_acc"]
                     print(f"  {lod_transition}: {acc:.3f}")
@@ -660,7 +719,7 @@ def main():
                 torch.save(
                     {
                         "epoch": epoch,
-                        "model_state_dict": model.state_dict(),
+                        "model_state_dicts": {name: m.state_dict() for name, m in models.items()},
                         "optimizer_state_dict": optimizer.state_dict(),
                         "config": config,
                         "val_loss": val_metrics["loss"],
@@ -675,7 +734,7 @@ def main():
             torch.save(
                 {
                     "epoch": epoch,
-                    "model_state_dict": model.state_dict(),
+                    "model_state_dicts": {name: m.state_dict() for name, m in models.items()},
                     "optimizer_state_dict": optimizer.state_dict(),
                     "config": config,
                 },
@@ -689,11 +748,11 @@ def main():
     total_time = time.time() - start_time
     print(f"Training completed in {total_time/3600:.2f} hours")
 
-    # Save final model
+    # Save final model (all 4 per-step models in one checkpoint)
     torch.save(
         {
             "epoch": args.epochs,
-            "model_state_dict": model.state_dict(),
+            "model_state_dicts": {name: m.state_dict() for name, m in models.items()},
             "optimizer_state_dict": optimizer.state_dict(),
             "config": config,
         },

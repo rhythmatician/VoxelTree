@@ -332,10 +332,10 @@ class MultiLODDataset(Dataset):
         # Default sampling weights (can emphasize certain LOD levels)
         if lod_sampling_weights is None:
             self.lod_sampling_weights = {
-                "lod4to3": 0.2,  # Coarsest transition
-                "lod3to2": 0.25,
-                "lod2to1": 0.25,
-                "lod1to0": 0.3,  # Finest transition (most important)
+                "init_to_lod4": 0.15,  # Init step
+                "lod4to3": 0.25,  # Coarsest refinement
+                "lod3to2": 0.30,
+                "lod2to1": 0.30,  # Finest (no LOD0 — vanilla handles that)
             }
         else:
             self.lod_sampling_weights = lod_sampling_weights

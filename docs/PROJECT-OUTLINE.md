@@ -4,14 +4,18 @@
 
 ### 1.1 Core Idea
 
-LODiffusion replaces most of Minecraft's forward terrain generation with a progressive, ML-driven, reverse-order refinement system. Instead of generating full-resolution terrain immediately, the system:
+LODiffusion generates **distant LOD terrain only**, using a progressive, ML-driven, reverse-order refinement system. Vanilla terrain generation remains authoritative for playable-resolution terrain (LOD0). The system:
 
 - Generates coarse LOD terrain first (far from player)
-- Refines terrain progressively as the player approaches
+- Refines terrain progressively as the player approaches (LOD4 → LOD1 only)
 - Anchors all macro-structure in vanilla noise functions
-- Uses lightweight ONNX models for fast CPU inference
-- Integrates with Voxy for multi-resolution rendering
-- Preserves gameplay correctness inside simulation distance
+- Uses lightweight, **per-step ONNX models** for fast CPU inference
+- Integrates with Voxy for multi-resolution rendering (insert-only; never overwrites Voxy data)
+- Vanilla takes over at LOD0 — no model-generated playable terrain
+
+> **Key architecture decision:** The model is a *render proxy* for distant terrain,
+> not a terrain generator replacement. Players get exact vanilla terrain where they
+> can interact with it, and believable approximations where they can only see it.
 
 ### 1.2 Research Inspiration
 
@@ -30,40 +34,47 @@ However, LODiffusion diverges from this work in critical ways:
 
 ### 1.3 Core Philosophy: Vanilla-Anchored But Not Vanilla-Exact
 
-**What vanilla noise provides:**
+**What vanilla noise provides (cheap anchor channels only):**
 
 - Macro height structure (continentalness, erosion, peaks/valleys)
 - Biome layout (climate parameters)
-- Cave likelihood (3D noise fields, carver masks)
-- River topology (riverbed corridors)
+- Surface height planes (surface, ocean floor, slopes, curvature)
+- Router6 climate parameters (temperature, vegetation, continents, erosion, depth, ridges)
 - Deterministic continuity (seed-stable, seamless)
+
+> **Dropped from scope:** Cave carver noise, aquifer masks, barrier masks, and other
+> expensive 3D noise functions are NOT computed at runtime. The model generates
+> only the *visible outer shell* of distant terrain. Underground detail that
+> players cannot see is not worth the compute cost.
 
 **What the model learns:**
 
-- Multi-resolution coherence (coarse LOD approximations that look believable)
-- Sub-vanilla detail synthesis (naturalistic cliff breakup, organic cave walls)
-- Material distribution beyond simple rules (realistic stratification, biome-blended transitions)
-- Parent→child structural consistency (how coarse voxels expand into fine voxels)
-- Hierarchical refinement (8³ → 16³, 4³ → 8³, etc.)
+- Multi-resolution coherence (coarse LOD approximations that look believable from distance)
+- Surface terrain envelope (skyline, mountain shapes, valley contours)
+- Material distribution (biome-appropriate block types at coarse resolution)
+- Parent→child structural consistency (how coarse voxels expand into finer voxels)
+- Hierarchical refinement (1³ → 2³, 2³ → 4³, 4³ → 8³ only — NOT 8³ → 16³)
 
 **What the model does NOT do:**
 
-- Move mountains horizontally
-- Ignore biome signals
-- Invent caves where vanilla says none exist
-- Create seams between patches
-- Match vanilla bit-for-bit (statistical similarity is sufficient)
+- Generate LOD0 / playable-resolution terrain (vanilla handles this)
+- Replace vanilla terrain generation at any resolution players interact with
+- Generate sealed underground volumes that are never visible
+- Overwrite existing Voxy data (insert-only to RocksDB)
+- Move mountains horizontally or ignore biome signals
+- Compute expensive 3D noise fields (carvers, aquifers) at runtime
 
 ### 1.4 Success Criteria
 
 The system is successful when:
 
-- Player can stand still → terrain fills in all directions seamlessly
+- Player can stand still → distant terrain fills in all directions seamlessly
 - Player can sprint → forward cone prioritized without stuttering
-- Player can elytra at high speed → no invisible walls or collision failures
+- Player can elytra at high speed → distant terrain streams without popping
 - Player increases render distance → no catastrophic performance drop
 - Player restarts world → distant terrain instantly visible from cache
-- World feels like vanilla → but smoother and more scalable
+- Distant terrain looks believable → smooth transition to vanilla as player approaches
+- Vanilla terrain takes over seamlessly at LOD0 → no visual betrayal at the handoff
 
 ## 2. System Architecture
 
@@ -80,45 +91,55 @@ The system is successful when:
 
 ### 2.2 LOD Hierarchy
 
-The system uses a 5-model family for progressive refinement:
+The system uses a **4-model family** of separate, per-step ONNX models for progressive refinement:
 
-| Model | Purpose | Input `x_parent_prev` | Output (`block_logits`, `air_mask`) |
-|-------|---------|----------------------|-------------------------------------|
-| **Init** | Noise → LOD4 | `[1,1,1,1,1]` (zeros) | `[1,N,1,1,1]`, `[1,1,1,1,1]` |
-| **LOD4→3** | Refine LOD4 | `[1,1,1,1,1]` | `[1,N,2,2,2]`, `[1,1,2,2,2]` |
-| **LOD3→2** | Refine LOD3 | `[1,1,2,2,2]` | `[1,N,4,4,4]`, `[1,1,4,4,4]` |
-| **LOD2→1** | Refine LOD2 | `[1,1,4,4,4]` | `[1,N,8,8,8]`, `[1,1,8,8,8]` |
-| **LOD1→0** | Refine LOD1 | `[1,1,8,8,8]` | `[1,N,16,16,16]`, `[1,1,16,16,16]` |
+| Model | ONNX File | Input `x_parent` | Output (`block_logits`, `air_mask`) | Relative Size |
+|-------|-----------|-------------------|-------------------------------------|---------------|
+| **Init** | `init_to_lod4.onnx` | `[1,1,1,1,1]` (zeros) | `[1,N,1,1,1]`, `[1,1,1,1,1]` | Tiny (MLP) |
+| **LOD4→3** | `refine_lod4_to_lod3.onnx` | `[1,1,1,1,1]` | `[1,N,2,2,2]`, `[1,1,2,2,2]` | Small |
+| **LOD3→2** | `refine_lod3_to_lod2.onnx` | `[1,1,2,2,2]` | `[1,N,4,4,4]`, `[1,1,4,4,4]` | Medium |
+| **LOD2→1** | `refine_lod2_to_lod1.onnx` | `[1,1,4,4,4]` | `[1,N,8,8,8]`, `[1,1,8,8,8]` | Medium-Large |
+
+> **LOD1→0 dropped:** Vanilla terrain generation handles full-resolution (LOD0)
+> terrain. The model stops at LOD1 (8³). This eliminates the hardest and most
+> expensive refinement step and avoids the "terrain parity" problem entirely.
 
 **Key principles:**
 
-- LOD0 = full resolution (authoritative gameplay terrain)
-- LOD1+ = progressively coarser representations
+- **Separate ONNX models per step** — each has fixed tensor shapes, optimal for CPU cache and ONNX Runtime graph optimization
+- **No LOD0 model** — vanilla terrain generation is authoritative for playable resolution
+- LOD1+ = progressively coarser ML-generated representations (render proxy only)
 - All LOD levels are deterministic, worldspace-consistent, and seam-aware
 - No upsampling in the mod; models contain static Resize/conv internally
-- Vanilla `carve()` runs only at LOD0 to finalize caves/aquifers/structures
+- Coarse models are smaller/faster; capacity scales with refinement difficulty
+- Each model loaded once at startup, session kept alive (no per-call overhead)
 
 ### 2.3 Anchor Channels (Shared Inputs)
 
-All models share these deterministic signals derived from vanilla noise:
+All models share these deterministic signals derived from **cheap** vanilla noise:
 
-| Channel | Shape | Description |
-|---------|-------|-------------|
-| `x_height_planes` | `[1,5,1,16,16]` | Surface, ocean_floor, slope_x, slope_z, curvature |
-| `x_biome_quart` | `[1,6,4,4,4]` | Temperature, precipitation[3], isCold, downfall |
-| `x_router6` | `[1,6,1,16,16]` | Temperature, vegetation, continents, erosion, depth, ridges |
-| `x_chunk_pos` | `[1,2]` | Chunk coordinates (x, z) for global coherence |
-| `x_lod` | `[1,1]` | LOD timestep embedding |
-| `x_barrier` (opt) | `[1,1,1,16,16]` | Coastal barrier mask |
-| `x_aquifer3` (opt) | `[1,3,1,16,16]` | Aquifer surface wetness |
-| `x_cave_prior4` (opt) | `[1,1,4,4,4]` | Coarse cave likelihood (LOD1→0 only) |
+| Channel | Shape | Description | Status |
+|---------|-------|-------------|--------|
+| `x_parent` | varies per step | Parent voxels from previous LOD | **Active** |
+| `x_height_planes` | `[1,5,16,16]` | Surface, ocean_floor, slope_x, slope_z, curvature | **Active** |
+| `x_router6` | `[1,6,16,16]` | Temperature, vegetation, continents, erosion, depth, ridges | **Active** |
+| `x_biome` | `[1,16,16]` int64 | Biome index per column | **Active** |
+| `x_y_index` | `[1]` int64 | Y-slab position (0–23) | **Active** |
+
+> **Dropped channels** (too expensive for distant LOD or no longer needed):
+> - ~~`x_cave_prior4`~~ — Requires 3D noise evaluation; dropped with underground skipping
+> - ~~`x_aquifer3`~~ — Expensive to compute; minimal visual impact at distance
+> - ~~`x_barrier`~~ — Coastal barrier mask; minimal impact at coarse LODs
+> - ~~`x_biome_quart`~~ — Replaced by simpler `x_biome` column-wise index
+> - ~~`x_chunk_pos`~~ — Removed; global coherence comes from anchor channels
+> - ~~`x_lod`~~ — No longer needed; each model handles exactly one LOD transition
 
 **Normalization:**
 
 - Heights: min-max by world limits (-64 to 320)
-- Router/Aquifer/Cave: z-score
-- Flags: [0,1]
-- Coords: affine/tanh scaling
+- Router6: z-score
+- Biome: integer index → learned embedding
+- Y-index: integer → learned embedding
 
 ### 2.4 Model Architecture
 
@@ -288,19 +309,25 @@ or majority vote. Source of truth: `scripts/mipper.py`.
 
 ### 4.3 Model Export
 
-**Artifacts:**
+**Artifacts (per LOD step, 4 models total):**
 
-- `model.onnx` (one per LOD step, 5 total)
-- `model_config.json` (metadata: input/output names, shapes, normalization, block palette)
-- `test_vectors.npz` (input/output examples for DJL parity validation)
+- `init_to_lod4.onnx` — Noise → LOD4 (tiny MLP)
+- `refine_lod4_to_lod3.onnx` — LOD4 → LOD3 (small)
+- `refine_lod3_to_lod2.onnx` — LOD3 → LOD2 (medium)
+- `refine_lod2_to_lod1.onnx` — LOD2 → LOD1 (medium-large)
+- `model_config.json` (metadata: input/output names, shapes per model, normalization, block palette)
+- `test_vectors.npz` (input/output examples per model for DJL parity validation)
+
+> **No LOD1→0 model.** Vanilla terrain generation handles LOD0.
 
 **Export requirements:**
 
-- Static shapes only
+- Static shapes only (each model has fixed I/O shapes)
 - Opset 17+ (ONNX)
 - No unsupported ops
 - Deterministic inference
 - DJL compatibility verified
+- Separate ONNX session per model (loaded once at startup)
 
 ## 5. Runtime Integration
 
@@ -308,10 +335,20 @@ or majority vote. Source of truth: `scripts/mipper.py`.
 
 **Priority logic:**
 
-1. Spawn sphere (force LOD0 for gameplay correctness)
-2. Movement cone (narrow at speed, prioritize forward direction)
-3. Idle fill-in (expand to 360° when stationary)
-4. Background refinement (coarser LODs for distant terrain)
+1. Movement cone (narrow at speed, prioritize forward direction)
+2. Idle fill-in (expand to 360° when stationary)
+3. Background refinement (coarser LODs for distant terrain)
+
+> **Spawn sphere removed:** Vanilla handles LOD0/gameplay terrain. Our scheduler
+> only manages distant LOD generation (LOD1–LOD4).
+
+**Work queue design (target):**
+
+- Deduplicated queue keyed by `(dimension, region_x, region_z, lod)`
+- States: `MISSING → QUEUED → GENERATING → READY`, plus `FAILED_TEMP`, `STALE`
+- Prerequisite chain resolution: request for LOD N generates missing chain coarsest-first
+- Each generated level cached as scaffolding for future refinement requests
+- `STALE` state for cache invalidation when model version changes
 
 **Constraints:**
 
@@ -319,6 +356,7 @@ or majority vote. Source of truth: `scripts/mipper.py`.
 - Avoid blocking render thread
 - Cache anchors and LODs (don't recompute)
 - Graceful fallback if inference can't keep up (render coarser)
+- Insert-only writes to Voxy RocksDB (never overwrite existing data)
 
 ### 5.2 Caching Strategy
 
@@ -341,9 +379,36 @@ or majority vote. Source of truth: `scripts/mipper.py`.
 > **Authoritative reference:** `docs/VOXY-FORMAT.md` (audited from `MCRcortex/voxy` source).
 > All details below are ground-truth, not assumptions.
 
+**Data Authority Policy: Insert-Only**
+
+> **Critical rule:** LODiffusion NEVER overwrites existing Voxy data in RocksDB.
+> - If a section key already exists → skip (Voxy's data is authoritative)
+> - Only write to keys where no data exists yet
+> - Voxy always wins — it has ground-truth from vanilla terrain
+> - This prevents data corruption and ensures vanilla parity where it matters
+> - When vanilla terrain eventually loads, Voxy's real data naturally replaces our approximation
+
+**Demand-Driven Generation (Target Architecture):**
+
+> Hook into Voxy's RocksDB cache-miss path. When Voxy requests latent terrain
+> that doesn't exist, enqueue it for generation at the requested LOD.
+> - Pull-driven: only generate what Voxy actually wants to render
+> - Natural prioritization from renderer demand
+> - No wasted work on terrain nobody will see
+> - Coarsest prerequisite generated first (cheapest, fastest first response)
+> - Each generated level becomes cached scaffolding for future refinement
+>
+> **Prerequisite chain resolution:** A request for LOD N generates only the
+> missing chain (coarsest-first), stopping at the requested level.
+> Do not eagerly generate beyond what was requested.
+>
+> **Fallback behavior:** If terrain isn't ready yet, return "not available"
+> rather than blocking the render path. Voxy renders fog/nothing until ready.
+
 **Requirements:**
 
 - Generate LOD sections compatible with Voxy's 32³ section format
+- Insert-only writes (never overwrite existing Voxy data)
 - Cache multi-level sections
 - Ensure seam stability
 - Support reload persistence
@@ -408,32 +473,57 @@ or majority vote. Source of truth: `scripts/mipper.py`.
 
 **Inside simulation distance:**
 
-- LOD0 is authoritative (real blocks for gameplay)
+- **Vanilla terrain generation is authoritative** (LOD0 = real blocks)
 - No invisible collisions
 - Mob spawning works
 - Random ticks operate normally
-- Structures may be optionally vanilla (Phase 2)
+- Structures are vanilla
 
 **Outside simulation distance:**
 
-- ML-generated LOD only (render-only)
-- No vanilla chunk generation
+- ML-generated LOD terrain (LOD1–LOD4, render-only proxy)
+- Visual approximation — not gameplay-authoritative
+- No vanilla chunk generation needed yet
 - No gameplay mechanics (no mobs, no ticks, no collisions)
+- When player approaches, vanilla terrain generates and Voxy's real data replaces ours
 
 ### 6.2 Authoritative Terrain Policy
 
-**Philosophy:** Vanilla-anchored but ours
+**Philosophy:** Vanilla is king; we're the distant preview
 
-- We do not aim for bit-for-bit vanilla matching
-- We aim for statistical similarity + gameplay correctness
-- Terrain is generated using our model, anchored to vanilla noise
-- Vanilla `carve()` may run at LOD0 for final cave/aquifer polish (optional)
+- Vanilla terrain generation runs normally for all playable terrain
+- Our model generates ONLY distant LOD terrain (LOD1–LOD4) as a render proxy
+- We do NOT aim for bit-for-bit vanilla matching at distance (visual plausibility is enough)
+- We do NOT generate LOD0 (the model's finest output is LOD1 = 8³ resolution)
+- When vanilla terrain eventually loads, it naturally replaces our approximation
 
-**No double-work:**
+**Insert-only data policy:**
 
-- We do not generate proxy terrain then replace with vanilla (Late phase 1)
-- We generate our terrain, latent Voxy representations, and training pairs once, cache them, and use them.  Only delete and regenerate with a new world seed for long runs, once everything is built and validated completely (At the very end of phase 1).
-- Vanilla structures/features may be placed on top (Phase 2)
+- We insert terrain only where Voxy has no data yet
+- We never overwrite Voxy's ground-truth data
+- Vanilla terrain loading naturally supersedes our LOD approximations
+- No reconciliation needed — Voxy's data always wins
+
+### 6.3 Underground Terrain Optimization
+
+**Philosophy:** Only generate what players can see from distance.
+
+> Most distant terrain value is in the **surface shell**. Generating sealed
+> underground volumes for distant LOD is wasted compute.
+
+**Visibility rule (target):**
+
+| Category | Generate? | Examples |
+|----------|-----------|----------|
+| **Always** | Yes | Surface shell, topography, biome-colored surfaces, coastlines |
+| **Sometimes** | Conditional | Cave mouths near exposed surfaces, large overhangs, ravine walls |
+| **Usually skip** | No | Sealed underground subchunks, deep carver detail, enclosed cave systems |
+
+**Implementation approach:**
+
+- Skip y-slabs that are fully below the surface heightmap with no exposed faces
+- Focus model capacity on terrain envelope and visible surfaces
+- This dramatically reduces both model complexity and runtime generation cost
 
 ## 7. Performance Requirements
 
@@ -483,15 +573,25 @@ or majority vote. Source of truth: `scripts/mipper.py`.
 
 ### Milestone 4: Model Training
 
-- [ ] Train Init model (noise → LOD4) *(architecture pivoted to single unified model; no dedicated init model - but, I wonder if a dedicated model would be significantly faster.  We should investigate and consider pivoting back to dedicated models for each level)*
-- [ ] Train refinement models (LOD4→3, 3→2, 2→1, 1→0) *(training stalled at 8/20 epochs; transitions don't cascade as specified)*
-- [ ] Achieve 99% accuracy on frequent blocks (goal) *(best: ~69% overall; ~70% block accuracy - needs much improvement, but its a start)*
-- [ ] Export all 5 models to ONNX *(1 undertrained unified model exported; pipeline works)*
+- [ ] Train Init model (noise → LOD4) — **separate dedicated model (tiny MLP)**
+- [ ] Train LOD4→3 refinement model — **separate ONNX, small capacity**
+- [ ] Train LOD3→2 refinement model — **separate ONNX, medium capacity**
+- [ ] Train LOD2→1 refinement model — **separate ONNX, medium-large capacity**
+- ~~Train LOD1→0 refinement model~~ — **DROPPED: vanilla handles LOD0**
+- [ ] Achieve 99% accuracy on frequent blocks (goal) *(best: ~69% overall; ~70% block accuracy - needs much improvement)*
+- [ ] Export all 4 models to separate ONNX files *(pipeline exists; needs per-model export)*
+
+> **Architecture reverted to separate models.** The unified model pivot (single model
+> with `x_lod` conditioning over all transitions) was suboptimal: zero-padding different
+> tensor sizes to 16³ wasted compute, prevented per-step capacity tuning, and hurt
+> ONNX Runtime optimization. Each step now gets its own model with fixed tensor shapes.
 
 ### Milestone 5: ONNX Integration
 
-- [x] In-mod inference works (DJL + ONNX Runtime) *(DJL BOM 0.30.0, UnifiedModelRunner, confirmed in game logs)*
-- [x] Model outputs visible terrain via Voxy *(LodGenerationService writing LOD4→1 sections; 200+ sections confirmed in log)*
+- [x] In-mod inference works (DJL + ONNX Runtime) *(DJL BOM 0.30.0; confirmed in game logs)*
+- [x] Model outputs visible terrain via Voxy *(LodGenerationService writing LOD sections; 200+ sections confirmed in log)*
+- [ ] Migrate to per-step model loading (4 ONNX sessions, loaded once at startup)
+- [ ] Implement insert-only RocksDB write guard (skip if key exists)
 - [ ] DJL parity verified (test vectors match) *(no test_vectors.npz generated; no Java parity test)*
 - [ ] Performance benchmarks meet targets *(cold-start 359ms >> 100ms target; warm ~60ms; framework not run vs real model)*
 
@@ -540,8 +640,11 @@ The system is considered **working** when:
 
 ## 10. Out of Scope (Phase 1)
 
+- **LOD0 generation** — Vanilla terrain is authoritative at full resolution
+- **Cave carver noise / aquifer computation** — Too expensive for distant LOD
+- **Underground subchunk generation** — Only generate visible terrain shell
 - Structure generation (Phase 2)
-- Vegetation modeling? (Phase 2? Maybe should be phase 1 though!)
+- Vegetation modeling (Phase 2)
 - Nether/End support (future)
 - Custom biomes (We're just training for Vanilla-like terrain)
 - Text-prompt terrain (not part of vision)
@@ -562,18 +665,30 @@ The system is considered **working** when:
   without polluting the terrain vocabulary.
 - Quantized inference (INT8 for speed)
 - Adaptive patch size (larger patches for flat terrain)
+- **Cave conditioning channel (`x_cave`)** — If cave topology at distance proves important,
+  add a coarse cave likelihood mask. Stabilizes topology but requires 3D noise evaluation.
+  Semi-hard constraint: if `cave_mask == 1`, strongly bias air probability.
+- **Residual prediction mode** — Instead of predicting blocks from scratch,
+  predict `child = upsample(parent) + neural_residual` to keep large structures stable.
+- **Single-seed generalization test** — Train on one seed, evaluate on others.
+  If model generalizes, it learned terrain rules, not memorization.
+- **Neural terrain quality comparison** — Compare model output quality vs vanilla at same LOD.
+  The model may produce *smoother* transitions than vanilla's hard thresholds.
 
 ## 12. Risks & Mitigation
 
 | Risk | Impact | Mitigation |
 |------|--------|------------|
-| Seam instability | Visual artifacts, gameplay issues | Halo context early, seam loss in training, deterministic stitch |
+| Seam instability | Visual artifacts | Halo context early, seam loss in training, deterministic stitch |
 | Anchor misalignment | Model fights constraints, poor quality | Strict anchor-consistency losses, validation tests |
 | Model underfitting rare biomes | Poor quality in edge cases | Stratified sampling, rare-feature oversampling |
 | Scheduler starvation at high speed | Visible popping, stuttering | Priority queue with movement cone, graceful fallback |
 | Version drift in Fabric ecosystem | Breaking changes, incompatibility | Pin versions early, test matrix |
 | Voxy format assumptions | Integration failures | Early adapter layer, format validation |
 | Performance targets not met | Unusable in practice | Profiling from day 1, model size caps, quantization path |
+| **LOD→vanilla transition jarring** | Players notice handoff, lose trust | Smooth transition logic, blending at boundary, LOD1 quality must be high |
+| **Locally correct, globally wrong** | Patch boundaries visible, caves dead-end | Conditioning channels anchor global structure, halo context, seam loss |
+| **Insert-only policy violated** | Voxy data corruption | Code guards on RocksDB writes, key-exists check before every insert |
 
 ## 13. Project Structure
 
@@ -606,11 +721,26 @@ VoxelTree/
 
 ## 14. Next Steps (Immediate)
 
-1. **Extract training data:** Run `pipeline.py extract` on all Voxy worlds
-2. **Train model:** Run `pipeline.py train` with Voxy-native vocabulary (1102 blocks)
-3. **Export ONNX:** Run `pipeline.py export` with static shapes
-4. **Deploy to LODiffusion:** Copy ONNX + model_config.json to mod config
-5. **Validate in-game:** Verify terrain renders correctly via Voxy
+1. **Wire up separate model training:** Update `train_multi_lod.py` to train progressive per-step models from `train/progressive_lod_models.py`
+2. **Drop LOD1→0 from pipeline:** Remove LOD0 training targets, update LOD sampling weights
+3. **Export 4 separate ONNX models:** Update `scripts/export_lod.py` for per-step export
+4. **Implement insert-only RocksDB guard:** In `VoxySectionWriter`, check key existence before writing
+5. **Deploy to LODiffusion:** Copy 4 ONNX files + model_config.json to mod config
+6. **Validate in-game:** Verify distant terrain renders correctly via Voxy
+
+## 15. Experimental Ideas (Backlog)
+
+These are not immediate priorities but worth tracking:
+
+| Idea | Effort | Expected Value | Notes |
+|------|--------|---------------|-------|
+| Single-seed generalization test | Low | Medium | Cheap validation of rule-learning vs memorization |
+| Residual prediction mode | Medium | Medium | `child = upsample(parent) + residual` — may stabilize boundaries |
+| Cave conditioning channel | Medium | Medium | Useful if cave quality at LOD1 matters |
+| Demand-driven Voxy hook | High | Very High | Pull-driven generation from Voxy cache-miss path |
+| Underground y-slab skipping | Medium | Very High | Only generate y-slabs with exposed faces |
+| Capacity profiling per model | Low | Medium | Right-size each model after initial training |
+| LOD→vanilla transition blending | High | Critical | The make-or-break UX seam — highest priority after models work |
 
 ---
 

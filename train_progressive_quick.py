@@ -2,6 +2,12 @@
 """
 Quick training script for progressive LOD models.
 Trains just a few epochs to create models for runtime performance evaluation.
+
+NOTE: This script uses the OLD model forward() API (biome_quart, chunk_pos,
+lod as positional args). The progressive models have been refactored to use
+anchor conditioning (height_planes, router6, biome int index, y_index).
+See train_multi_lod.py for the current primary training pipeline.
+This script needs refactoring to match the new model interface.
 """
 
 import argparse
@@ -462,12 +468,12 @@ def main():
             val_loader = DummyDataLoader(quick_config["batch_size"])
 
     # Create and train models
+    # NOTE: LOD1→LOD0 dropped — vanilla terrain handles LOD0.
     models_to_train = [
         ("Model_0_Initial", ProgressiveLODModel0_Initial(model_config, output_size=1)),
         ("Model_1_LOD4to3", ProgressiveLODModel(model_config, output_size=2)),
         ("Model_2_LOD3to2", ProgressiveLODModel(model_config, output_size=4)),
         ("Model_3_LOD2to1", ProgressiveLODModel(model_config, output_size=8)),
-        ("Model_4_LOD1to0", ProgressiveLODModel(model_config, output_size=16)),
     ]
 
     print(f"\n{'='*60}")

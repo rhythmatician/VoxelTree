@@ -1,4 +1,6 @@
 # Multi-LOD Training Configuration
+# Architecture: SEPARATE models per LOD step (not unified)
+# LOD0 DROPPED: vanilla terrain handles full-resolution; model stops at LOD1
 
 # Model configuration
 model:
@@ -6,6 +8,8 @@ model:
   biome_vocab_size: 256
   block_vocab_size: 1102
   conditioning_dim: 64
+  # Separate models per step — no x_lod conditioning needed
+  separate_models: true
 
 # Training configuration
 training:
@@ -23,22 +27,23 @@ data:
   val_split: 0.15
   test_split: 0.05
 
-  # LOD sampling weights for training
-  # Higher weight = more samples during training
+  # LOD sampling weights for training (LOD0 DROPPED)
+  # Only 3 refinement transitions + init
   lod_sampling_weights:
-    lod4to3: 0.2 # LOD4→LOD3 (coarsest transition)
-    lod3to2: 0.25 # LOD3→LOD2
-    lod2to1: 0.25 # LOD2→LOD1
-    lod1to0: 0.3 # LOD1→LOD0 (finest, emphasize)
+    init_to_lod4: 0.15 # Init → LOD4 (trivial, tiny MLP)
+    lod4to3: 0.25 # LOD4→LOD3 (coarsest refinement)
+    lod3to2: 0.30 # LOD3→LOD2
+    lod2to1: 0.30 # LOD2→LOD1 (finest we generate)
+    # lod1to0: DROPPED — vanilla handles LOD0
 
 # Validation metrics thresholds
 validation:
-  # Per-LOD transition accuracy targets (incremental refinement)
+  # Per-LOD transition accuracy targets (LOD0 DROPPED)
   target_accuracies:
-    lod4to3_overall: 0.90 # LOD4→LOD3 (coarsest, lower target)
+    init_to_lod4_overall: 0.88 # Init → LOD4 (trivial)
+    lod4to3_overall: 0.90 # LOD4→LOD3 (coarsest)
     lod3to2_overall: 0.92 # LOD3→LOD2
-    lod2to1_overall: 0.94 # LOD2→LOD1
-    lod1to0_overall: 0.96 # LOD1→LOD0 (finest, highest target)
+    lod2to1_overall: 0.94 # LOD2→LOD1 (finest we generate)
 
   # Overall model targets
   overall_accuracy: 0.93
@@ -74,6 +79,20 @@ early_stopping:
   min_delta: 0.001
   monitor: "val_loss"
 
-# Export configuration
+# Export configuration — 4 separate ONNX models
 export:
   contract: "lodiffusion.v2"
+  separate_models: true
+  models:
+    - name: init_to_lod4
+      input_parent_shape: [1, 1, 1, 1, 1]
+      output_shape_d: 1
+    - name: refine_lod4_to_lod3
+      input_parent_shape: [1, 1, 1, 1, 1]
+      output_shape_d: 2
+    - name: refine_lod3_to_lod2
+      input_parent_shape: [1, 1, 2, 2, 2]
+      output_shape_d: 4
+    - name: refine_lod2_to_lod1
+      input_parent_shape: [1, 1, 4, 4, 4]
+      output_shape_d: 8

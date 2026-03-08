@@ -1,9 +1,7 @@
 # Anchor-channel training config (Phase 2)
-# Extends config_multi_lod.yaml with vanilla noise conditioning:
-#   - 5-plane heightmap (surface, ocean_floor, slope_x, slope_z, curvature)
-#   - 6-channel router6  (temperature, vegetation, continents, erosion, depth, ridges)
-#   - biome integer index per 16×16 column
-#   - y-slab embedding
+# Now uses SEPARATE models per LOD step — no x_lod conditioning
+# LOD0 DROPPED: vanilla terrain handles full-resolution
+# Dropped channels: x_cave_prior4, x_aquifer3, x_barrier (too expensive)
 # Contract: lodiffusion.v2
 
 model:
@@ -17,6 +15,8 @@ model:
   y_embed_dim: 16
   # Depth (3+1 block-down stages)
   num_res_blocks: 2
+  # Separate models per step
+  separate_models: true
 
 training:
   epochs: 100
@@ -27,12 +27,13 @@ training:
   # Loss weights
   air_loss_weight: 0.25
   surface_consistency_weight: 0.10 # L1 of predicted top surface vs height_planes[0]
-  # LOD sampling bias — favour fine transitions where anchors matter most
+  # LOD sampling bias — LOD0 DROPPED, favour mid-range transitions
   lod_sampling_weights:
-    lod4to3: 0.15
-    lod3to2: 0.20
+    init_to_lod4: 0.15
+    lod4to3: 0.25
+    lod3to2: 0.30
     lod2to1: 0.30
-    lod1to0: 0.35
+    # lod1to0: DROPPED — vanilla handles LOD0
   # Checkpointing
   save_every: 10
   validate_every: 5
@@ -50,14 +51,30 @@ data:
 export:
   contract: "lodiffusion.v2"
   opset: 17
-  # v2 static input shapes (batch=1)
-  inputs:
-    x_parent: [1, 1, 8, 8, 8]
+  separate_models: true
+  # Per-step shapes — no x_lod needed (separate models)
+  # Shared inputs across all models:
+  shared_inputs:
     x_height_planes: [1, 5, 16, 16]
     x_router6: [1, 6, 16, 16]
     x_biome: [1, 16, 16] # int64 biome index
     x_y_index: [1] # int64
-    x_lod: [1] # int64
+  # Per-model parent shapes:
+  models:
+    - name: init_to_lod4
+      x_parent: [1, 1, 1, 1, 1]
+      output_d: 1
+    - name: refine_lod4_to_lod3
+      x_parent: [1, 1, 1, 1, 1]
+      output_d: 2
+    - name: refine_lod3_to_lod2
+      x_parent: [1, 1, 2, 2, 2]
+      output_d: 4
+    - name: refine_lod2_to_lod1
+      x_parent: [1, 1, 4, 4, 4]
+      output_d: 8
+  # Dropped: x_lod (separate models handle one step each)
+  # Dropped: x_cave_prior4, x_aquifer3, x_barrier (too expensive for distant LOD)
   outputs:
-    block_logits: [1, 1104, 16, 16, 16]
-    air_mask: [1, 1, 16, 16, 16]
+    block_logits: [1, 1104, D, D, D] # D varies per model
+    air_mask: [1, 1, D, D, D]
