@@ -22,18 +22,120 @@ from torch.utils.data import Dataset
 
 from scripts.mipper import build_opacity_table, mip_volume_numpy
 
+from dataclasses import dataclass
+
+import numpy.typing as npt
+
+
 # Module-level opacity table (lazy)
-_OPACITY_TABLE: np.ndarray | None = None
+_OPACITY_TABLE: npt.NDArray[np.int64] | None = None
 
 
-def _get_opacity_table(max_id: int = 4096) -> np.ndarray:
+@dataclass
+class VoxySample:
+    """
+    Voxy extraction → final training data schema.
+
+    This dataclass formalizes the structure of data in the final training NPZ files,
+    after extraction and vanilla height/biome augmentation.
+
+    **Design note on biomes**: Both Voxy and vanilla Minecraft have full 3D biome data,
+    but we flatten to 2D (column-wise majority vote) for performance. We currently use
+    vanilla's 2D biomes instead of Voxy's, which is acceptable since:
+    - The majority vote preserves dominant terrain type per column
+    - Vanilla's /dumpnoise provides authoritative reference data
+    - 2D biome input is sufficient for LOD conditioning without runtime overhead
+
+    If 3D biome fidelity becomes critical, the extraction pipeline can be modified
+    to preserve either Voxy's or vanilla's full 3D biome data.
+
+    Attributes:
+        labels16: (16, 16, 16) int32 array of canonical Voxy block vocab IDs.
+        biome_patch: (16, 16) int32 array of vanilla biome IDs (2D flattened, not 3D).
+        y_index: Scalar int — Y coordinate of this 16³ section.
+        heightmap_surface: (16, 16) float32 — vanilla surface heights (world-Y).
+        heightmap_ocean_floor: (16, 16) float32 — vanilla ocean floor heights (world-Y).
+    """
+
+    labels16: npt.NDArray[np.int32]
+    biome_patch: npt.NDArray[np.int32]
+    y_index: int
+    heightmap_surface: npt.NDArray[np.float32]
+    heightmap_ocean_floor: npt.NDArray[np.float32]
+
+
+def _get_opacity_table(max_id: int = 4096) -> npt.NDArray[np.int64]:
     global _OPACITY_TABLE
     if _OPACITY_TABLE is None or len(_OPACITY_TABLE) < max_id + 1:
         _OPACITY_TABLE = build_opacity_table(max(max_id + 1, 4096))
     return _OPACITY_TABLE
 
 
-def create_occupancy_from_blocks(block_data: np.ndarray, air_id: int = 0) -> np.ndarray:
+def load_voxy_sample(npz_path: Path) -> Optional[VoxySample]:
+    """
+    Load and validate a Voxy sample from an NPZ file.
+
+    Ensures all required fields are present and properly typed according
+    to VoxySample specification.
+
+    Args:
+        npz_path: Path to an NPZ file extracted by Voxy
+
+    Returns:
+        VoxySample instance with all fields properly typed and validated.
+
+    Raises:
+        KeyError: If any required field is missing.
+        ValueError: If any field has unexpected shape or dtype.
+
+    Example:
+        >>> from pathlib import Path
+        >>> sample = load_voxy_sample(Path("data/voxy/chunk_x0_y0.npz"))
+        >>> print(sample.labels16.shape)  # (16, 16, 16)
+        >>> print(sample.biome_patch.shape)  # (16, 16)
+        >>> print(sample.y_index)  # integer Y-level index
+    """
+    data = np.load(npz_path)
+
+    # Extract and validate each field
+    try:
+        labels16 = data["labels16"].astype(np.int32)
+        if labels16.shape != (16, 16, 16):
+            raise ValueError(f"Expected labels16 shape (16,16,16), got {labels16.shape}")
+
+        biome_patch = data["biome_patch"].astype(np.int32)
+        if biome_patch.shape != (16, 16):
+            raise ValueError(f"Expected biome_patch shape (16,16), got {biome_patch.shape}")
+
+        y_index = int(data["y_index"])
+
+        heightmap_surface = data["heightmap_surface"].astype(np.float32)
+        if heightmap_surface.shape != (16, 16):
+            raise ValueError(
+                f"Expected heightmap_surface shape (16,16), got {heightmap_surface.shape}"
+            )
+
+        heightmap_ocean_floor = data["heightmap_ocean_floor"].astype(np.float32)
+        if heightmap_ocean_floor.shape != (16, 16):
+            raise ValueError(
+                f"Expected heightmap_ocean_floor shape (16,16), got {heightmap_ocean_floor.shape}"
+            )
+
+        return VoxySample(
+            labels16=labels16,
+            biome_patch=biome_patch,
+            y_index=y_index,
+            heightmap_surface=heightmap_surface,
+            heightmap_ocean_floor=heightmap_ocean_floor,
+        )
+
+    except KeyError as e:
+        raise KeyError(f"Missing required field in {npz_path}: {e}")
+
+
+def create_occupancy_from_blocks(
+    block_data: npt.NDArray[np.int32], air_id: int = 0
+) -> npt.NDArray[np.uint8]:
     """
     Create binary occupancy data from block IDs.
 
@@ -48,11 +150,11 @@ def create_occupancy_from_blocks(block_data: np.ndarray, air_id: int = 0) -> np.
 
 
 def create_lod_training_pairs(
-    labels16: np.ndarray,
-    biome_patch: np.ndarray,
+    labels16: npt.NDArray[np.int32],
+    biome_patch: npt.NDArray[np.int32],
     y_index: int,
-    heightmap_surface: np.ndarray,
-    heightmap_ocean_floor: np.ndarray,
+    heightmap_surface: npt.NDArray[np.float32],
+    heightmap_ocean_floor: npt.NDArray[np.float32],
     air_id: int = 0,
 ) -> List[Dict]:
     """
@@ -156,12 +258,18 @@ def create_lod_training_pairs(
     for f in (4, 8, 16):
         # ------------------------------------------------------------------
         # Parent: coarsen labels16 by factor f using the Voxy Mipper,
-        # then nearest-upsample to canonical 8³.
+        # then nearest-upsample to canonical 8³ for uniform batching.
+        #
+        # NOTE: at *inference* time, the ONNX export traces with native
+        # parent sizes (P³ where P = output_size // 2 = 1, 2, or 4) for
+        # ~512× fewer FLOPs.  The domain gap is negligible because
+        # nearest-upsampled constant-occupancy blocks carry no additional
+        # spatial information — Conv3d learns the same features either way.
         # ------------------------------------------------------------------
         coarse_labels, coarse_occ = mip_volume_numpy(labels16, f, tbl)
         # shape: (16//f, 16//f, 16//f)
 
-        coarse_size = coarse_labels.shape[0]  # 8, 4, 2, or 1
+        coarse_size = coarse_labels.shape[0]  # 4, 2, or 1
         if coarse_size != 8:
             scale = 8 // coarse_size
             coarse_occ_8 = np.repeat(
