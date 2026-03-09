@@ -19,8 +19,7 @@ Refinement models additionally receive:
   x_parent        : [1, 1, P, P, P]  float32   (P = output_size // 2)
 
 All models output:
-  block_logits    : [1, N_blocks, D, D, D]
-  air_mask        : [1, 1, D, D, D]
+  block_logits    : [1, N_blocks, D, D, D]   (air = class 0 in unified softmax)
 """
 
 from __future__ import annotations
@@ -132,8 +131,7 @@ class InitModelAdapter(torch.nn.Module):
       x_y_index       : [1]             int64
 
     ONNX outputs:
-      block_logits : [1, N_blocks, 1, 1, 1]
-      air_mask     : [1, 1, 1, 1, 1]
+      block_logits : [1, N_blocks, 1, 1, 1]  (air = class 0)
     """
 
     def __init__(self, model: ProgressiveLODModel0_Initial):
@@ -151,7 +149,7 @@ class InitModelAdapter(torch.nn.Module):
             biome_indices=x_biome,
             y_index=x_y_index,
         )
-        return out["block_type_logits"], out["air_mask_logits"]
+        return out["block_type_logits"]
 
 
 class RefinementModelAdapter(torch.nn.Module):
@@ -164,8 +162,7 @@ class RefinementModelAdapter(torch.nn.Module):
       x_parent        : [1, 1, P, P, P]  float32   (P = output_size // 2)
 
     ONNX outputs:
-      block_logits : [1, N_blocks, D, D, D]
-      air_mask     : [1, 1, D, D, D]
+      block_logits : [1, N_blocks, D, D, D]  (air = class 0)
     """
 
     def __init__(self, model: ProgressiveLODModel):
@@ -185,7 +182,7 @@ class RefinementModelAdapter(torch.nn.Module):
             y_index=x_y_index,
             x_parent=x_parent,
         )
-        return out["block_type_logits"], out["air_mask_logits"]
+        return out["block_type_logits"]
 
 
 # ─── Export logic ────────────────────────────────────────────────────────
@@ -255,7 +252,7 @@ def export_step(
         opset_version=17,
         do_constant_folding=True,
         input_names=input_names,
-        output_names=["block_logits", "air_mask"],
+        output_names=["block_logits"],
         dynamic_axes=None,
         dynamo=False,
     )
@@ -271,7 +268,6 @@ def export_step(
         "input_dtypes": input_dtypes,
         "outputs": {
             "block_logits": [1, block_vocab, D, D, D],
-            "air_mask": [1, 1, D, D, D],
         },
         "parent_resolution": parent_size,
         "output_resolution": D,
@@ -291,14 +287,13 @@ def export_step(
 
     # ── Test vectors ──────────────────────────────────────────────────
     with torch.no_grad():
-        block_logits, air_mask = adapter(*dummy)
+        block_logits = adapter(*dummy)
 
     vectors = {
         "x_height_planes": dummy_height.cpu().numpy(),
         "x_biome": dummy_biome.cpu().numpy(),
         "x_y_index": dummy_y.cpu().numpy(),
         "block_logits": block_logits.cpu().numpy(),
-        "air_mask": air_mask.cpu().numpy(),
     }
     if parent_size > 0:
         vectors["x_parent"] = dummy[-1].cpu().numpy()

@@ -2,10 +2,14 @@
 """Compute per-class frequency weights for block-type loss.
 
 Reads the pre-built pair-cache files (*_pairs_v1.npz) and counts how often
-each block type appears in solid voxels.  Applies median-frequency balancing:
+each block type appears across ALL voxels (air included).  Applies
+median-frequency balancing:
 
-    w_c = median(freq_k | k seen) / freq_c     for  c seen, c != air
-    w_c = 0                                     for  c unseen or c == air
+    w_c = median(freq_k | k seen) / freq_c     for  c seen
+    w_c = 0                                     for  c unseen
+
+Air (class 0) is included with its natural frequency — since ~75% of voxels
+are air, its weight will be very low relative to solid blocks.
 
 Weights are clipped to [0, max_weight] to prevent extreme values from very rare
 blocks destabilising training, then saved as ``class_weights.npz`` next to the
@@ -61,33 +65,31 @@ def compute_weights(
 
     data = np.load(cache_file)
     target_types = data["target_types"]  # (N, 16, 16, 16) int32
-    target_mask = data["target_mask"]  # (N, 16, 16, 16) uint8
 
     if verbose:
         print(f"  Pairs: {target_types.shape[0]:,} — counting block frequencies…")
 
-    # Count solid-voxel occurrences per class
-    solid = target_mask.astype(bool)  # (N,16,16,16)
-    solid_types = target_types[solid].astype(np.int64)  # (M,)
+    # Count ALL voxels (air included) per class
+    flat_types = target_types.reshape(-1).astype(np.int64)
+    flat_types = np.clip(flat_types, 0, vocab_size - 1)
 
     counts = np.zeros(vocab_size, dtype=np.int64)
-    # Clamp OOV indices (just in case)
-    solid_types = np.clip(solid_types, 0, vocab_size - 1)
-    np.add.at(counts, solid_types, 1)
+    np.add.at(counts, flat_types, 1)
 
-    total_solid = int(counts.sum())
+    total_voxels = int(counts.sum())
     n_seen = int(np.sum(counts > 0))
 
     if verbose:
-        print(f"  Total solid voxels scanned: {total_solid:,}")
+        air_pct = 100.0 * counts[0] / total_voxels
+        print(f"  Total voxels scanned: {total_voxels:,}  (air: {air_pct:.1f}%)")
         print(f"  Classes seen (non-zero count): {n_seen} / {vocab_size}")
 
-    # Median-frequency balancing (skip air=0 + unseen classes)
+    # Median-frequency balancing (all seen classes, air included)
     seen_counts = counts[counts > 0]
     median_freq = float(np.median(seen_counts))
 
     weights = np.zeros(vocab_size, dtype=np.float32)
-    for c in range(1, vocab_size):  # c=0 is air — keep weight 0
+    for c in range(vocab_size):  # air (c=0) now participates
         if counts[c] > 0:
             weights[c] = float(median_freq / counts[c])
 
@@ -97,30 +99,30 @@ def compute_weights(
     if verbose:
         # Top-10 most up-weighted (rarest seen classes)
         seen_mask = counts > 0
-        seen_mask[0] = False  # exclude air
 
         class_ids = np.where(seen_mask)[0]
         by_weight = class_ids[np.argsort(weights[class_ids])[::-1]]
         by_freq = class_ids[np.argsort(counts[class_ids])[::-1]]
 
-        print("\n  Most up-weighted (rarest solid blocks):")
+        print("\n  Most up-weighted (rarest blocks):")
         for idx in by_weight[:10]:
-            pct = 100.0 * counts[idx] / total_solid
+            pct = 100.0 * counts[idx] / total_voxels
             print(
                 f"    id={idx:4d}  weight={weights[idx]:.3f}  "
                 f"count={counts[idx]:8,}  ({pct:.4f}%)"
             )
 
-        print("\n  Least up-weighted (most common solid blocks):")
+        print("\n  Least up-weighted (most common blocks):")
         for idx in by_freq[:10]:
-            pct = 100.0 * counts[idx] / total_solid
+            pct = 100.0 * counts[idx] / total_voxels
             print(
                 f"    id={idx:4d}  weight={weights[idx]:.3f}  "
                 f"count={counts[idx]:8,}  ({pct:.3f}%)"
             )
 
-        print(f"\n  Median weight (seen non-air classes): {np.median(weights[seen_mask]):.3f}")
+        print(f"\n  Median weight (seen classes): {np.median(weights[seen_mask]):.3f}")
         print(f"  Max weight after clip: {weights.max():.3f}")
+        print(f"  Air (class 0) weight: {weights[0]:.6f}")
 
     return weights
 

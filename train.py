@@ -39,6 +39,7 @@ from train.progressive_lod_models import (
     create_lod3_to_lod2_model,
     create_lod4_to_lod3_model,
 )
+from train.prior_init import init_block_head_bias
 from train.unet3d import SimpleFlexibleConfig
 from scripts.mipper import build_opacity_table as _build_opacity_table
 from scripts.mipper import mip_volume_torch as _mip_volume_torch
@@ -48,56 +49,47 @@ DEFAULT_VOCAB_PATH = Path("config/voxy_vocab.json")
 
 
 class MultiLODLoss(nn.Module):
-    """
-    Combined loss for air mask and block type prediction across all LOD levels.
-    Optionally includes a surface-consistency term that penalises the model
-    when its predicted top-surface height deviates from the heightmap anchor.
+    """Unified block-type loss (air = class 0 in softmax).
+
+    Single-head design: the model outputs only ``block_type_logits`` with air
+    as vocabulary index 0.  No separate air_mask head.  Optionally includes a
+    surface-consistency term derived from the air channel (logits[:, 0, ...]).
 
     Args:
         class_weights: Optional float32 tensor of shape [block_vocab_size].
             Computed by scripts/compute_class_weights.py (median-frequency
-            balancing). Weight 0 means ignore that class (used for air=0 and
-            unseen blocks). Passed to F.cross_entropy at forward time so it
-            moves to the correct device automatically.
+            balancing, air included with a low weight).  Passed to
+            F.cross_entropy.
     """
 
     def __init__(
         self,
-        air_loss_weight: float = 0.25,
         surface_consistency_weight: float = 0.0,
         class_weights: Optional[torch.Tensor] = None,
     ):
         super().__init__()
-        self.air_loss_weight = air_loss_weight
         self.surface_consistency_weight = surface_consistency_weight
         # Register as buffer so .to(device) / .cuda() move it automatically
         self.register_buffer("class_weights", class_weights)  # None is fine
-        # pos_weight > 1 up-weights the minority class (solid ~25%)
-        # This compensates for the 75/25 air/solid imbalance
-        self.air_loss_fn = nn.BCEWithLogitsLoss(pos_weight=torch.tensor([3.0]))
 
     def forward(
         self,
         predictions: Dict[str, torch.Tensor],
         targets: Dict[str, torch.Tensor],
     ) -> Dict[str, torch.Tensor]:
-        """Compute multi-LOD loss.
+        """Compute unified block-type loss.
 
         Args:
-            predictions: Dict with 'air_mask_logits' and 'block_type_logits'.
-            targets: Dict with 'target_blocks', 'target_occupancy', and
-                     optionally 'height_planes' (B, 5, 16, 16).
+            predictions: Dict with 'block_type_logits' [B, C, H, W, D].
+            targets: Dict with 'target_blocks' [B, H, W, D] (air=0),
+                     and optionally 'height_planes' (B, 5, 16, 16).
         Returns:
             Dict with individual and total losses.
         """
-        air_mask_logits = predictions["air_mask_logits"]
         block_type_logits = predictions["block_type_logits"]
-
         target_blocks = targets["target_blocks"]
-        target_occupancy = targets["target_occupancy"]
 
-        # Block type loss (cross-entropy)
-        # Reshape for cross-entropy: (B*H*W*D, C) and (B*H*W*D,)
+        # Block type loss (cross-entropy) — air=0 participates fully
         B, C, H, W, D = block_type_logits.shape
         block_logits_flat = block_type_logits.permute(0, 2, 3, 4, 1).reshape(-1, C)
         target_blocks_flat = target_blocks.reshape(-1)
@@ -106,53 +98,34 @@ class MultiLODLoss(nn.Module):
             block_logits_flat,
             target_blocks_flat,
             weight=self.class_weights if isinstance(self.class_weights, torch.Tensor) else None,
-            ignore_index=0,
         )
 
-        # Air mask loss (binary cross-entropy)
-        # Polarity: positive logit = SOLID, matching Java runtime convention
-        target_solid = (target_occupancy > 0).float()
-        if target_solid.dim() == 4:  # (B, H, W, D) -> add channel dim
-            target_solid = target_solid.unsqueeze(1)  # (B, 1, H, W, D)
-
-        air_loss = self.air_loss_fn(air_mask_logits, target_solid)
-
         # Surface consistency loss (optional)
-        # Penalise mismatch between the predicted top-occupancy surface and
-        # the height_planes[0] (normalised WORLD_SURFACE_WG) anchor.
+        # Uses the air logit channel (index 0) as a proxy for occupancy.
+        # High air logit = likely air.  We derive a soft surface estimate.
         surface_loss = block_type_logits.new_zeros(1).squeeze()
         if self.surface_consistency_weight > 0 and "height_planes" in targets:
             height_planes = targets["height_planes"]  # (B, 5, 16, 16)
-            surface_anchor = height_planes[:, 0, :, :]  # (B, 16, 16) normalised 0..1
+            surface_anchor = height_planes[:, 0, :, :]  # (B, 16, 16)
 
-            # Predicted solid prob: sigmoid of air_mask_logits, shape (B,1,D,H,W)
-            # (positive = solid after polarity fix)
-            solid_prob_5d = torch.sigmoid(air_mask_logits)  # (B,1,D,H,W)
-            # Top surface = first solid slab from above (dim=2, y-axis)
-            # Approximate as the y-coordinate of maximum solid probability, normalised
-            solid_prob = solid_prob_5d.squeeze(1)  # (B, D, H, W)
+            # Solid prob ≈ 1 − softmax(air channel)
+            air_logit = block_type_logits[:, 0, :, :, :]  # (B, D, H, W)
+            # Simple sigmoid approximation: high air_logit → air → low solid_prob
+            solid_prob = 1.0 - torch.sigmoid(air_logit)  # (B, D, H, W)
             y_weights = torch.linspace(0, 1, D, device=solid_prob.device)
-            # Shape: (B, H, W)  — weighted average y of solid voxels per column
-            predicted_surface = (solid_prob * y_weights[None, :, None, None]).sum(dim=1)  # (B,H,W)
+            predicted_surface = (solid_prob * y_weights[None, :, None, None]).sum(dim=1)
             predicted_surface = predicted_surface / (solid_prob.sum(dim=1).clamp(min=1e-6))
-            # Downsample anchor to match model output spatial size when D < 16
             if predicted_surface.shape[-1] != surface_anchor.shape[-1]:
                 surface_anchor = torch.nn.functional.adaptive_avg_pool2d(
                     surface_anchor.unsqueeze(1), predicted_surface.shape[-1]
                 ).squeeze(1)
             surface_loss = torch.nn.functional.l1_loss(predicted_surface, surface_anchor)
 
-        # Combined loss
-        total_loss = (
-            block_loss
-            + self.air_loss_weight * air_loss
-            + self.surface_consistency_weight * surface_loss
-        )
+        total_loss = block_loss + self.surface_consistency_weight * surface_loss
 
         return {
             "total_loss": total_loss,
             "block_loss": block_loss,
-            "air_loss": air_loss,
             "surface_loss": surface_loss,
         }
 
@@ -160,45 +133,37 @@ class MultiLODLoss(nn.Module):
 def compute_metrics(
     predictions: Dict[str, torch.Tensor], targets: Dict[str, torch.Tensor]
 ) -> Dict[str, float]:
-    """Compute evaluation metrics for multi-LOD predictions."""
+    """Compute evaluation metrics for single-head block predictions.
 
+    Air = class 0.  Accuracy is unified across all voxels.
+    """
     with torch.no_grad():
-        air_mask_logits = predictions["air_mask_logits"]
         block_type_logits = predictions["block_type_logits"]
-
         target_blocks = targets["target_blocks"]
-        target_occupancy = targets["target_occupancy"]
 
-        # Air mask accuracy (positive = solid, matching Java convention)
-        air_pred = (torch.sigmoid(air_mask_logits) > 0.5).float()
-        target_solid = (target_occupancy > 0).float().unsqueeze(1)
-        air_acc = (air_pred == target_solid).float().mean().item()
+        block_pred = block_type_logits.argmax(dim=1)  # [B, H, W, D]
 
-        # Block type accuracy (only on solid voxels)
-        block_pred = block_type_logits.argmax(dim=1)
-        solid_mask = target_occupancy > 0
+        # Overall accuracy (air + solid in one softmax)
+        overall_acc = (block_pred == target_blocks).float().mean().item()
 
+        # Air accuracy: of voxels that should be air, how many predicted air?
+        air_mask = target_blocks == 0
+        if air_mask.sum() > 0:
+            air_acc = (block_pred[air_mask] == 0).float().mean().item()
+        else:
+            air_acc = 1.0
+
+        # Solid block accuracy: of solid voxels, how many got the right block?
+        solid_mask = target_blocks > 0
         if solid_mask.sum() > 0:
             block_acc = (block_pred[solid_mask] == target_blocks[solid_mask]).float().mean().item()
         else:
-            block_acc = 1.0  # All air, trivially correct
-
-        # Overall accuracy
-        # Air voxels: correct if predicted as air (solid logit < 0.5)
-        # Solid voxels: correct if block type matches
-        air_mask = target_occupancy == 0
-        solid_mask = target_occupancy > 0
-
-        air_correct = (air_pred.squeeze(1)[air_mask] < 0.5).sum()
-        solid_correct = (block_pred[solid_mask] == target_blocks[solid_mask]).sum()
-        total_voxels = target_occupancy.numel()
-
-        overall_acc = (air_correct + solid_correct).float() / total_voxels
+            block_acc = 1.0
 
         return {
             "air_accuracy": air_acc,
             "block_accuracy": block_acc,
-            "overall_accuracy": overall_acc.item(),
+            "overall_accuracy": overall_acc,
         }
 
 
@@ -283,13 +248,10 @@ def train_epoch(
 
     total_loss = 0.0
     total_block_loss = 0.0
-    total_air_loss = 0.0
     total_air_acc = 0.0
     total_block_acc = 0.0
     total_overall_acc = 0.0
     num_batches = 0
-
-    lod_counts: dict[str, int] = {}
 
     total_batches = len(dataloader)
 
@@ -303,13 +265,11 @@ def train_epoch(
     ):
         targets = {
             "target_blocks": batch["target_types"].to(device),
-            "target_occupancy": batch["target_mask"].to(device),
             "height_planes": batch["height_planes"].to(device),
         }
 
         # Track LOD distribution
-        lod_transition: str = batch["lod_transition"]
-        lod_counts[lod_transition] = lod_counts.get(lod_transition, 0) + 1
+        lod_transition = batch["lod_transition"]  # noqa: F841
 
         # Forward pass through the correct per-step model
         optimizer.zero_grad()
@@ -318,11 +278,11 @@ def train_epoch(
         # Downsample 16³ targets to match model's native output resolution
         out_size = predictions["block_type_logits"].shape[-1]
         if out_size != 16:
-            ds_blocks, ds_occ = _downsample_targets(
-                targets["target_blocks"], targets["target_occupancy"], out_size
+            occ = batch["target_mask"].to(device)
+            ds_blocks, _ = _downsample_targets(
+                targets["target_blocks"], occ, out_size
             )
             targets["target_blocks"] = ds_blocks
-            targets["target_occupancy"] = ds_occ
 
         # Compute loss
         losses = loss_fn(predictions, targets)
@@ -338,7 +298,6 @@ def train_epoch(
         # Accumulate stats
         total_loss += loss.item()
         total_block_loss += losses["block_loss"].item()
-        total_air_loss += losses["air_loss"].item()
         total_air_acc += metrics["air_accuracy"]
         total_block_acc += metrics["block_accuracy"]
         total_overall_acc += metrics["overall_accuracy"]
@@ -348,11 +307,9 @@ def train_epoch(
     return {
         "loss": total_loss / num_batches,
         "block_loss": total_block_loss / num_batches,
-        "air_loss": total_air_loss / num_batches,
         "air_accuracy": total_air_acc / num_batches,
         "block_accuracy": total_block_acc / num_batches,
         "overall_accuracy": total_overall_acc / num_batches,
-        "lod_distribution": lod_counts,
     }
 
 
@@ -369,7 +326,6 @@ def validate_epoch(
 
     total_loss = 0.0
     total_block_loss = 0.0
-    total_air_loss = 0.0
     total_air_acc = 0.0
     total_block_acc = 0.0
     total_overall_acc = 0.0
@@ -381,7 +337,6 @@ def validate_epoch(
         for batch in dataloader:
             targets = {
                 "target_blocks": batch["target_types"].to(device),
-                "target_occupancy": batch["target_mask"].to(device),
                 "height_planes": batch["height_planes"].to(device),
             }
 
@@ -393,11 +348,11 @@ def validate_epoch(
             # Downsample 16³ targets to match model's native output resolution
             out_size = predictions["block_type_logits"].shape[-1]
             if out_size != 16:
-                ds_blocks, ds_occ = _downsample_targets(
-                    targets["target_blocks"], targets["target_occupancy"], out_size
+                occ = batch["target_mask"].to(device)
+                ds_blocks, _ = _downsample_targets(
+                    targets["target_blocks"], occ, out_size
                 )
                 targets["target_blocks"] = ds_blocks
-                targets["target_occupancy"] = ds_occ
 
             # Compute loss
             losses = loss_fn(predictions, targets)
@@ -408,7 +363,6 @@ def validate_epoch(
             # Accumulate overall stats
             total_loss += losses["total_loss"].item()
             total_block_loss += losses["block_loss"].item()
-            total_air_loss += losses["air_loss"].item()
             total_air_acc += metrics["air_accuracy"]
             total_block_acc += metrics["block_accuracy"]
             total_overall_acc += metrics["overall_accuracy"]
@@ -435,7 +389,6 @@ def validate_epoch(
     results = {
         "loss": total_loss / num_batches,
         "block_loss": total_block_loss / num_batches,
-        "air_loss": total_air_loss / num_batches,
         "air_accuracy": total_air_acc / num_batches,
         "block_accuracy": total_block_acc / num_batches,
         "overall_accuracy": total_overall_acc / num_batches,
@@ -464,7 +417,6 @@ def main():
     parser.add_argument("--batch-size", type=int, default=4, help="Batch size")
     parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate")
     parser.add_argument("--base-channels", type=int, default=32, help="Base number of channels")
-    parser.add_argument("--air-loss-weight", type=float, default=0.25, help="Weight for air loss")
     parser.add_argument("--device", type=str, default="auto", help="Device (auto, cpu, cuda)")
     parser.add_argument("--save-every", type=int, default=10, help="Save checkpoint every N epochs")
     parser.add_argument("--validate-every", type=int, default=5, help="Validate every N epochs")
@@ -502,6 +454,11 @@ def main():
             "Use for quick smoke-tests, e.g. --max-samples 2000 finishes in ~2 min "
             "vs ~60 min for a full epoch."
         ),
+    )
+    parser.add_argument(
+        "--no-bias-init",
+        action="store_true",
+        help="Skip block-head bias initialization from class priors",
     )
     parser.add_argument(
         "--class-weights",
@@ -560,6 +517,15 @@ def main():
     for name, m in models.items():
         n = sum(p.numel() for p in m.parameters())
         print(f"  {name}: {n:,} params")
+
+    # Initialize block_head bias from class-prior log-frequencies
+    if not args.no_bias_init and args.resume is None:
+        print("Initializing block_head bias from class priors...")
+        init_block_head_bias(models, Path(args.data_dir), block_vocab_size)
+    elif args.no_bias_init:
+        print("Skipping bias init (--no-bias-init)")
+    else:
+        print("Skipping bias init (resuming from checkpoint)")
 
     # Create datasets
     print("Loading datasets...")
@@ -654,7 +620,6 @@ def main():
 
     # Create loss function and optimizer (shared across all models)
     loss_fn = MultiLODLoss(
-        air_loss_weight=args.air_loss_weight,
         surface_consistency_weight=args.surface_loss_weight,
         class_weights=class_weights_tensor,
     )
@@ -725,13 +690,12 @@ def main():
         print(f"Epoch {epoch}/{args.epochs}")
         print(
             f"  Train Loss: {train_metrics['loss']:.4f} "
-            f"(Block: {train_metrics['block_loss']:.4f}, Air: {train_metrics['air_loss']:.4f})"
+            f"(Block: {train_metrics['block_loss']:.4f})"
         )
         print(
             f"  Train Acc: Overall {train_metrics['overall_accuracy']:.3f}, "
             f"Air {train_metrics['air_accuracy']:.3f}, Block {train_metrics['block_accuracy']:.3f}"
         )
-        print(f"  LOD Distribution: {train_metrics['lod_distribution']}")
 
         # Validate
         if epoch % args.validate_every == 0:

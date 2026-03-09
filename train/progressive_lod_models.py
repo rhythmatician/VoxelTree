@@ -134,7 +134,7 @@ class ProgressiveLODModel0_Initial(nn.Module):
 
     Tiny MLP since it only predicts 1 voxel.
     Inputs: height_planes, biome, y_index (all pooled to scalars)
-    Output: [B, N_blocks, 1, 1, 1], [B, 1, 1, 1, 1]
+    Output: [B, N_blocks, 1, 1, 1]
     """
 
     def __init__(self, config: SimpleFlexibleConfig, output_size: int = 1):
@@ -162,8 +162,7 @@ class ProgressiveLODModel0_Initial(nn.Module):
             nn.ReLU(inplace=True),
         )
 
-        # Output heads — predict single voxel directly
-        self.air_head = nn.Linear(hidden_dim, 1)
+        # Output head — predict single voxel directly (air = class 0)
         self.block_head = nn.Linear(hidden_dim, config.block_vocab_size)
 
     def forward(
@@ -192,11 +191,10 @@ class ProgressiveLODModel0_Initial(nn.Module):
         fused = self.fuse(torch.cat([h_feat, b_feat, y_feat], dim=1))  # [B, hidden]
         z = self.processor(fused)  # [B, hidden]
 
-        # Output heads → reshape to 1×1×1
-        air_logit = self.air_head(z).view(B, 1, 1, 1, 1)
+        # Output head → reshape to 1×1×1 (air = class 0 in block_logits)
         block_logits = self.block_head(z).view(B, self.config.block_vocab_size, 1, 1, 1)
 
-        return {"air_mask_logits": air_logit, "block_type_logits": block_logits}
+        return {"block_type_logits": block_logits}
 
 
 class ProgressiveLODModel(nn.Module):
@@ -270,8 +268,7 @@ class ProgressiveLODModel(nn.Module):
                 self._make_layer(config.base_channels * 2, config.base_channels),
             )
 
-        # Output heads
-        self.air_head = nn.Conv3d(config.base_channels, 1, kernel_size=1)
+        # Output head (air = class 0 in block_logits)
         self.block_head = nn.Conv3d(config.base_channels, config.block_vocab_size, kernel_size=1)
 
     def _make_layer(self, in_channels: int, out_channels: int) -> nn.Module:
@@ -317,11 +314,10 @@ class ProgressiveLODModel(nn.Module):
         # Main processing
         features = self.main_conv(combined)
 
-        # Output heads
-        air_mask = self.air_head(features)
+        # Output head (air = class 0 in block_logits)
         block_logits = self.block_head(features)
 
-        return {"air_mask_logits": air_mask, "block_type_logits": block_logits}
+        return {"block_type_logits": block_logits}
 
 
 # ── Factory functions for the 4-model family ──────────────────────────────
