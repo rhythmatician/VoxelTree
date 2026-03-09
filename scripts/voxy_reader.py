@@ -34,11 +34,11 @@ from __future__ import annotations
 import gzip
 import struct
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import numpy as np
 
-import rocksdict
+import rocksdict  # type: ignore  # external package has no stub
 
 import zstandard
 
@@ -68,8 +68,12 @@ def _sign_extend(val: int, bits: int) -> int:
     return val
 
 
-def decode_section_key(key_bytes: bytes) -> Tuple[int, int, int, int]:
-    """Decode an 8-byte big-endian section key → (level, x, y, z)."""
+def decode_section_key(key_bytes: Union[bytes, bytearray]) -> Tuple[int, int, int, int]:
+    """Decode an 8-byte big-endian section key → (level, x, y, z).
+
+    Accept either ``bytes`` or ``bytearray`` since RocksDB keys may come as
+    either type.
+    """
     key_int = struct.unpack(">q", key_bytes)[0]
     level = (key_int >> 60) & 0xF
     y = _sign_extend((key_int >> 52) & 0xFF, 8)
@@ -91,7 +95,7 @@ def encode_section_key(level: int, x: int, y: int, z: int) -> bytes:
 # ---------------------------------------------------------------------------
 
 
-def decode_section(data: bytes) -> dict:
+def decode_section(data: bytes) -> Dict[str, Any]:
     """Decode a ZSTD-decompressed SaveLoadSystem3 section blob.
 
     Returns a dict with keys:

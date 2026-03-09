@@ -338,7 +338,15 @@ def load_progressive_checkpoint(
     for key, factory, output_size, parent_size, _ in MODEL_STEPS:
         model = factory(config)
         if key in state_dicts:
-            model.load_state_dict(state_dicts[key], strict=True)
+            # Use strict=False to tolerate legacy checkpoints that still have
+            # air_head weights (removed in the unified-softmax migration).
+            result = model.load_state_dict(state_dicts[key], strict=False)
+            if result.unexpected_keys:
+                LOGGER.warning(
+                    "Ignoring legacy keys in %s: %s", key, result.unexpected_keys
+                )
+            if result.missing_keys:
+                LOGGER.warning("Missing keys in %s: %s", key, result.missing_keys)
             LOGGER.info("Loaded state dict for %s (output %d³)", key, output_size)
         else:
             LOGGER.warning("No state dict for %s — using random weights", key)

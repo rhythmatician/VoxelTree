@@ -202,6 +202,7 @@ def main() -> None:
             data["biome_patch"] = parse_biome_names(dump["biome_names"])
         np.savez_compressed(fpath, **data)
         return ("updated", None)
+
     # ------------------------------------------------------------------
 
     updated = 0
@@ -214,9 +215,9 @@ def main() -> None:
     workers = os.cpu_count() or 4
     with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
         futures = {executor.submit(_process_file, f): f for f in files}
-        for fut in tqdm(concurrent.futures.as_completed(futures),
-                        total=len(files),
-                        desc="Merging heightmaps"):
+        for fut in tqdm(
+            concurrent.futures.as_completed(futures), total=len(files), desc="Merging heightmaps"
+        ):
             status, coord = fut.result()
             if status == "updated":
                 updated += 1
