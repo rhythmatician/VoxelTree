@@ -1,7 +1,7 @@
 # Copilot Instructions — VoxelTree
 
 > **Purpose:** Guide GitHub Copilot (and human contributors) to work within
-> VoxelTree's single canonical pipeline. Last synced: 2026-03-08.
+> VoxelTree's single canonical pipeline. Last synced: 2026-03-09.
 
 ---
 
