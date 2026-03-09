@@ -46,8 +46,6 @@ Enabling RCON in server.properties
 from __future__ import annotations
 
 import argparse
-import socket
-import struct
 import subprocess
 import sys
 import textwrap
@@ -73,87 +71,10 @@ DATAPREP_STEPS = ["pregen", "voxy-import", "dumpnoise", "extract", "column-heigh
 DEFAULT_NOISE_DUMP_DIR = _HERE / "LODiffusion" / "run" / "noise_dumps"
 
 # ---------------------------------------------------------------------------
-# Minimal RCON client (no external dependencies)
+# RCON client (see rcon.py)
 # ---------------------------------------------------------------------------
 
-RCON_LOGIN = 3
-RCON_COMMAND = 2
-RCON_RESPONSE = 2
-_MAX_PAYLOAD = 4096
-
-
-class RconError(Exception):
-    pass
-
-
-class RconClient:
-    """Thread-unsafe, synchronous RCON client over TCP."""
-
-    def __init__(self, host: str, port: int, password: str, timeout: float = 10.0) -> None:
-        self._host = host
-        self._port = port
-        self._password = password
-        self._timeout = timeout
-        self._sock: socket.socket | None = None
-        self._req_id = 1
-
-    def connect(self) -> None:
-        try:
-            self._sock = socket.create_connection((self._host, self._port), self._timeout)
-        except OSError as exc:
-            raise RconError(
-                f"Cannot connect to {self._host}:{self._port} — {exc}\n"
-                "Make sure the server is running with enable-rcon=true in server.properties."
-            ) from exc
-        self._send_packet(RCON_LOGIN, self._password)
-        resp_id, _, _ = self._recv_packet()
-        if resp_id == -1:
-            raise RconError("RCON authentication failed — wrong password?")
-
-    def command(self, cmd: str) -> str:
-        if self._sock is None:
-            raise RconError("Not connected — call connect() first.")
-        self._send_packet(RCON_COMMAND, cmd)
-        _, _, payload = self._recv_packet()
-        return payload
-
-    def close(self) -> None:
-        if self._sock:
-            self._sock.close()
-            self._sock = None
-
-    # ------------------------------------------------------------------
-    def _send_packet(self, ptype: int, payload: str) -> None:
-        assert self._sock is not None
-        data = payload.encode("utf-8") + b"\x00\x00"
-        header = struct.pack("<iii", len(data) + 8, self._req_id, ptype)
-        self._sock.sendall(header + data)
-        self._req_id += 1
-
-    def _recv_packet(self) -> tuple[int, int, str]:
-        raw_len = self._recv_exact(4)
-        (pkt_len,) = struct.unpack("<i", raw_len)
-        body = self._recv_exact(pkt_len)
-        req_id, ptype = struct.unpack("<ii", body[:8])
-        payload = body[8:-2].decode("utf-8", errors="replace")
-        return req_id, ptype, payload
-
-    def _recv_exact(self, n: int) -> bytes:
-        assert self._sock is not None
-        buf = b""
-        while len(buf) < n:
-            chunk = self._sock.recv(n - len(buf))
-            if not chunk:
-                raise RconError("Connection closed by server.")
-            buf += chunk
-        return buf
-
-    def __enter__(self) -> "RconClient":
-        self.connect()
-        return self
-
-    def __exit__(self, *_: object) -> None:
-        self.close()
+from rcon import RconClient, RconError  # noqa: E402
 
 
 # ---------------------------------------------------------------------------

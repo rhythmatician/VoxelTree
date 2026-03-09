@@ -43,3 +43,4 @@ reference-code/
 # Noise dumps and generated world data (can be large and regenerated as needed)
 tools/fabric-server/runtime/world/
 tools/fabric-server/runtime/noise_dumps/*.json
+production/
