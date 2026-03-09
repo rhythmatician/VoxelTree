@@ -22,7 +22,9 @@ The output NPZ files contain:
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -185,42 +187,50 @@ def extract(
         skipped_empty = 0
         section_count = 0
 
+        # helper to transform a sub-block and write NPZ; returns (saved, skipped)
+    def _process_sub(sub: dict[str, npt.NDArray[np.int32]]) -> tuple[int, int]:
+        nonlocal lut, output_dir, prefix, min_solid_fraction
+        blk_voxy = sub["block_ids"]
+        bio_voxy = sub["biome_ids"]
+        # Convert per-world Voxy IDs → canonical vocab IDs
+        max_id = lut.shape[0] - 1
+        blk_canon = lut[np.clip(blk_voxy, 0, max_id)]
+
+        solid_frac = float(np.mean(blk_canon > 0))
+        if solid_frac < min_solid_fraction:
+            return 0, 1
+
+        biome_2d = _compute_biome_2d(bio_voxy)
+        heightmap = _compute_heightmap(blk_canon)
+        y_index = sub["world_y"] - Y_BASE_SECTION
+        wx, wy, wz = sub["world_x"], sub["world_y"], sub["world_z"]
+        fname = "%svoxy_lod0_x%d_y%d_z%d.npz" % (prefix, wx, wy, wz)
+        np.savez_compressed(
+            output_dir / fname,
+            labels16=blk_canon.astype(np.int32),
+            biome_patch=biome_2d.astype(np.int32),
+            heightmap_patch=heightmap.astype(np.float32),
+            y_index=np.int64(y_index),
+        )
+        return 1, 0
+
+    # create a thread pool for processing sub-blocks
+    workers = os.cpu_count() or 4
+    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
         for section in reader.iter_sections(level=0):
             if max_sections is not None and section_count >= max_sections:
                 break
             section_count += 1
 
-            for sub in reader.section_to_subblocks(section):
-                total_subblocks += 1
-                blk_voxy = sub["block_ids"]  # (16,16,16) — (y,z,x), per-world IDs
-                bio_voxy = sub["biome_ids"]  # (16,16,16)
+            subs = list(reader.section_to_subblocks(section))
+            total_subblocks += len(subs)
 
-                # Convert per-world Voxy IDs → canonical vocab IDs
-                max_id = lut.shape[0] - 1
-                blk_canon = lut[np.clip(blk_voxy, 0, max_id)]
-
-                solid_frac = float(np.mean(blk_canon > 0))
-                if solid_frac < min_solid_fraction:
-                    skipped_empty += 1
-                    continue
-
-                biome_2d = _compute_biome_2d(bio_voxy)
-                heightmap = _compute_heightmap(blk_canon)
-                # 0-based y index: section Y -4 → 0, -3 → 1, ..., 11 → 15
-                # Matches inference: yIndex = sectionY - Y_BASE_SECTION
-                y_index = sub["world_y"] - Y_BASE_SECTION
-
-                wx, wy, wz = sub["world_x"], sub["world_y"], sub["world_z"]
-                fname = "%svoxy_lod0_x%d_y%d_z%d.npz" % (prefix, wx, wy, wz)
-
-                np.savez_compressed(
-                    output_dir / fname,
-                    labels16=blk_canon.astype(np.int32),
-                    biome_patch=biome_2d.astype(np.int32),
-                    heightmap_patch=heightmap.astype(np.float32),
-                    y_index=np.int64(y_index),
-                )
-                saved += 1
+            # submit all subs; use as_completed for progress
+            futures = [executor.submit(_process_sub, s) for s in subs]
+            for fut in concurrent.futures.as_completed(futures):
+                s, sk = fut.result()
+                saved += s
+                skipped_empty += sk
 
             if section_count % 500 == 0:
                 print(
