@@ -10,11 +10,13 @@ The downsampling process simulates what would happen during progressive
 refinement, allowing the model to learn to reverse the process.
 """
 
+import concurrent.futures
 import math
+import os
 import random
 import time
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
@@ -357,40 +359,38 @@ def generate_pairs_from_npz_files(
     """
     from tqdm import tqdm
 
-    training_pairs: List[Dict] = []
-    skipped_air = 0
-    skipped_missing = 0
-    total_files = len(npz_files)
+    # Pre-warm the opacity table in the main thread so worker threads share
+    # the already-initialised module-level value without a race on first use.
+    _get_opacity_table()
 
-    for npz_file in tqdm(npz_files, total=total_files, desc="Processing NPZ files", unit="file"):
+    def _process_one(
+        npz_file: Path,
+    ) -> Tuple[List[Dict], int, int]:
+        """Process a single NPZ file; return (pairs, n_air_skipped, n_missing_skipped)."""
         try:
             data = np.load(npz_file)
 
             # Extract required fields (canonical keys only)
             if "labels16" not in data:
                 print(f"Skipping {npz_file}: no labels16 key")
-                skipped_missing += 1
-                continue
+                return [], 0, 1
             labels16 = data["labels16"]
 
             # Filter out nearly-all-air chunks (nothing to learn from)
             solid_frac = (labels16 != 0).mean()
             if solid_frac < min_solid_fraction:
-                skipped_air += 1
-                continue
+                return [], 1, 0
 
             # ---- Biome: require real data ----
             if "biome_patch" not in data:
                 print(f"Skipping {npz_file}: no biome_patch key")
-                skipped_missing += 1
-                continue
+                return [], 0, 1
             biome16 = data["biome_patch"]
 
             # ---- Y-index: required ----
             if "y_index" not in data:
                 print(f"Skipping {npz_file}: no y_index")
-                skipped_missing += 1
-                continue
+                return [], 0, 1
             y_index = int(data["y_index"])
 
             # ---- Column-level heights: required ----
@@ -399,17 +399,14 @@ def generate_pairs_from_npz_files(
                     f"Skipping {npz_file}: no heightmap_surface "
                     f"(run scripts/add_column_heights.py first)"
                 )
-                skipped_missing += 1
-                continue
+                return [], 0, 1
             if "heightmap_ocean_floor" not in data:
                 print(
                     f"Skipping {npz_file}: no heightmap_ocean_floor "
                     f"(run scripts/add_column_heights.py first)"
                 )
-                skipped_missing += 1
-                continue
+                return [], 0, 1
 
-            # Create training pairs for all LOD transitions.
             pairs = create_lod_training_pairs(
                 labels16=labels16,
                 biome_patch=biome16,
@@ -417,18 +414,35 @@ def generate_pairs_from_npz_files(
                 heightmap_surface=data["heightmap_surface"],
                 heightmap_ocean_floor=data["heightmap_ocean_floor"],
             )
-
-            training_pairs.extend(pairs)
+            return pairs, 0, 0
 
         except ValueError as e:
-            # ValueError from create_lod_training_pairs means missing
-            # required data (heightmap, biome, etc.)
             print(f"Skipping {npz_file}: {e}")
-            skipped_missing += 1
-            continue
+            return [], 0, 1
         except Exception as e:
             print(f"Error processing {npz_file}: {e}")
-            continue
+            return [], 0, 0
+
+    training_pairs: List[Dict] = []
+    skipped_air = 0
+    skipped_missing = 0
+    total_files = len(npz_files)
+
+    # Use one thread per CPU core; numpy releases the GIL during mip ops so
+    # threads achieve real parallelism without pickling overhead.
+    workers = os.cpu_count() or 4
+    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
+        futures = {executor.submit(_process_one, f): f for f in npz_files}
+        for fut in tqdm(
+            concurrent.futures.as_completed(futures),
+            total=total_files,
+            desc="Processing NPZ files",
+            unit="file",
+        ):
+            pairs, n_air, n_missing = fut.result()
+            training_pairs.extend(pairs)
+            skipped_air += n_air
+            skipped_missing += n_missing
 
     print(
         f"Generated {len(training_pairs)} total training pairs "
