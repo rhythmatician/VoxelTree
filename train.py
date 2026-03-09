@@ -279,9 +279,7 @@ def train_epoch(
         out_size = predictions["block_type_logits"].shape[-1]
         if out_size != 16:
             occ = batch["target_mask"].to(device)
-            ds_blocks, _ = _downsample_targets(
-                targets["target_blocks"], occ, out_size
-            )
+            ds_blocks, _ = _downsample_targets(targets["target_blocks"], occ, out_size)
             targets["target_blocks"] = ds_blocks
 
         # Compute loss
@@ -349,9 +347,7 @@ def validate_epoch(
             out_size = predictions["block_type_logits"].shape[-1]
             if out_size != 16:
                 occ = batch["target_mask"].to(device)
-                ds_blocks, _ = _downsample_targets(
-                    targets["target_blocks"], occ, out_size
-                )
+                ds_blocks, _ = _downsample_targets(targets["target_blocks"], occ, out_size)
                 targets["target_blocks"] = ds_blocks
 
             # Compute loss
@@ -491,7 +487,7 @@ def main():
         block_vocab_size = len(voxy_vocab)
         print(f"Voxy vocabulary: {block_vocab_size} block types from {vocab_path}")
     else:
-        block_vocab_size = 1102  # fallback if no vocab file
+        block_vocab_size = 1104  # fallback if no vocab file
         print(f"Warning: vocab file {vocab_path} not found, using default size {block_vocab_size}")
 
     # Extend vocab size if pair cache contains block IDs beyond the vocab range
@@ -506,6 +502,20 @@ def main():
                 f"{block_vocab_size} — extending to {_data_max_id + 1}"
             )
             block_vocab_size = _data_max_id + 1
+
+    # When resuming, honour the checkpoint's block_vocab_size so model shapes match
+    if args.resume is not None:
+        _ckpt_peek = torch.load(args.resume, map_location="cpu", weights_only=False)
+        _ckpt_cfg = _ckpt_peek.get("config")
+        if _ckpt_cfg is not None and hasattr(_ckpt_cfg, "block_vocab_size"):
+            _ckpt_bvs = _ckpt_cfg.block_vocab_size
+            if _ckpt_bvs != block_vocab_size:
+                print(
+                    f"Checkpoint block_vocab_size={_ckpt_bvs} differs from "
+                    f"vocab file ({block_vocab_size}) — using checkpoint value"
+                )
+                block_vocab_size = _ckpt_bvs
+        del _ckpt_peek  # free memory; will reload later
 
     # Create output directory
     output_dir = Path(args.output_dir)
@@ -623,6 +633,13 @@ def main():
             cw_arr = load_weights(cw_path)
 
         class_weights_tensor = torch.tensor(cw_arr, dtype=torch.float32)
+        # Pad class weights if shorter than block_vocab_size (e.g. vocab grew)
+        if len(class_weights_tensor) < block_vocab_size:
+            pad = block_vocab_size - len(class_weights_tensor)
+            class_weights_tensor = torch.nn.functional.pad(
+                class_weights_tensor, (0, pad), value=0.0
+            )
+            print(f"  Padded class weights from {len(cw_arr)} → {block_vocab_size}")
         nonzero = int((class_weights_tensor > 0).sum())
         print(f"  Class weights loaded: {nonzero} / {len(cw_arr)} non-zero classes")
         print(

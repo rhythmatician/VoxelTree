@@ -10,16 +10,23 @@ Exports 4 separate progressive LOD models to ONNX for the LODiffusion runtime:
 
 LOD0 is NOT exported — vanilla terrain handles full resolution.
 
+All models are exported with **dynamic batch dimensions**, allowing the
+Java runtime to batch multiple sections into a single ONNX inference call
+for higher throughput.
+
 Each model receives anchor conditioning inputs:
-  x_height_planes : [1, 5, 16, 16]   float32
-  x_biome         : [1, 16, 16]      int64
-  x_y_index       : [1]              int64
+  x_height_planes : [N, 5, 16, 16]   float32
+  x_biome         : [N, 16, 16]      int64
+  x_y_index       : [N]              int64
 
 Refinement models additionally receive:
-  x_parent        : [1, 1, P, P, P]  float32   (P = output_size // 2)
+  x_parent        : [N, 1, P, P, P]  float32   (P = output_size // 2)
 
 All models output:
-  block_logits    : [1, N_blocks, D, D, D]   (air = class 0 in unified softmax)
+  block_logits    : [N, N_blocks, D, D, D]   (air = class 0 in unified softmax)
+
+N=1 (single-sample) continues to work identically to the previous
+fixed-batch exports.
 """
 
 from __future__ import annotations
@@ -125,13 +132,13 @@ def embed_block_mapping(model_config: Dict[str, Any]) -> Dict[str, Any]:
 class InitModelAdapter(torch.nn.Module):
     """Adapter for Init→LOD4 model (no parent).
 
-    ONNX inputs:
-      x_height_planes : [1, 5, 16, 16]  float32
-      x_biome         : [1, 16, 16]     int64
-      x_y_index       : [1]             int64
+    ONNX inputs  (N = dynamic batch):
+      x_height_planes : [N, 5, 16, 16]  float32
+      x_biome         : [N, 16, 16]     int64
+      x_y_index       : [N]             int64
 
     ONNX outputs:
-      block_logits : [1, N_blocks, 1, 1, 1]  (air = class 0)
+      block_logits : [N, N_blocks, 1, 1, 1]  (air = class 0)
     """
 
     def __init__(self, model: ProgressiveLODModel0_Initial):
@@ -155,14 +162,14 @@ class InitModelAdapter(torch.nn.Module):
 class RefinementModelAdapter(torch.nn.Module):
     """Adapter for refinement models (LOD4→3, LOD3→2, LOD2→1).
 
-    ONNX inputs:
-      x_height_planes : [1, 5, 16, 16]   float32
-      x_biome         : [1, 16, 16]      int64
-      x_y_index       : [1]              int64
-      x_parent        : [1, 1, P, P, P]  float32   (P = output_size // 2)
+    ONNX inputs  (N = dynamic batch):
+      x_height_planes : [N, 5, 16, 16]   float32
+      x_biome         : [N, 16, 16]      int64
+      x_y_index       : [N]              int64
+      x_parent        : [N, 1, P, P, P]  float32   (P = output_size // 2)
 
     ONNX outputs:
-      block_logits : [1, N_blocks, D, D, D]  (air = class 0)
+      block_logits : [N, N_blocks, D, D, D]  (air = class 0)
     """
 
     def __init__(self, model: ProgressiveLODModel):
@@ -243,6 +250,14 @@ def export_step(
             "x_parent": "float32",
         }
 
+    # ── Dynamic batch axes ─────────────────────────────────────────
+    # All inputs and the output get a dynamic "batch" dimension at dim 0.
+    # This allows the Java runtime to batch multiple sections into a
+    # single ONNX inference call (N>1) while remaining fully compatible
+    # with the existing single-sample (N=1) code path.
+    dynamic_axes = {name: {0: "batch"} for name in input_names}
+    dynamic_axes["block_logits"] = {0: "batch"}
+
     onnx_path = out_dir / onnx_filename
     torch.onnx.export(
         adapter,
@@ -253,10 +268,10 @@ def export_step(
         do_constant_folding=True,
         input_names=input_names,
         output_names=["block_logits"],
-        dynamic_axes=None,
+        dynamic_axes=dynamic_axes,
         dynamo=False,
     )
-    LOGGER.info("Exported %s → %s", step_name, onnx_path)
+    LOGGER.info("Exported %s → %s  (dynamic batch enabled)", step_name, onnx_path)
 
     # ── Per-model sidecar config ─────────────────────────────────────
     D = output_size
@@ -271,6 +286,7 @@ def export_step(
         },
         "parent_resolution": parent_size,
         "output_resolution": D,
+        "dynamic_batch": True,
         "assumptions": {
             "y_index_range": [0, 23],
             "height_planes_normalized": True,
@@ -342,9 +358,7 @@ def load_progressive_checkpoint(
             # air_head weights (removed in the unified-softmax migration).
             result = model.load_state_dict(state_dicts[key], strict=False)
             if result.unexpected_keys:
-                LOGGER.warning(
-                    "Ignoring legacy keys in %s: %s", key, result.unexpected_keys
-                )
+                LOGGER.warning("Ignoring legacy keys in %s: %s", key, result.unexpected_keys)
             if result.missing_keys:
                 LOGGER.warning("Missing keys in %s: %s", key, result.missing_keys)
             LOGGER.info("Loaded state dict for %s (output %d³)", key, output_size)
