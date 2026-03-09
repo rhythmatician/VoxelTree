@@ -27,6 +27,7 @@ import sys
 from pathlib import Path
 
 import numpy as np
+import numpy.typing as npt
 
 # Ensure project root is importable
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -75,7 +76,7 @@ def load_vocab(path: Path) -> dict[str, int]:
         return json.load(f)
 
 
-def build_world_lut(reader: VoxyReader, vocab: dict[str, int]) -> np.ndarray:
+def build_world_lut(reader: VoxyReader, vocab: dict[str, int]) -> npt.NDArray[np.int32]:
     """Build a per-world LUT mapping Voxy state IDs → canonical vocab IDs.
 
     Each Voxy world assigns its own sequential IDs to block states.  This
@@ -105,7 +106,7 @@ def build_world_lut(reader: VoxyReader, vocab: dict[str, int]) -> np.ndarray:
 # ------------------------------------------------------------------
 
 
-def _compute_heightmap(block_ids: np.ndarray) -> np.ndarray:
+def _compute_heightmap(block_ids: npt.NDArray[np.int32]) -> npt.NDArray[np.float32]:
     """Compute a normalised heightmap from a (16, 16, 16) block-ID volume.
 
     The volume is indexed as (y, z, x).  For each (z, x) column, the
@@ -125,7 +126,7 @@ def _compute_heightmap(block_ids: np.ndarray) -> np.ndarray:
     return height
 
 
-def _compute_biome_2d(biome_ids: np.ndarray) -> np.ndarray:
+def _compute_biome_2d(biome_ids: npt.NDArray[np.int32]) -> npt.NDArray[np.int32]:
     """Collapse 3-D biome volume (y, z, x) to 2-D (z, x) via column majority.
 
     Returns (16, 16) int32.

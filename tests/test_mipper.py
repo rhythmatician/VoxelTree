@@ -7,6 +7,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+import numpy.typing as npt
 
 # Ensure scripts/ is on the path when running from the repo root
 sys.path.insert(0, str(Path(__file__).parent.parent))  # noqa: E402
@@ -25,7 +26,7 @@ WATER = 2  # transparent (tier 1) — only when vocab is provided
 DIRT = 3  # opaque
 
 
-def _simple_table(n: int = 16) -> np.ndarray:
+def _simple_table(n: int = 16) -> npt.NDArray[np.int32]:
     """Opacity table: 0=air, 1..n-1=opaque (tier 15)."""
     t = build_opacity_table(n)
     assert t[0] == 0
@@ -33,7 +34,7 @@ def _simple_table(n: int = 16) -> np.ndarray:
     return t
 
 
-def _water_table(n: int = 16) -> np.ndarray:
+def _water_table(n: int = 16) -> npt.NDArray[np.int32]:
     """Opacity table: WATER (id=2) gets tier 1."""
     vocab = {
         "minecraft:air": 0,
@@ -44,7 +45,7 @@ def _water_table(n: int = 16) -> np.ndarray:
     return build_opacity_table(n, vocab=vocab)
 
 
-def _all_block(block_id: int, shape=(16, 16, 16)) -> np.ndarray:
+def _all_block(block_id: int, shape=(16, 16, 16)) -> npt.NDArray[np.int64]:
     return np.full(shape, block_id, dtype=np.int64)
 
 

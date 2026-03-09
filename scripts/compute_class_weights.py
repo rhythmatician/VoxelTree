@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Optional
 
 import numpy as np
+import numpy.typing as npt
 
 # Repo-root on path so imports work when called from anywhere
 _REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -37,7 +38,7 @@ def compute_weights(
     vocab_size: int,
     max_weight: float = 20.0,
     verbose: bool = True,
-) -> np.ndarray:
+) -> npt.NDArray[np.float32]:
     """Scan pair-cache files and return per-class weights [vocab_size] float32.
 
     Args:
@@ -124,12 +125,12 @@ def compute_weights(
     return weights
 
 
-def save_weights(weights: np.ndarray, output_path: Path) -> None:
+def save_weights(weights: npt.NDArray[np.float32], output_path: Path) -> None:
     np.savez_compressed(output_path, class_weights=weights)
     print(f"\nSaved class weights → {output_path}  ({len(weights)} entries)")
 
 
-def load_weights(path: Path) -> np.ndarray:
+def load_weights(path: Path) -> npt.NDArray[np.float32]:
     """Load class weights from an npz saved by this script."""
     d = np.load(path)
     return d["class_weights"].astype(np.float32)

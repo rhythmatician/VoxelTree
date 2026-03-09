@@ -30,6 +30,7 @@ Usage::
 """
 
 from __future__ import annotations
+import numpy.typing as npt
 
 import argparse
 import glob
@@ -44,7 +45,7 @@ from tqdm import tqdm
 from biome_mapping import BIOME_NAME_TO_ID, UNKNOWN_BIOME_ID
 
 
-def load_noise_dumps(noise_dump_dir: Path) -> dict[tuple[int, int], dict]:
+def load_noise_dumps(noise_dump_dir: Path) -> dict[tuple[int, int], dict[str, list[float]]]:
     """Load all chunk_<cx>_<cz>.json files into a dict keyed by (cx, cz).
 
     Each JSON contains:
@@ -74,7 +75,7 @@ def load_noise_dumps(noise_dump_dir: Path) -> dict[tuple[int, int], dict]:
     return dumps
 
 
-def parse_heightmap(flat_array: list[int | float]) -> np.ndarray:
+def parse_heightmap(flat_array: list[int | float]) -> npt.NDArray[np.float32]:
     """Convert a flat 256-element x-major heightmap to (16, 16) float32.
 
     The Java /dumpnoise command writes heightmaps in x-major order::
@@ -91,7 +92,7 @@ def parse_heightmap(flat_array: list[int | float]) -> np.ndarray:
     return arr.T  # → (z, x)
 
 
-def parse_biome_names(flat_names: list[str]) -> np.ndarray:
+def parse_biome_names(flat_names: list[str]) -> npt.NDArray[np.int32]:
     """Convert a flat 256-element biome name list to (16, 16) int32.
 
     Maps each biome name (e.g. ``"minecraft:plains"``) to its canonical
@@ -103,7 +104,9 @@ def parse_biome_names(flat_names: list[str]) -> np.ndarray:
     ids = np.array(
         [BIOME_NAME_TO_ID.get(name, UNKNOWN_BIOME_ID) for name in flat_names],
         dtype=np.int32,
-    ).reshape(16, 16)  # (x, z)
+    ).reshape(
+        16, 16
+    )  # (x, z)
     return ids.T  # → (z, x)
 
 

@@ -5,6 +5,8 @@ from pathlib import Path
 import numpy as np
 import pytest
 import torch
+import numpy.typing as npt
+from typing import Dict
 
 from train.multi_lod_dataset import (
     MultiLODDataset,
@@ -21,7 +23,7 @@ from train.multi_lod_dataset import (
 # ---------------------------------------------------------------------------
 
 
-def _make_labels16(seed: int = 42) -> np.ndarray:
+def _make_labels16(seed: int = 42) -> npt.NDArray[np.int32]:
     """Random 16³ block IDs with a mix of air (0) and solid (1-99)."""
     rng = np.random.RandomState(seed)
     labels = rng.randint(0, 100, size=(16, 16, 16), dtype=np.int32)
@@ -30,7 +32,7 @@ def _make_labels16(seed: int = 42) -> np.ndarray:
     return labels
 
 
-def _make_chunk_kwargs(seed: int = 42) -> dict:
+def _make_chunk_kwargs(seed: int = 42) -> Dict[str, npt.NDArray[np.int32]]:
     """Return kwargs suitable for create_lod_training_pairs()."""
     rng = np.random.RandomState(seed)
     return {

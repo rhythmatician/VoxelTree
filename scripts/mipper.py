@@ -46,6 +46,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Optional, Tuple
 
 import numpy as np
+import numpy.typing as npt
 
 if TYPE_CHECKING:
     import torch
@@ -99,7 +100,7 @@ _CORNER_PRIORITIES_NP = np.array([0, 4, 2, 6, 1, 5, 3, 7], dtype=np.int64)
 def build_opacity_table(
     n_blocks: int,
     vocab: Optional[dict[str, int]] = None,
-) -> np.ndarray:
+) -> npt.NDArray[np.int64]:
     """Return a 1-D numpy int64 array of length ``n_blocks`` mapping block_id → opacity tier.
 
     Args:
@@ -131,7 +132,7 @@ def build_opacity_table_from_blocklist(
     blocklist_path: Path | str,
     vocab: dict[str, int],
     n_blocks: int,
-) -> np.ndarray:
+) -> npt.NDArray[np.int64]:
     """Build an opacity table using real MC block data from joakimthorsen's blocklist.json.
 
     This replaces the ``_TRANSPARENT_FRAGMENTS`` heuristic with ground-truth ``opaque: Yes/No``
