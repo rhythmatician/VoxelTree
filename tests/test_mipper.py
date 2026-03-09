@@ -26,7 +26,7 @@ WATER = 2  # transparent (tier 1) — only when vocab is provided
 DIRT = 3  # opaque
 
 
-def _simple_table(n: int = 16) -> npt.NDArray[np.int32]:
+def _simple_table(n: int = 16) -> npt.NDArray[np.int64]:
     """Opacity table: 0=air, 1..n-1=opaque (tier 15)."""
     t = build_opacity_table(n)
     assert t[0] == 0
@@ -34,7 +34,7 @@ def _simple_table(n: int = 16) -> npt.NDArray[np.int32]:
     return t
 
 
-def _water_table(n: int = 16) -> npt.NDArray[np.int32]:
+def _water_table(n: int = 16) -> npt.NDArray[np.int64]:
     """Opacity table: WATER (id=2) gets tier 1."""
     vocab = {
         "minecraft:air": 0,

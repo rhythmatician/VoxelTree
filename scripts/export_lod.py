@@ -208,6 +208,7 @@ def export_step(
     block_vocab = config.block_vocab_size
 
     # Build dummy inputs
+    dummy: tuple[torch.Tensor, ...]
     dummy_height = torch.rand(1, 5, 16, 16)
     dummy_biome = torch.randint(0, biome_vocab, (1, 16, 16), dtype=torch.long)
     dummy_y = torch.tensor([12], dtype=torch.long)

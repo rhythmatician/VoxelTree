@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 import torch
 import numpy.typing as npt
-from typing import Dict
+from typing import Any, Dict
 
 from train.multi_lod_dataset import (
     MultiLODDataset,
@@ -32,7 +32,7 @@ def _make_labels16(seed: int = 42) -> npt.NDArray[np.int32]:
     return labels
 
 
-def _make_chunk_kwargs(seed: int = 42) -> Dict[str, npt.NDArray[np.int32]]:
+def _make_chunk_kwargs(seed: int = 42) -> Dict[str, Any]:
     """Return kwargs suitable for create_lod_training_pairs()."""
     rng = np.random.RandomState(seed)
     return {

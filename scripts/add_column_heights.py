@@ -30,6 +30,7 @@ Usage::
 """
 
 from __future__ import annotations
+from typing import Any
 import numpy.typing as npt
 
 import argparse
@@ -45,7 +46,7 @@ from tqdm import tqdm
 from biome_mapping import BIOME_NAME_TO_ID, UNKNOWN_BIOME_ID
 
 
-def load_noise_dumps(noise_dump_dir: Path) -> dict[tuple[int, int], dict[str, list[float]]]:
+def load_noise_dumps(noise_dump_dir: Path) -> dict[tuple[int, int], dict[str, Any]]:
     """Load all chunk_<cx>_<cz>.json files into a dict keyed by (cx, cz).
 
     Each JSON contains:
@@ -63,7 +64,7 @@ def load_noise_dumps(noise_dump_dir: Path) -> dict[tuple[int, int], dict[str, li
         print(f"ERROR: No chunk_*.json files found in {noise_dump_dir}")
         sys.exit(1)
 
-    dumps: dict[tuple[int, int], dict[str, list[float]]] = {}
+    dumps: dict[tuple[int, int], dict[str, Any]] = {}
     for fpath in files:
         with open(fpath) as f:
             data = json.load(f)

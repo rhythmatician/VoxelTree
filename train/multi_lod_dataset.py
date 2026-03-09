@@ -564,7 +564,7 @@ class MultiLODDataset(Dataset):
                 )
 
             # Build transition index
-            self._transition_indices = {}
+            self._transition_indices: dict[str, list[int]] = {}
             for i, pair in enumerate(self.training_pairs):
                 t = pair["lod_transition"]
                 if t not in self._transition_indices:
