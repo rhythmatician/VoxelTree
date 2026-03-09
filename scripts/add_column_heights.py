@@ -39,6 +39,8 @@ import json
 import re
 import sys
 from pathlib import Path
+import concurrent.futures
+import os
 
 import numpy as np
 from tqdm import tqdm
@@ -171,26 +173,24 @@ def main() -> None:
         print(f"  Would update {matched} files, {missing} have no matching JSON")
         return
 
-    # Process each NPZ file
-    updated = 0
-    skipped = 0
-    missing_chunks: list[tuple[int, int]] = []
+    # ------------------------------------------------------------------
+    # helper used by worker threads/processes
+    def _process_file(fpath: str) -> tuple[str, tuple[int, int] | None]:
+        """Return status and missing-coords info for one NPZ file.
 
-    for fpath in tqdm(files, desc="Merging heightmaps"):
+        Status is one of:
+          * "updated" - file was written
+          * "skipped" - no coordinate pattern or dump was missing
+        """
         m = re.search(r"x(-?\d+)_y(-?\d+)_z(-?\d+)", fpath)
         if not m:
-            print(f"  Skipping (no coord in name): {fpath}")
-            skipped += 1
-            continue
+            return ("skipped", None)
 
-        wx = int(m.group(1))  # section x = chunk x
-        wz = int(m.group(3))  # section z = chunk z
-
+        wx = int(m.group(1))
+        wz = int(m.group(3))
         dump = dumps.get((wx, wz))
         if dump is None:
-            missing_chunks.append((wx, wz))
-            skipped += 1
-            continue
+            return ("skipped", (wx, wz))
 
         surface = parse_heightmap(dump["heightmap_surface"])
         ocean_floor = parse_heightmap(dump["heightmap_ocean_floor"])
@@ -198,13 +198,32 @@ def main() -> None:
         data = dict(np.load(fpath))
         data["heightmap_surface"] = surface
         data["heightmap_ocean_floor"] = ocean_floor
-
-        # Overlay biome_patch if biome_names present in dump
         if "biome_names" in dump:
             data["biome_patch"] = parse_biome_names(dump["biome_names"])
-
         np.savez_compressed(fpath, **data)
-        updated += 1
+        return ("updated", None)
+    # ------------------------------------------------------------------
+
+    updated = 0
+    skipped = 0
+    missing_chunks: list[tuple[int, int]] = []
+
+    # run the work in parallel using a thread pool; NPZ I/O is a mix of
+    # CPU and file operations, so threads are fine and avoid pickling
+    # the entire dumps dict on every task.
+    workers = os.cpu_count() or 4
+    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
+        futures = {executor.submit(_process_file, f): f for f in files}
+        for fut in tqdm(concurrent.futures.as_completed(futures),
+                        total=len(files),
+                        desc="Merging heightmaps"):
+            status, coord = fut.result()
+            if status == "updated":
+                updated += 1
+            else:
+                skipped += 1
+                if coord is not None:
+                    missing_chunks.append(coord)
 
     print(f"\nUpdated {updated} NPZ files with vanilla heightmaps + biomes")
     if skipped:
