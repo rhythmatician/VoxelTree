@@ -675,7 +675,55 @@ The system is considered **working** when:
 - **Neural terrain quality comparison** — Compare model output quality vs vanilla at same LOD.
   The model may produce *smoother* transitions than vanilla's hard thresholds.
 
-## 12. Risks & Mitigation
+## 12. Machine Learning Insights & Design Rationale
+
+### Why Minecraft is Procedurally Learnable
+
+Minecraft terrain generation is unusually learnable for ML because:
+
+1. **Structural Regularity via Noise Functions**: Vanilla generation uses layered Perlin and simplex noise at multiple octaves. This creates self-similar fractal structure that neural networks can easily approximate through hierarchical feature learning.
+
+2. **Biome Determinism**: Each biome is determined by climate parameters (temperature, humidity, continentalness) that form smooth manifolds in latent space. The model can learn to condition block generation on these continuous values rather than memorizing discrete patterns.
+
+3. **Local Causality**: Block placement depends primarily on local neighborhood (within ~8 blocks vertically, ~16 blocks horizontally). Distant blocks don't affect local generation, making the problem highly parallelizable and learnable.
+
+4. **Repetitive Patterns Across Biomes**: Slopes, water edges, and vegetation follow similar rules across different biomes, creating transferable feature representations.
+
+This explains why LODiffusion's simple CNN refinement (not diffusion, not GANs, no latent evolution) works well: Minecraft's noise-based structure is more similar to traditional upsampling tasks than to free-form generation.
+
+### Block Vocabulary Expansion (Phase 2 Strategy)
+
+Phase 1 trains on terrain blocks only (139 unique blocks across 28 strategic biomes). For Phase 2 (structure generation), the vocabulary must expand to include structure-specific blocks:
+
+**Phase 1→2 Expansion Path:**
+- **Current vocab:** 139 terrain blocks from 28 biomes (covers all natural terrain generation)
+- **Phase 2 target:** ~500+ blocks including structures (villages, strongholds, temples, mineshafts, ships)
+- **Biome selection strategy:** Focus on biomes with feature-rich structures:
+  - `lush_caves` — Vines, glow berries, moss expansion blocks
+  - `badlands` — Terracotta color variety, copper/gold ore variants
+  - `warm_ocean` — Coral reefs, sea pickle diversity
+  - `deep_dark` — Sculk blocks, darkness indicator blocks
+  - Remaining coverage: Nether/Fortress blocks (Phase 3+)
+
+**Vocabulary derivation:** `blocklist.json` (repo root) already contains a `generates_in_structures` field for every Minecraft block. Once terrain training is complete, Phase 2 vocabulary is derived by filtering to `generates_in_structures: "Yes"` entries, ensuring a curated, non-redundant structure-specific palette.
+
+### Cave Topology Sensitivity & Percolation Risks
+
+While Phase 1 skips underground detail (only visible outer shell), Phase 2? cave generation carries a critical ML risk:
+
+1. **Percolation Threshold Brittleness**: Cave systems depend on topological connectivity. Small changes to block placement near percolation thresholds can disconnect entire cave systems. A model trained on one seed's cave configuration may fail when cave parameters shift.
+
+2. **Connectivity Invariance is Hard**: Unlike surface terrain (smooth height gradients), caves must satisfy global connectivity constraints. A local CNN cannot guarantee the model's cave structure remains connected after refinement.
+
+3. **Mitigation Strategy**: _If_ Phase 2 includes cave conditioning, use a **conditioning mask** (coarse/binary "cave likely here" heatmap) as an input channel rather than training the model to generate caves from scratch. This preserves global structure while allowing fine detail refinement.
+
+2. **Cross-Seed Validation Strategy**: Validate generalization by training the model on Seed A but testing on Seed B. If the model trained on one seed generalizes well to another seed, it has learned transferable terrain rules, not seed-specific memorization.
+
+3. **Expected Behavior**: Grokking should occur when the model's capacity (parameter count) matches the "rule complexity" of terrain generation. Too small a model underfits; too large a model memorizes. The sweet spot is where generalization emerges naturally.
+
+4. **Testing Plan**: Reserve a held-out test seed with identical biome distribution but different noise instances. Measure per-biome accuracy across test seed to confirm rule-learning.
+
+## 13. Risks & Mitigation
 
 | Risk | Impact | Mitigation |
 |------|--------|------------|
@@ -690,7 +738,7 @@ The system is considered **working** when:
 | **Locally correct, globally wrong** | Patch boundaries visible, caves dead-end | Conditioning channels anchor global structure, halo context, seam loss |
 | **Insert-only policy violated** | Voxy data corruption | Code guards on RocksDB writes, key-exists check before every insert |
 
-## 13. Project Structure
+## 14. Project Structure
 
 ```
 VoxelTree/
@@ -719,7 +767,7 @@ VoxelTree/
 └── requirements.txt         # Python dependencies
 ```
 
-## 14. Next Steps (Immediate)
+## 15. Next Steps (Immediate)
 
 1. **Wire up separate model training:** Update `train_multi_lod.py` to train progressive per-step models from `train/progressive_lod_models.py`
 2. **Drop LOD1→0 from pipeline:** Remove LOD0 training targets, update LOD sampling weights
@@ -728,7 +776,7 @@ VoxelTree/
 5. **Deploy to LODiffusion:** Copy 4 ONNX files + model_config.json to mod config
 6. **Validate in-game:** Verify distant terrain renders correctly via Voxy
 
-## 15. Experimental Ideas (Backlog)
+## 16. Experimental Ideas (Backlog)
 
 These are not immediate priorities but worth tracking:
 
