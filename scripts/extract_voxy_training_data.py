@@ -16,7 +16,7 @@ The output NPZ files contain:
     labels16          (16, 16, 16) int32  — canonical Voxy vocabulary IDs
     biome_patch       (16, 16)    int32   — biome IDs (column-wise majority)
     heightmap_patch   (16, 16)    float32 — placeholder (replaced by add_column_heights.py)
-    y_index           scalar      int64   — section Y coordinate
+    y_index           scalar      int64   — 0-based Y index (section_y + 4)
 """
 
 from __future__ import annotations
@@ -28,6 +28,9 @@ from pathlib import Path
 
 import numpy as np
 import numpy.typing as npt
+
+# Minecraft section Y base — matches LODiffusion's Y_BASE_SECTION = -4
+Y_BASE_SECTION = -4
 
 # Ensure project root is importable
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -203,7 +206,9 @@ def extract(
 
                 biome_2d = _compute_biome_2d(bio_voxy)
                 heightmap = _compute_heightmap(blk_canon)
-                y_index = sub["world_y"]
+                # 0-based y index: section Y -4 → 0, -3 → 1, ..., 11 → 15
+                # Matches inference: yIndex = sectionY - Y_BASE_SECTION
+                y_index = sub["world_y"] - Y_BASE_SECTION
 
                 wx, wy, wz = sub["world_x"], sub["world_y"], sub["world_z"]
                 fname = "%svoxy_lod0_x%d_y%d_z%d.npz" % (prefix, wx, wy, wz)

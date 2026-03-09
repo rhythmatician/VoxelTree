@@ -396,10 +396,20 @@ def main():
         )
         exported.append(path)
 
+    # Collect every file that the Java loader needs at runtime.
+    # This list is embedded in the manifest so the loader can validate
+    # the deployment in a single up-front check and give a clear error
+    # listing exactly which files are missing.
+    required_files = ["pipeline_manifest.json"]
+    for _key, _, _out, _par, fn in MODEL_STEPS:
+        required_files.append(fn)  # .onnx
+        required_files.append(fn.replace(".onnx", "_config.json"))  # sidecar
+
     # Write a pipeline manifest listing all exported models
     manifest = {
         "version": "3.0.0",
         "contract": "lodiffusion.v3.progressive",
+        "required_files": required_files,
         "pipeline": [
             {
                 "step": key,
