@@ -494,6 +494,19 @@ def main():
         block_vocab_size = 1102  # fallback if no vocab file
         print(f"Warning: vocab file {vocab_path} not found, using default size {block_vocab_size}")
 
+    # Extend vocab size if pair cache contains block IDs beyond the vocab range
+    _data_dir = Path(args.data_dir)
+    _cache_candidates = sorted(_data_dir.glob("train_pairs_v*.npz"))
+    if _cache_candidates:
+        _cache = np.load(_cache_candidates[-1], mmap_mode="r")
+        _data_max_id = int(_cache["target_types"].max())
+        if _data_max_id >= block_vocab_size:
+            print(
+                f"Warning: pair cache has block ID {_data_max_id} >= vocab size "
+                f"{block_vocab_size} — extending to {_data_max_id + 1}"
+            )
+            block_vocab_size = _data_max_id + 1
+
     # Create output directory
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)

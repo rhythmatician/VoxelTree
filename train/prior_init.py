@@ -29,12 +29,16 @@ def compute_block_frequencies(
     Returns:
         log_freqs: float32 array [vocab_size] of log(freq + eps).
     """
-    cache_file = data_dir / "train_pairs_v1.npz"
-    if not cache_file.exists():
+    # choose the highest-version pair cache available (v1, v2, ...)
+    candidates = sorted(data_dir.glob("train_pairs_v*.npz"))
+    if not candidates:
         raise FileNotFoundError(
-            f"Pair cache not found: {cache_file}\n"
+            f"No pair cache (train_pairs_v*.npz) found in {data_dir}\n"
             "Run 'python data-cli.py build-pairs' first."
         )
+    cache_file = candidates[-1]
+    if verbose:
+        print(f"Using pair cache: {cache_file.name}")
 
     data = np.load(cache_file)
     target_types = data["target_types"]  # (N, 16, 16, 16) int32
@@ -57,7 +61,7 @@ def compute_block_frequencies(
         solid_pct = 100.0 - air_pct
         n_seen = int(np.sum(counts > 0))
         print(f"  Air (class 0): {air_pct:.1f}%  Solid: {solid_pct:.1f}%")
-        print(f"  Classes with ≥1 voxel: {n_seen} / {vocab_size}")
+        print(f"  Classes with >=1 voxel: {n_seen} / {vocab_size}")
         # Top-5 most common
         top5 = np.argsort(counts)[::-1][:5]
         for idx in top5:

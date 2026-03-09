@@ -54,11 +54,16 @@ def compute_weights(
     Returns:
         weights: float32 array of shape [vocab_size] — weight for each block ID.
     """
-    cache_file = data_dir / "train_pairs_v1.npz"
-    if not cache_file.exists():
+    # pick latest available pair-cache (v1, v2, ...)
+    candidates = sorted(Path(data_dir).glob("train_pairs_v*.npz"))
+    if not candidates:
         raise FileNotFoundError(
-            f"Pair cache not found: {cache_file}\n" "Run 'python data-cli.py build-pairs' first."
+            f"No pair cache (train_pairs_v*.npz) found in {data_dir}\n"
+            "Run 'python data-cli.py build-pairs' first."
         )
+    cache_file = candidates[-1]
+    if verbose:
+        print(f"Using pair cache: {cache_file.name}")
 
     if verbose:
         print(f"Loading pair cache: {cache_file}")
