@@ -1,0 +1,152 @@
+# 📐 Model Contract — VoxelTree ↔ LODiffusion
+
+**Contract ID:** `lodiffusion.v3.progressive`  
+**Version:** `3.0.0`  
+**Authoritative source (Python):** [`VoxelTree/scripts/export_lod.py`](../scripts/export_lod.py) — `MODEL_STEPS`  
+**Authoritative source (Java):** [`LODiffusion/src/…/onnx/ProgressiveModelRunner.java`](../../LODiffusion/src/main/java/net/diffusion/lodiffusion/onnx/ProgressiveModelRunner.java) — `generate()`
+
+This document is the single cross-boundary reference. Keep it in sync with both authoritative sources; if they disagree, fix the code, then update this doc.
+
+---
+
+## 1. Pipeline Overview
+
+Four ONNX models form a coarse-to-fine ladder. Each refines the output of the previous stage. LOD0 is vanilla-only — no model covers it.
+
+```
+  Init            LOD4→3          LOD3→2          LOD2→1
+  ────────        ────────        ────────        ────────
+  output D=1  →  output D=2  →  output D=4  →  output D=8
+                                                    │
+                                               Java 2× upsample
+                                                    │
+                                               InferenceResult [16³]
+                                               (written to Voxy LOD1–4)
+```
+
+---
+
+## 2. Shared Conditioning Inputs
+
+These three tensors are **identical** for every model call within a single chunk generation:
+
+| Name | Shape | dtype | Source | Notes |
+|---|---|---|---|---|
+| `x_height_planes` | `[1, 5, 16, 16]` | float32 | `AnchorSampler` | surface, ocean\_floor, slope\_x, slope\_z, curvature |
+| `x_biome` | `[1, 16, 16]` | int64 | `AnchorSampler` | vanilla biome ID per (x,z) column |
+| `x_y_index` | `[1]` | int64 | `LodGenerationService` | vertical slab index [0, 23] |
+
+---
+
+## 3. Per-Model Tensor Contract
+
+| Model | ONNX file | `x_parent` shape | `block_logits` shape | `air_mask` shape |
+|---|---|---|---|---|
+| `init_to_lod4` | `init_to_lod4.onnx` | *absent* | `[1, N, 1, 1, 1]` | `[1, 1, 1, 1, 1]` |
+| `refine_lod4_to_lod3` | `refine_lod4_to_lod3.onnx` | `[1, 1, 1, 1, 1]` | `[1, N, 2, 2, 2]` | `[1, 1, 2, 2, 2]` |
+| `refine_lod3_to_lod2` | `refine_lod3_to_lod2.onnx` | `[1, 1, 2, 2, 2]` | `[1, N, 4, 4, 4]` | `[1, 1, 4, 4, 4]` |
+| `refine_lod2_to_lod1` | `refine_lod2_to_lod1.onnx` | `[1, 1, 4, 4, 4]` | `[1, N, 8, 8, 8]` | `[1, 1, 8, 8, 8]` |
+
+`N` = block vocabulary size (from `block_mapping` in each sidecar config).
+
+### 3a. Parent hand-off
+
+The `block_logits` output of stage *k* becomes the `x_parent` input of stage *k+1*. `ProgressiveModelRunner` passes just the raw logit tensor — no argmax, no threshold.
+
+---
+
+## 4. Post-Pipeline Upsampling (Java only)
+
+`ProgressiveModelRunner.generate()` upsamples the final 8³ `block_logits` and `air_mask` 2× (nearest-neighbour) before packing into `InferenceResult`:
+
+```
+InferenceResult.blockLogits  →  float[1][N][16][16][16]
+InferenceResult.airMask      →  float[1][1][16][16][16]
+```
+
+This is the shape consumed by `VoxySectionWriter`. The ONNX models themselves **never** output 16³.
+
+---
+
+## 5. Sidecar Files
+
+Each model has a companion JSON config:
+
+```
+init_to_lod4_config.json
+refine_lod4_to_lod3_config.json
+refine_lod3_to_lod2_config.json
+refine_lod2_to_lod1_config.json
+```
+
+Minimum required keys:
+
+```json
+{
+  "contract":       "lodiffusion.v3.progressive",
+  "version":        "3.0.0",
+  "block_mapping":  { "<model_index>": "<voxy_block_id>", … },
+  "block_id_to_name": { "<voxy_block_id>": "<block_name>", … }
+}
+```
+
+---
+
+## 6. Pipeline Manifest
+
+`pipeline_manifest.json` lists every required file with its SHA-256 checksum. `ProgressiveModelRunner` validates all entries at startup and refuses to load if any file is missing or mismatched.
+
+---
+
+## 7. Test Vectors
+
+Each model ships a NumPy archive of golden input→output pairs:
+
+```
+init_to_lod4_test_vectors.npz
+refine_lod4_to_lod3_test_vectors.npz
+refine_lod3_to_lod2_test_vectors.npz
+refine_lod2_to_lod1_test_vectors.npz
+```
+
+Validated by `LODiffusion/verify_lodiffusion_v1.py` on the Python side and by `ProgressiveModelRunner`'s startup smoke-test on the Java side.
+
+---
+
+## 8. Deployment Steps
+
+```bash
+# 1. Train + export (VoxelTree side)
+python scripts/export_lod.py --output production/vN
+
+# 2. Verify shapes + checksums
+python verify_lodiffusion_v1.py production/vN
+
+# 3. Deploy to mod
+python scripts/deploy_models.py production/vN
+# → copies all files to LODiffusion/run/config/lodiffusion/
+```
+
+---
+
+## 9. y_index Range
+
+`x_y_index` encodes the vertical 16-block slab within a Minecraft world:
+
+| y_index | Block Y range |
+|---|---|
+| 0 | −64 … −49 |
+| 1 | −48 … −33 |
+| … | … |
+| 23 | 304 … 319 |
+
+24 slabs × 16 blocks = 384 blocks total (Minecraft 1.18+ world height).
+
+---
+
+## 10. Invariants (enforced at runtime)
+
+* All input shapes are **static** — no dynamic axes.
+* `ProgressiveModelRunner` fails fast on any shape mismatch.
+* `x_biome` values must be within range of the model's vocabulary; out-of-range values are clamped to 0 (unknown).
+* LOD0 is **never** generated by the model pipeline; vanilla terrain always fills that level.
