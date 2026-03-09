@@ -161,7 +161,7 @@ class RefinementModelAdapter(torch.nn.Module):
       x_height_planes : [1, 5, 16, 16]   float32
       x_biome         : [1, 16, 16]      int64
       x_y_index       : [1]              int64
-      x_parent        : [1, 1, P, P, P]  float32
+      x_parent        : [1, 1, P, P, P]  float32   (P = output_size // 2)
 
     ONNX outputs:
       block_logits : [1, N_blocks, D, D, D]
@@ -227,7 +227,8 @@ def export_step(
             "x_y_index": "int64",
         }
     else:
-        # Refinement model — with parent
+        # Refinement model — native parent size (output_size // 2).
+        # The model internally interpolates parent features to output_size.
         dummy_parent = torch.rand(1, 1, parent_size, parent_size, parent_size)
         dummy = (dummy_height, dummy_biome, dummy_y, dummy_parent)
         input_names = ["x_height_planes", "x_biome", "x_y_index", "x_parent"]
