@@ -50,7 +50,7 @@ import numpy.typing as npt
 # Ensure project root is importable
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from scripts.voxy_reader import VoxyReader
+from scripts.voxy_reader import VoxyReader  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -204,10 +204,10 @@ def extract_all_levels(
                     break
                 section_count += 1
 
-                block_ids = section["block_ids"]  # (32,32,32) (y,z,x)
-                biome_ids = section["biome_ids"]  # (32,32,32)
-                sx, sy, sz = section["x"], section["y"], section["z"]
-                nec = section["non_empty_children"]
+                block_ids = section.block_ids   # (32,32,32) (y,z,x)
+                biome_ids = section.biome_ids   # (32,32,32)
+                sx, sy, sz = section.x, section.y, section.z
+                nec = section.non_empty_children
 
                 # Map to canonical vocabulary
                 max_id = lut.shape[0] - 1
