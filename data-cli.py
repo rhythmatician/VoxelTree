@@ -89,12 +89,13 @@ _HERE = Path(__file__).resolve().parent
 
 VOXY_VOCAB_PATH = _HERE / "config" / "voxy_vocab.json"
 DEFAULT_DATA_DIR = _HERE / "data" / "voxy"
+DEFAULT_VOXY_DIR = _HERE.parent / "LODiffusion" / "run" / "saves"
 
 #: Ordered list of dataprep steps.
 DATAPREP_STEPS = ["pregen", "voxy-import", "dumpnoise", "extract", "column-heights", "build-pairs"]
 
 #: Default noise-dump output directory (relative to LODiffusion game run dir).
-DEFAULT_NOISE_DUMP_DIR = _HERE / "LODiffusion" / "run" / "noise_dumps"
+DEFAULT_NOISE_DUMP_DIR = _HERE / "tools" / "fabric-server" / "runtime" / "noise_dumps"
 
 # ---------------------------------------------------------------------------
 # RCON client (see rcon.py)
@@ -873,7 +874,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_dp.add_argument(
         "--voxy-dir",
         type=Path,
-        default=None,
+        default=DEFAULT_VOXY_DIR,
         metavar="DIR",
         help="Minecraft saves directory containing Voxy databases",
     )

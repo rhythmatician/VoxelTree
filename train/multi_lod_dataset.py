@@ -26,6 +26,8 @@ from scripts.mipper import build_opacity_table, mip_volume_numpy
 
 from dataclasses import dataclass
 
+from .feature_utils import build_tabular_features_numpy
+
 import numpy.typing as npt
 
 
@@ -617,14 +619,21 @@ class MultiLODDataset(Dataset):
 
         # Convert to tensors
         biome_idx_np = np.asarray(pair["biome_idx"])  # (16,16) int64
+        height_planes_np = np.asarray(pair["height_planes"], dtype=np.float32)
+        parent_voxel_np = np.asarray(pair["parent_voxel"], dtype=np.float32)
+
+        tabular, biome_center, biome_mode = build_tabular_features_numpy(
+            height_planes_np, biome_idx_np, int(pair["y_index"])
+        )
 
         sample = {
-            "parent_voxel": torch.from_numpy(np.asarray(pair["parent_voxel"])).float(),
+            "parent_voxel": torch.from_numpy(parent_voxel_np).float(),
             "biome_idx": torch.from_numpy(biome_idx_np).long(),  # (16,16)
-            "height_planes": torch.from_numpy(
-                np.asarray(pair["height_planes"])
-            ).float(),  # (5,16,16)
+            "height_planes": torch.from_numpy(height_planes_np).float(),  # (5,16,16)
             "y_index": torch.tensor(int(pair["y_index"]), dtype=torch.long),
+            "tabular": torch.from_numpy(tabular).float(),
+            "biome_center": torch.tensor(biome_center, dtype=torch.long),
+            "biome_mode": torch.tensor(biome_mode, dtype=torch.long),
             "target_mask": torch.from_numpy(np.asarray(pair["target_mask"])).float(),
             "target_types": torch.from_numpy(np.asarray(pair["target_types"])).long(),
             "lod_transition": pair["lod_transition"],
@@ -646,6 +655,9 @@ def collate_multi_lod_batch(samples: List[Dict]) -> Dict:
         "biome_idx",
         "height_planes",
         "y_index",
+        "tabular",
+        "biome_center",
+        "biome_mode",
         "target_mask",
         "target_types",
     ]

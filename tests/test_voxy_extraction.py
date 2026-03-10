@@ -83,11 +83,11 @@ class TestFileInventory:
         assert count >= MIN_FILE_COUNT, f"Expected ≥ {MIN_FILE_COUNT} NPZ files, found {count}."
 
     def test_filename_convention(self, voxy_npz_files: list[Path]):
-        """All filenames should match voxy_lod<N>_x<X>_y<Y>_z<Z>.npz."""
+        """All filenames should match world prefix pattern w<W>_voxy_*."""
         bad = [
             f.name
             for f in voxy_npz_files[:200]  # check a subset for speed
-            if not f.name.startswith("voxy_")
+            if not f.name.startswith("w") or "_voxy_" not in f.name
         ]
         assert not bad, f"Unexpected filenames (first 5): {bad[:5]}"
 

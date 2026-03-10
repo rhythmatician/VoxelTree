@@ -16,7 +16,7 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from .progressive_lod_models import ProgressiveLODModel, ProgressiveLODModel0_Initial
+from .progressive_lod_models import ProgressiveLODModel0_Initial, ProgressiveLODModel
 
 
 def compute_block_frequencies(
@@ -87,17 +87,18 @@ def init_block_head_bias(
 
     for name, model in models.items():
         if isinstance(model, ProgressiveLODModel0_Initial):
-            # Linear head: bias shape = [vocab_size]
+            # Linear head
             head = model.block_head
         elif isinstance(model, ProgressiveLODModel):
-            # Conv3d head: bias shape = [vocab_size]
+            # Conv3d head
             head = model.block_head
         else:
             if verbose:
                 print(f"  Skipping unknown model type for '{name}'")
             continue
 
-        if head.bias is None:
+        # Access bias directly; both Linear and Conv3d have .bias attribute
+        if getattr(head, "bias", None) is None:
             if verbose:
                 print(f"  Warning: {name}.block_head has no bias — skipping")
             continue

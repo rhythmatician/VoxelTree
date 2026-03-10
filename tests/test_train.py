@@ -41,9 +41,8 @@ def config():
 
 
 def _make_predictions(B: int, C: int, D: int):
-    """Synthetic model outputs."""
+    """Synthetic model outputs (air = class 0 in block_type_logits)."""
     return {
-        "air_mask_logits": torch.randn(B, 1, D, D, D),
         "block_type_logits": torch.randn(B, C, D, D, D),
     }
 
@@ -70,7 +69,7 @@ class TestMultiLODLoss:
 
         assert "total_loss" in losses
         assert "block_loss" in losses
-        assert "air_loss" in losses
+        assert "surface_loss" in losses
         assert torch.isfinite(losses["total_loss"])
 
     def test_loss_decreases_with_perfect_predictions(self):
@@ -85,7 +84,6 @@ class TestMultiLODLoss:
 
         # Near-perfect predictions
         good_preds = {
-            "air_mask_logits": (targets["target_occupancy"].unsqueeze(1) * 10 - 5),
             "block_type_logits": torch.zeros(B, C, D, D, D),
         }
         # Set correct class to high logit
@@ -147,11 +145,23 @@ class TestComputeMetrics:
         """Perfect air predictions should yield air_accuracy = 1.0."""
         B, C, D = 1, 10, 4
         targets = _make_targets(B, C, D)
-        target_solid = (targets["target_occupancy"] > 0).float().unsqueeze(1)
+        # Create predictions where class 0 (air) has highest logits where target is air
         preds = {
-            "air_mask_logits": target_solid * 10 - 5,  # high where solid, low where air
             "block_type_logits": torch.randn(B, C, D, D, D),
         }
+        # Set logits so that argmax = 0 where target_blocks == 0, else argmax > 0
+        air_mask = targets["target_blocks"] == 0  # [B, D, D, D]
+        solid_mask = targets["target_blocks"] > 0  # [B, D, D, D]
+        
+        # For air: set class 0 high, others low
+        for b in range(B):
+            preds["block_type_logits"][b, 0, air_mask[b]] = 100.0
+            for c in range(1, C):
+                preds["block_type_logits"][b, c, air_mask[b]] = -100.0
+            # For solid: set class 0 low, class 1 high
+            preds["block_type_logits"][b, 0, solid_mask[b]] = -100.0
+            preds["block_type_logits"][b, 1, solid_mask[b]] = 100.0
+
         metrics = compute_metrics(preds, targets)
         assert metrics["air_accuracy"] == pytest.approx(1.0, abs=1e-5)
 
@@ -209,7 +219,7 @@ class TestForwardBatch:
         }
         with torch.no_grad():
             out = _forward_batch(models, batch, torch.device("cpu"))
-        assert out["air_mask_logits"].shape == (1, 1, 1, 1, 1)
+        assert out["block_type_logits"].shape == (1, 100, 1, 1, 1)
 
     @pytest.mark.parametrize(
         "transition,out_size,parent_size",
@@ -229,7 +239,7 @@ class TestForwardBatch:
         }
         with torch.no_grad():
             out = _forward_batch(models, batch, torch.device("cpu"))
-        assert out["air_mask_logits"].shape[-1] == out_size
+        assert out["block_type_logits"].shape[-1] == out_size
 
     def test_unknown_transition_raises(self, models):
         batch = {"lod_transition": "lod0_to_nothing"}

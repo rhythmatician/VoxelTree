@@ -48,8 +48,6 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 from train.progressive_lod_models import (  # noqa: E402
-    ProgressiveLODModel,
-    ProgressiveLODModel0_Initial,
     create_init_model,
     create_lod2_to_lod1_model,
     create_lod3_to_lod2_model,
@@ -137,11 +135,11 @@ class InitModelAdapter(torch.nn.Module):
       x_biome         : [N, 16, 16]     int64
       x_y_index       : [N]             int64
 
-    ONNX outputs:
-      block_logits : [N, N_blocks, 1, 1, 1]  (air = class 0)
+    ONNX output:
+      block_logits : [N, N_blocks, 1, 1, 1]  (air = class 0 in unified softmax)
     """
 
-    def __init__(self, model: ProgressiveLODModel0_Initial):
+    def __init__(self, model: torch.nn.Module):
         super().__init__()
         self.model = model
 
@@ -150,7 +148,7 @@ class InitModelAdapter(torch.nn.Module):
         x_height_planes: torch.Tensor,
         x_biome: torch.Tensor,
         x_y_index: torch.Tensor,
-    ):
+    ) -> torch.Tensor:
         out = self.model(
             height_planes=x_height_planes,
             biome_indices=x_biome,
@@ -172,7 +170,7 @@ class RefinementModelAdapter(torch.nn.Module):
       block_logits : [N, N_blocks, D, D, D]  (air = class 0)
     """
 
-    def __init__(self, model: ProgressiveLODModel):
+    def __init__(self, model: torch.nn.Module):
         super().__init__()
         self.model = model
 
@@ -398,6 +396,7 @@ def main():
     exported = []
     for key, factory, output_size, parent_size, onnx_filename in MODEL_STEPS:
         model = models[key]
+        adapter: torch.nn.Module
         if parent_size == 0:
             adapter = InitModelAdapter(model)
         else:

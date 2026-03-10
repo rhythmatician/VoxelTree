@@ -215,6 +215,15 @@ def _forward_batch(
     height_planes = batch["height_planes"].to(device)
     biome_indices = batch["biome_idx"].to(device)
     y_index = batch["y_index"].to(device)
+    tabular = batch.get("tabular")
+    if isinstance(tabular, torch.Tensor):
+        tabular = tabular.to(device)
+    biome_center = batch.get("biome_center")
+    if isinstance(biome_center, torch.Tensor):
+        biome_center = biome_center.to(device)
+    biome_mode = batch.get("biome_mode")
+    if isinstance(biome_mode, torch.Tensor):
+        biome_mode = biome_mode.to(device)
 
     if isinstance(model, ProgressiveLODModel0_Initial):
         # Init model: no parent
@@ -222,6 +231,9 @@ def _forward_batch(
             height_planes=height_planes,
             biome_indices=biome_indices,
             y_index=y_index,
+            tabular=tabular,
+            biome_center=biome_center,
+            biome_mode=biome_mode,
         )
     else:
         # Refinement model: needs parent occupancy
@@ -231,6 +243,9 @@ def _forward_batch(
             biome_indices=biome_indices,
             y_index=y_index,
             x_parent=x_parent,
+            tabular=tabular,
+            biome_center=biome_center,
+            biome_mode=biome_mode,
         )
 
 
@@ -240,11 +255,19 @@ def train_epoch(
     loss_fn: MultiLODLoss,
     optimizer: optim.Optimizer,
     device: torch.device,
+    active_keys: Optional[set] = None,
 ) -> Dict[str, Any]:
-    """Train for one epoch using separate per-step models."""
+    """Train for one epoch using separate per-step models.
 
-    for m in models.values():
-        m.train()
+    Args:
+        active_keys: If set, only these model keys are put in train mode.
+            Others remain in eval mode with frozen parameters.
+    """
+
+    for key, m in models.items():
+        if active_keys is None or key in active_keys:
+            m.train()
+        # else: frozen models stay in eval mode
 
     total_loss = 0.0
     total_block_loss = 0.0
@@ -478,6 +501,18 @@ def main():
             "Useful when sharing a machine. Defaults to PyTorch's auto-detection."
         ),
     )
+    parser.add_argument(
+        "--steps",
+        nargs="*",
+        default=None,
+        metavar="STEP",
+        help=(
+            "Train only specific LOD steps (space-separated). "
+            "Choices: init_to_lod4, lod4to3, lod3to2, lod2to1. "
+            "If omitted, trains all 4 models jointly. "
+            "Example: --steps init_to_lod4 lod4to3"
+        ),
+    )
     args = parser.parse_args()
 
     # Limit CPU threads if requested
@@ -555,6 +590,24 @@ def main():
         n = sum(p.numel() for p in m.parameters())
         print(f"  {name}: {n:,} params")
 
+    # ── Per-step training (--steps) ───────────────────────────────────────
+    ALL_KEYS = {"init_to_lod4", "lod4to3", "lod3to2", "lod2to1"}
+    active_keys: Optional[set] = None
+    if args.steps is not None:
+        active_keys = set(args.steps)
+        unknown = active_keys - ALL_KEYS
+        if unknown:
+            parser.error(f"Unknown --steps: {unknown}. Valid: {sorted(ALL_KEYS)}")
+        print(f"Per-step training: {sorted(active_keys)}")
+        # Freeze non-active models
+        for key, m in models.items():
+            if key not in active_keys:
+                m.eval()
+                for p in m.parameters():
+                    p.requires_grad_(False)
+                n_frozen = sum(p.numel() for p in m.parameters())
+                print(f"  {key}: frozen ({n_frozen:,} params)")
+
     # Initialize block_head bias from class-prior log-frequencies
     if not args.no_bias_init and args.resume is None:
         print("Initializing block_head bias from class priors...")
@@ -566,17 +619,27 @@ def main():
 
     # Create datasets
     print("Loading datasets...")
+
+    # Compute sampling weights — zero out non-active transitions when --steps
+    default_weights = {
+        "init_to_lod4": 0.15,
+        "lod4to3": 0.25,
+        "lod3to2": 0.30,
+        "lod2to1": 0.30,
+    }
+    if active_keys is not None:
+        sampling_weights = {k: (1.0 if k in active_keys else 0.0) for k in default_weights}
+        # Normalize so active weights sum to ~1
+        total_w = sum(sampling_weights.values())
+        if total_w > 0:
+            sampling_weights = {k: v / total_w for k, v in sampling_weights.items()}
+    else:
+        sampling_weights = default_weights
+
     train_dataset = MultiLODDataset(
         data_dir=args.data_dir,
         split="train",
-        lod_sampling_weights={
-            # No LOD0 — vanilla handles that.
-            # init_to_lod4 included only if dataset supports it.
-            "init_to_lod4": 0.15,
-            "lod4to3": 0.25,
-            "lod3to2": 0.30,
-            "lod2to1": 0.30,
-        },
+        lod_sampling_weights=sampling_weights,
     )
 
     val_dataset = MultiLODDataset(
@@ -662,13 +725,23 @@ def main():
             f"{class_weights_tensor.max():.3f}"
         )
 
-    # Create loss function and optimizer (shared across all models)
+    # Create loss function and optimizer
     loss_fn = MultiLODLoss(
         surface_consistency_weight=args.surface_loss_weight,
         class_weights=class_weights_tensor,
     )
-    all_params = list(itertools.chain.from_iterable(m.parameters() for m in models.values()))
-    optimizer = optim.AdamW(all_params, lr=args.lr, weight_decay=1e-4)
+    # Only optimize parameters of active models (all if --steps not set)
+    if active_keys is not None:
+        trained_params = list(
+            itertools.chain.from_iterable(
+                m.parameters() for k, m in models.items() if k in active_keys
+            )
+        )
+    else:
+        trained_params = list(
+            itertools.chain.from_iterable(m.parameters() for m in models.values())
+        )
+    optimizer = optim.AdamW(trained_params, lr=args.lr, weight_decay=1e-4)
 
     # Learning rate scheduler
     scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs)
@@ -725,7 +798,7 @@ def main():
         epoch_start = time.time()
 
         # Train
-        train_metrics = train_epoch(models, train_loader, loss_fn, optimizer, device)
+        train_metrics = train_epoch(models, train_loader, loss_fn, optimizer, device, active_keys)
 
         # Update learning rate
         scheduler.step()

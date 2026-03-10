@@ -87,9 +87,12 @@ def phase2_train(
     base_channels: int = 32,
     device: str = "auto",
     surface_loss_weight: float = 0.1,
+    steps: list[str] | None = None,
 ) -> Path | None:
     """Phase 2: Train the model on extracted data.
 
+    Args:
+        steps: If set, only train these LOD steps (e.g. ['init_to_lod4', 'lod4to3']).
     Returns the path to the best checkpoint, or None on failure.
     """
     print()
@@ -131,6 +134,8 @@ def phase2_train(
         "--vocab",
         str(VOXY_VOCAB_PATH),
     ]
+    if steps is not None:
+        cmd.extend(["--steps"] + steps)
 
     t0 = time.time()
     result = subprocess.run(cmd, cwd=str(Path(__file__).parent))
@@ -288,6 +293,13 @@ def main() -> None:
     p_train.add_argument("--base-channels", type=int, default=32)
     p_train.add_argument("--device", type=str, default="auto")
     p_train.add_argument("--surface-loss-weight", type=float, default=0.1)
+    p_train.add_argument(
+        "--steps",
+        nargs="*",
+        default=None,
+        metavar="STEP",
+        help="Train specific LOD steps only (e.g. --steps init_to_lod4 lod4to3)",
+    )
 
     # -- export ---
     p_exp = sub.add_parser("export", help="Export ONNX model")
@@ -317,6 +329,13 @@ def main() -> None:
     p_run.add_argument("--base-channels", type=int, default=32)
     p_run.add_argument("--device", type=str, default="auto")
     p_run.add_argument("--surface-loss-weight", type=float, default=0.1)
+    p_run.add_argument(
+        "--steps",
+        nargs="*",
+        default=None,
+        metavar="STEP",
+        help="Train specific LOD steps only (e.g. --steps init_to_lod4 lod4to3)",
+    )
     p_run.add_argument("--min-solid", type=float, default=0.02)
     p_run.add_argument("--max-sections", type=int, default=None)
     p_run.add_argument("--clean", action="store_true")
@@ -352,6 +371,7 @@ def main() -> None:
             base_channels=args.base_channels,
             device=args.device,
             surface_loss_weight=args.surface_loss_weight,
+            steps=args.steps,
         )
 
     elif args.command == "export":
@@ -374,6 +394,7 @@ def main() -> None:
             base_channels=args.base_channels,
             device=args.device,
             surface_loss_weight=args.surface_loss_weight,
+            steps=args.steps,
         )
         if best is None:
             print("Training failed — aborting")

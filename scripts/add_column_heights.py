@@ -139,12 +139,12 @@ def main() -> None:
     # Load noise dumps
     dumps = load_noise_dumps(args.noise_dump_dir)
 
-    # Find all NPZ files
-    pattern = str(args.data_dir / "voxy_lod0_*.npz")
+    # Find all NPZ files (support optional world prefix like w0_voxy_lod0_*.npz)
+    pattern = str(args.data_dir / "*voxy_lod0_*.npz")
     files = glob.glob(pattern)
     if not files:
         # Try recursive
-        pattern = str(args.data_dir / "**" / "voxy_lod0_*.npz")
+        pattern = str(args.data_dir / "**" / "*voxy_lod0_*.npz")
         files = glob.glob(pattern, recursive=True)
 
     if not files:

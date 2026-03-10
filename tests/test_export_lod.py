@@ -72,10 +72,9 @@ class TestInitModelAdapter:
         biome = torch.randint(0, 50, (1, 16, 16))
         yi = torch.tensor([5], dtype=torch.long)
 
-        block_logits, air_mask = adapter(hp, biome, yi)
+        block_logits = adapter(hp, biome, yi)
 
         assert block_logits.shape == (1, 100, 1, 1, 1)
-        assert air_mask.shape == (1, 1, 1, 1, 1)
 
     def test_output_is_finite(self, config):
         model = create_init_model(config)
@@ -86,9 +85,8 @@ class TestInitModelAdapter:
         yi = torch.tensor([0], dtype=torch.long)
 
         with torch.no_grad():
-            bl, am = adapter(hp, biome, yi)
+            bl = adapter(hp, biome, yi)
         assert torch.isfinite(bl).all()
-        assert torch.isfinite(am).all()
 
 
 # ===========================================================================
@@ -114,10 +112,9 @@ class TestRefinementModelAdapter:
         yi = torch.tensor([10], dtype=torch.long)
         parent = torch.randn(1, 1, parent_size, parent_size, parent_size)
 
-        block_logits, air_mask = adapter(hp, biome, yi, parent)
+        block_logits = adapter(hp, biome, yi, parent)
 
         assert block_logits.shape == (1, 100, output_size, output_size, output_size)
-        assert air_mask.shape == (1, 1, output_size, output_size, output_size)
 
 
 # ===========================================================================

@@ -1,323 +1,433 @@
+"""Progressive LOD models — notebook-winner integration.
+
+Winning architectures per transition (verified in shootout notebooks):
+
+- Init→LOD4 : ``TabularResidualMLP``      (1×1×1)
+- LOD4→LOD3 : ``TinyAttentionUpscaler``   (2×2×2)
+- LOD3→LOD2 : ``BaselineConv3D4Cube``     (4×4×4)
+- LOD2→LOD1 : ``TinyUNet8Cube``           (8×8×8)
+
+All models keep a production forward signature::
+
+    forward(height_planes, biome_indices, y_index, [x_parent],
+            tabular=None, biome_center=None, biome_mode=None)
+
+so the ONNX export adapters (``InitModelAdapter``, ``RefinementModelAdapter``)
+continue to work without change.  Derived features (tabular, biome_center,
+biome_mode) are computed *inside* the model when not supplied externally,
+preserving the existing ONNX contract.
 """
-Progressive LOD Models — 4 separate models for LOD4→LOD1 refinement.
 
-Architecture: Each LOD transition gets its own model with fixed tensor shapes.
-LOD0 is NOT generated — vanilla terrain handles full-resolution.
+from __future__ import annotations
 
-Model family:
-  - Init:     Noise → LOD4  (1×1×1 output, tiny MLP)
-  - LOD4→3:   1³ → 2³       (small Conv3D)
-  - LOD3→2:   2³ → 4³       (medium Conv3D)
-  - LOD2→1:   4³ → 8³       (medium-large Conv3D)
-
-Conditioning channels (shared, cheap):
-  - x_height_planes [B,5,16,16]   — surface, ocean_floor, slope_x, slope_z, curvature
-  - x_biome         [B,16,16]     — int64 biome index per column (→ learned embedding)
-  - x_y_index       [B]           — int64 y-slab position 0..23 (→ learned embedding)
-"""
-
-from typing import Dict
+from typing import Dict, Optional
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
+from .feature_utils import TAB_DIM, build_tabular_features_torch
 from .unet3d import SimpleFlexibleConfig
 
 
-class AnchorConditioningFusion3D(nn.Module):
-    """
-    Conditioning fusion for anchor channels, adapted for varying 3D output sizes.
+# ── Base type for all progressive LOD models ───────────────────────────────
 
-    Processes 2D anchor signals (height_planes, biome, y_index) and
-    broadcasts them to the target 3D volume size for each progressive model.
 
-    Architecture:
-      height_planes → Conv2d(5, out//2)  → GroupNorm → ReLU  ──┐
-      biome embed   → Conv2d(E, out//4)  → GroupNorm → ReLU  ──┤
-                                                                ├─ cat → Conv2d → 3D
-      y_index embed → broadcast [B, y_dim, H, W]              ──┘
+class ProgressiveLODModel(nn.Module):
+    """Base class for all refinement LOD models.
+
+    All progressive models must implement a meaningful block_head attribute
+    that can be initialized with class priors (see prior_init.py).
     """
 
-    def __init__(
-        self,
-        height_channels: int = 5,
-        biome_vocab_size: int = 256,
-        biome_embed_dim: int = 32,
-        y_embed_dim: int = 16,
-        y_slabs: int = 24,
-        out_channels: int = 32,
-    ):
+    pass
+
+
+# ── Shared helpers ─────────────────────────────────────────────────────
+
+
+def _safe_biome_center(biome_indices: torch.Tensor) -> torch.Tensor:
+    """Extract center biome from a [B, 16, 16] grid."""
+    return biome_indices[:, 8, 8].long().clamp(0, 255)
+
+
+# ── Conditioning blocks (notebook-faithful) ──────────────────────────────
+
+
+class AnchorCond3D4(nn.Module):
+    """2D anchor → 3D conditioning at 4³ resolution.
+
+    Used by ``BaselineConv3D4Cube`` (LOD3→LOD2 winner).
+
+    Architecture (from lod3_to_lod2 shootout)::
+
+        height_planes → Conv2d(5, base) → GELU → Conv2d → GELU → Pool(4,4)  ──┐
+        biome_center  → Embedding(256, base) → broadcast                      ├─ add → 3D
+        y_index       → Embedding(y_vocab, base) → broadcast                  ──┘
+        biome_idx     → Embedding(256, base) → permute → subsample(::4, ::4)
+        cat([cond3d, biome_plane]) → Conv3d fuse
+    """
+
+    def __init__(self, base: int = 48, biome_vocab: int = 256, y_vocab: int = 64):
         super().__init__()
-
-        self.out_channels = out_channels
-        self.y_slabs = y_slabs
-        self.y_embed_dim = y_embed_dim
-
-        half = max(out_channels // 2, 8)
-        quarter = max(out_channels // 4, 4)
-
-        # Height planes stream
+        self.biome_vocab = biome_vocab
         self.height_conv = nn.Sequential(
-            nn.Conv2d(height_channels, half, 3, padding=1, bias=False),
-            nn.GroupNorm(min(4, half), half),
-            nn.ReLU(inplace=True),
+            nn.Conv2d(5, base, kernel_size=3, padding=1),
+            nn.GELU(),
+            nn.Conv2d(base, base, kernel_size=3, padding=1),
+            nn.GELU(),
+            nn.AdaptiveAvgPool2d((4, 4)),
         )
-
-        # Biome stream
-        self.biome_embedding = nn.Embedding(biome_vocab_size, biome_embed_dim)
-        self.biome_conv = nn.Sequential(
-            nn.Conv2d(biome_embed_dim, quarter, 3, padding=1, bias=False),
-            nn.GroupNorm(min(4, quarter), quarter),
-            nn.ReLU(inplace=True),
-        )
-
-        # Y-slab embedding
-        self.y_embedding = nn.Embedding(y_slabs, y_embed_dim)
-
-        # Fusion (half + quarter + y_dim → out_channels)
-        fusion_in = half + quarter + y_embed_dim
-        norm_groups = min(4, out_channels)
-        self.fusion = nn.Sequential(
-            nn.Conv2d(fusion_in, out_channels, 3, padding=1, bias=False),
-            nn.GroupNorm(norm_groups, out_channels),
-            nn.ReLU(inplace=True),
+        self.biome_emb = nn.Embedding(biome_vocab, base)
+        self.y_emb = nn.Embedding(y_vocab, base)
+        self.fuse = nn.Sequential(
+            nn.Conv3d(base * 2, base, kernel_size=1),
+            nn.GELU(),
+            nn.Conv3d(base, base, kernel_size=3, padding=1),
+            nn.GELU(),
         )
 
     def forward(
         self,
         height_planes: torch.Tensor,  # [B, 5, 16, 16]
-        biome_indices: torch.Tensor,  # [B, 16, 16] int64
-        y_index: torch.Tensor,  # [B] int64
-        output_size: int,  # Target 3D size (1, 2, 4, or 8)
-    ) -> torch.Tensor:  # [B, out_channels, D, D, D]
-        """Fuse anchor channels into 3D conditioning features at target resolution."""
-        B = height_planes.shape[0]
+        biome_indices: torch.Tensor,  # [B, 16, 16]
+        y_index: torch.Tensor,  # [B]
+        biome_center: Optional[torch.Tensor] = None,  # [B]
+    ) -> torch.Tensor:
+        hp = self.height_conv(height_planes.float())  # [B, base, 4, 4]
 
-        # Process 2D features
-        h_feat = self.height_conv(height_planes)  # [B, half, 16, 16]
+        if biome_center is None:
+            biome_center = _safe_biome_center(biome_indices)
+        bc = self.biome_emb(biome_center.long().clamp(0, self.biome_vocab - 1))
+        bc = bc[:, :, None, None]  # [B, base, 1, 1]
 
-        # Biome embedding → Conv2d
-        bx = biome_indices.long().clamp(0, self.biome_embedding.num_embeddings - 1)
-        biome_emb = self.biome_embedding(bx).permute(0, 3, 1, 2)  # [B, embed_dim, 16, 16]
-        b_feat = self.biome_conv(biome_emb)  # [B, quarter, 16, 16]
+        y = self.y_emb(y_index.long().clamp(0, self.y_emb.num_embeddings - 1))
+        y = y[:, :, None, None]  # [B, base, 1, 1]
 
-        # Y-slab embedding → broadcast to spatial dims
-        yi = y_index.long().clamp(0, self.y_slabs - 1)
-        y_emb = self.y_embedding(yi)  # [B, y_embed_dim]
-        y_feat = y_emb.view(B, self.y_embed_dim, 1, 1).expand(-1, -1, 16, 16)
+        cond2d = hp + bc + y  # [B, base, 4, 4]
+        cond3d = cond2d[:, :, None].expand(-1, -1, 4, -1, -1)  # [B, base, 4, 4, 4]
 
-        # Fuse 2D features
-        combined_2d = torch.cat([h_feat, b_feat, y_feat], dim=1)
-        fused_2d = self.fusion(combined_2d)  # [B, out_channels, 16, 16]
+        # Full biome embedding at 16×16, subsampled to 4×4
+        biome_plane = self.biome_emb(
+            biome_indices.long().clamp(0, self.biome_vocab - 1)
+        )  # [B, 16, 16, base]
+        biome_plane = biome_plane.permute(0, 3, 1, 2)  # [B, base, 16, 16]
+        biome_plane = biome_plane[:, :, None].expand(-1, -1, 4, -1, -1)  # [B, base, 4, 16, 16]
+        biome_plane = biome_plane[:, :, :, ::4, ::4]  # [B, base, 4, 4, 4]
 
-        # Resize to output spatial size
-        if output_size < 16:
-            fused_2d = nn.functional.interpolate(
-                fused_2d,
-                size=(output_size, output_size),
-                mode="bilinear",
-                align_corners=False,
-            )  # [B, out_channels, D, D]
+        return self.fuse(torch.cat([cond3d, biome_plane], dim=1))
 
-        # Broadcast 2D → 3D (replicate across depth dimension)
-        fused_3d = fused_2d.unsqueeze(2).expand(
-            -1, -1, output_size, -1, -1
-        )  # [B, out_channels, D, D, D]
 
-        return fused_3d
+class AnchorCond3D8(nn.Module):
+    """2D anchor → 3D conditioning at 8³ resolution.
+
+    Used by ``TinyUNet8Cube`` (LOD2→LOD1 winner).
+    Same pattern as ``AnchorCond3D4`` but pools to 8×8 and subsamples ``::2``.
+    """
+
+    def __init__(self, base: int = 32, biome_vocab: int = 256, y_vocab: int = 64):
+        super().__init__()
+        self.biome_vocab = biome_vocab
+        self.height_conv = nn.Sequential(
+            nn.Conv2d(5, base, 3, padding=1),
+            nn.GELU(),
+            nn.Conv2d(base, base, 3, padding=1),
+            nn.GELU(),
+            nn.AdaptiveAvgPool2d((8, 8)),
+        )
+        self.biome_emb = nn.Embedding(biome_vocab, base)
+        self.y_emb = nn.Embedding(y_vocab, base)
+        self.fuse = nn.Sequential(
+            nn.Conv3d(base * 2, base, 1),
+            nn.GELU(),
+            nn.Conv3d(base, base, 3, padding=1),
+            nn.GELU(),
+        )
+
+    def forward(
+        self,
+        height_planes: torch.Tensor,  # [B, 5, 16, 16]
+        biome_indices: torch.Tensor,  # [B, 16, 16]
+        y_index: torch.Tensor,  # [B]
+        biome_center: Optional[torch.Tensor] = None,  # [B]
+    ) -> torch.Tensor:
+        hp = self.height_conv(height_planes.float())  # [B, base, 8, 8]
+
+        if biome_center is None:
+            biome_center = _safe_biome_center(biome_indices)
+        bc = self.biome_emb(biome_center.long().clamp(0, self.biome_vocab - 1))
+        bc = bc[:, :, None, None]
+
+        y = self.y_emb(y_index.long().clamp(0, self.y_emb.num_embeddings - 1))
+        y = y[:, :, None, None]
+
+        cond2d = hp + bc + y  # [B, base, 8, 8]
+        cond3d = cond2d[:, :, None].expand(-1, -1, 8, -1, -1)  # [B, base, 8, 8, 8]
+
+        biome_plane = self.biome_emb(biome_indices.long().clamp(0, self.biome_vocab - 1))
+        biome_plane = biome_plane.permute(0, 3, 1, 2)  # [B, base, 16, 16]
+        biome_plane = biome_plane[:, :, None].expand(-1, -1, 8, -1, -1)
+        biome_plane = biome_plane[:, :, :, ::2, ::2]  # [B, base, 8, 8, 8]
+
+        return self.fuse(torch.cat([cond3d, biome_plane], dim=1))
+
+
+# ── Model 0: Init → LOD4 (1×1×1) — TabularResidualMLP ────────────────
 
 
 class ProgressiveLODModel0_Initial(nn.Module):
-    """
-    Model 0: Initial terrain generation (Nothing→LOD4: 1×1×1).
-    Generates the very first LOD from conditioning inputs only.
+    """Notebook winner: TabularResidualMLP.
 
-    Tiny MLP since it only predicts 1 voxel.
-    Inputs: height_planes, biome, y_index (all pooled to scalars)
-    Output: [B, N_blocks, 1, 1, 1]
+    Generates 1×1×1 from conditioning inputs only (no parent).
+
+    Input:  29-dim tabular + biome_center embed (12) + y_index embed (8) → 49
+    Hidden: residual MLP with 2 skip-connected blocks (hidden=96)
+    Output: [B, block_vocab_size, 1, 1, 1]
     """
 
     def __init__(self, config: SimpleFlexibleConfig, output_size: int = 1):
         super().__init__()
         self.config = config
-        self.output_size = output_size  # Should be 1 for LOD4
+        self.output_size = output_size
+        hidden = 96
 
-        hidden_dim = 32  # Compact but sufficient
-
-        # Pool 2D inputs to scalars
-        self.height_processor = nn.Linear(5, hidden_dim // 4)  # 5→8
-        self.biome_embedding = nn.Embedding(256, 8)  # mode per column → 8
-        self.y_embedding = nn.Embedding(24, 4)  # slab → 4
-
-        # Total fused: 8+8+4 = 20 → project to hidden_dim
-        self.fuse = nn.Linear(20, hidden_dim)
-
-        # Compact processing network
-        self.processor = nn.Sequential(
+        self.biome_embedding = nn.Embedding(256, 12)
+        self.y_embedding = nn.Embedding(24, 8)
+        self.input_proj = nn.Linear(TAB_DIM + 12 + 8, hidden)
+        self.block1 = nn.Sequential(
             nn.ReLU(inplace=True),
-            nn.Linear(hidden_dim, hidden_dim * 2),
-            nn.ReLU(inplace=True),
-            nn.Dropout(0.1),
-            nn.Linear(hidden_dim * 2, hidden_dim),
+            nn.Linear(hidden, hidden),
             nn.ReLU(inplace=True),
         )
-
-        # Output head — predict single voxel directly (air = class 0)
-        self.block_head = nn.Linear(hidden_dim, config.block_vocab_size)
+        self.block2 = nn.Sequential(
+            nn.Linear(hidden, hidden),
+            nn.ReLU(inplace=True),
+        )
+        self.block_head = nn.Linear(hidden, config.block_vocab_size)
 
     def forward(
         self,
         height_planes: torch.Tensor,  # [B, 5, 16, 16]
         biome_indices: torch.Tensor,  # [B, 16, 16] int64
         y_index: torch.Tensor,  # [B] int64
+        tabular: Optional[torch.Tensor] = None,
+        biome_center: Optional[torch.Tensor] = None,
+        biome_mode: Optional[torch.Tensor] = None,
     ) -> Dict[str, torch.Tensor]:
-        """Predict a single voxel at LOD4 from conditioning inputs."""
         B = height_planes.shape[0]
 
-        # Pool 2D features to scalars
-        h_vec = height_planes.mean(dim=(2, 3))  # [B, 5]
+        # Derive features (or use pre-computed from batch)
+        if tabular is None or biome_center is None:
+            tab, bc, _ = build_tabular_features_torch(height_planes, biome_indices, y_index)
+            tabular = tabular if tabular is not None else tab
+            biome_center = biome_center if biome_center is not None else bc
+        _ = biome_mode  # not used by this model
 
-        h_feat = self.height_processor(h_vec)  # [B, 8]
+        bc_emb = self.biome_embedding(biome_center.long().clamp(0, 255))
+        y_emb = self.y_embedding(y_index.long().clamp(0, 23))
 
-        # Biome: mode of the 16×16 grid → single embedding
-        biome_mode = biome_indices[:, 8, 8].long().clamp(0, 255)  # center column
-        b_feat = self.biome_embedding(biome_mode)  # [B, 8]
-
-        # Y-slab embedding
-        yi = y_index.long().clamp(0, 23)
-        y_feat = self.y_embedding(yi)  # [B, 4]
-
-        # Fuse and process
-        fused = self.fuse(torch.cat([h_feat, b_feat, y_feat], dim=1))  # [B, hidden]
-        z = self.processor(fused)  # [B, hidden]
-
-        # Output head → reshape to 1×1×1 (air = class 0 in block_logits)
+        z = self.input_proj(torch.cat([tabular.float(), bc_emb, y_emb], dim=1))
+        z = z + self.block1(z)
+        z = z + self.block2(z)
         block_logits = self.block_head(z).view(B, self.config.block_vocab_size, 1, 1, 1)
 
         return {"block_type_logits": block_logits}
 
 
-class ProgressiveLODModel(nn.Module):
-    """
-    Progressive refinement model for a single LOD transition.
+# ── Model 1: LOD4 → LOD3 (2×2×2) — TinyAttentionUpscaler ────────────
 
-    Each instance handles exactly ONE transition (e.g., LOD4→3, LOD3→2, LOD2→1).
-    LOD1→LOD0 is NOT needed — vanilla terrain handles LOD0.
 
-    Supported output sizes:
-      - 2×2×2  (LOD4→LOD3)
-      - 4×4×4  (LOD3→LOD2)
-      - 8×8×8  (LOD2→LOD1)
+class TinyAttentionUpscaler(ProgressiveLODModel):
+    """Notebook winner: 8 learnable position queries cross-attend over
+    (parent_token, cond_token).
 
-    Inputs:
-      - x_parent:       [B, 1, P, P, P] parent occupancy (P = output_size // 2)
-      - height_planes:  [B, 5, 16, 16]
-      - biome_indices:  [B, 16, 16] int64
-      - y_index:        [B] int64
+    Uses parent occupancy as a scalar mean, not spatial 3D.
+    DIM=64, N_HEADS=4, single cross-attention + FFN block.
+    Output: [B, block_vocab_size, 2, 2, 2]
     """
 
-    def __init__(self, config: SimpleFlexibleConfig, output_size: int):
+    def __init__(self, config: SimpleFlexibleConfig):
         super().__init__()
-        self.config = config
-        self.output_size = output_size
+        self.output_size = 2
+        self.num_classes = config.block_vocab_size
+        dim = 64
 
-        assert output_size in [
-            2,
-            4,
-            8,
-        ], f"output_size must be 2, 4, or 8 (no LOD0); got {output_size}"
+        self.pos_queries = nn.Parameter(torch.randn(8, dim) * 0.02)
+        self.biome_emb = nn.Embedding(256, 12)
+        self.y_emb = nn.Embedding(24, 8)
 
-        # Conditioning fusion (2D anchors → 3D features)
-        self.conditioning = AnchorConditioningFusion3D(
-            out_channels=config.base_channels,
-            biome_vocab_size=getattr(config, "biome_vocab_size", 256),
+        # Parent occ scalar → token
+        self.parent_tok_proj = nn.Sequential(nn.Linear(1, dim), nn.ReLU(inplace=True))
+        # Conditioning → token
+        self.cond_proj = nn.Sequential(
+            nn.Linear(TAB_DIM + 12 + 8, dim * 2),
+            nn.ReLU(inplace=True),
+            nn.Linear(dim * 2, dim),
         )
-
-        # Parent processing: encode [B, 1, P, P, P] occupancy → features,
-        # then upsample to output_size
-        parent_channels = config.base_channels
-        self.parent_encoder = nn.Sequential(
-            nn.Conv3d(1, parent_channels, 3, padding=1, bias=False),
-            nn.GroupNorm(min(4, parent_channels), parent_channels),
-            nn.ReLU(inplace=True),
-            nn.Conv3d(parent_channels, parent_channels, 3, padding=1, bias=False),
-            nn.GroupNorm(min(4, parent_channels), parent_channels),
-            nn.ReLU(inplace=True),
-        )
-
-        # Combined: conditioning (base_channels) + parent (base_channels)
-        combined_channels = config.base_channels * 2
-
-        # Main processing (scale depth with output_size for capacity scaling)
-        if output_size <= 2:
-            # Small model for coarse LOD
-            self.main_conv = nn.Sequential(
-                self._make_layer(combined_channels, config.base_channels),
-            )
-        elif output_size <= 4:
-            # Medium model
-            self.main_conv = nn.Sequential(
-                self._make_layer(combined_channels, config.base_channels * 2),
-                self._make_layer(config.base_channels * 2, config.base_channels),
-            )
-        else:
-            # Medium-large model for LOD2→1
-            self.main_conv = nn.Sequential(
-                self._make_layer(combined_channels, config.base_channels * 2),
-                self._make_layer(config.base_channels * 2, config.base_channels * 2),
-                self._make_layer(config.base_channels * 2, config.base_channels),
-            )
-
-        # Output head (air = class 0 in block_logits)
-        self.block_head = nn.Conv3d(config.base_channels, config.block_vocab_size, kernel_size=1)
-
-    def _make_layer(self, in_channels: int, out_channels: int) -> nn.Module:
-        """Conv3D block with GroupNorm and ReLU."""
-        return nn.Sequential(
-            nn.Conv3d(in_channels, out_channels, kernel_size=3, padding=1, bias=False),
-            nn.GroupNorm(min(4, out_channels), out_channels),
-            nn.ReLU(inplace=True),
-            nn.Conv3d(out_channels, out_channels, kernel_size=3, padding=1, bias=False),
-            nn.GroupNorm(min(4, out_channels), out_channels),
-            nn.ReLU(inplace=True),
-        )
+        self.attn = nn.MultiheadAttention(embed_dim=dim, num_heads=4, batch_first=True)
+        self.norm = nn.LayerNorm(dim)
+        self.ff = nn.Sequential(nn.Linear(dim, dim * 2), nn.GELU(), nn.Linear(dim * 2, dim))
+        self.norm2 = nn.LayerNorm(dim)
+        self.block_head = nn.Linear(dim, self.num_classes)
 
     def forward(
         self,
-        height_planes: torch.Tensor,  # [B, 5, 16, 16]
-        biome_indices: torch.Tensor,  # [B, 16, 16] int64
-        y_index: torch.Tensor,  # [B] int64
-        x_parent: torch.Tensor,  # [B, 1, P, P, P] parent occupancy
+        height_planes: torch.Tensor,
+        biome_indices: torch.Tensor,
+        y_index: torch.Tensor,
+        x_parent: torch.Tensor,
+        tabular: Optional[torch.Tensor] = None,
+        biome_center: Optional[torch.Tensor] = None,
+        biome_mode: Optional[torch.Tensor] = None,
     ) -> Dict[str, torch.Tensor]:
-        """
-        Forward pass: refine parent voxels into finer output using anchor conditioning.
-        """
-        # Anchor conditioning → 3D features at output resolution
-        cond_features = self.conditioning(
-            height_planes, biome_indices, y_index, self.output_size
-        )  # [B, base_channels, D, D, D]
+        B = x_parent.shape[0]
+        _ = biome_mode  # not used
 
-        # Encode parent and upsample to output resolution
-        parent_features = self.parent_encoder(x_parent)
-        if parent_features.shape[-1] != self.output_size:
-            parent_features = nn.functional.interpolate(
-                parent_features,
-                size=(self.output_size, self.output_size, self.output_size),
-                mode="trilinear",
-                align_corners=False,
-            )
-        # [B, base_channels, D, D, D]
+        # Derive features (or use pre-computed from batch)
+        if tabular is None or biome_center is None:
+            tab, bc, _ = build_tabular_features_torch(height_planes, biome_indices, y_index)
+            tabular = tabular if tabular is not None else tab
+            biome_center = biome_center if biome_center is not None else bc
 
-        # Combine conditioning + parent
-        combined = torch.cat([cond_features, parent_features], dim=1)
+        bc_emb = self.biome_emb(biome_center.long().clamp(0, 255))
+        y_emb = self.y_emb(y_index.long().clamp(0, 23))
 
-        # Main processing
-        features = self.main_conv(combined)
+        # Parent occupancy as a single scalar
+        p_occ = x_parent.float().reshape(B, -1).mean(dim=1, keepdim=True)
+        parent_tok = self.parent_tok_proj(p_occ).unsqueeze(1)  # [B, 1, dim]
+        cond_tok = self.cond_proj(torch.cat([tabular.float(), bc_emb, y_emb], dim=1)).unsqueeze(
+            1
+        )  # [B, 1, dim]
+        context = torch.cat([parent_tok, cond_tok], dim=1)  # [B, 2, dim]
 
-        # Output head (air = class 0 in block_logits)
-        block_logits = self.block_head(features)
+        queries = self.pos_queries.unsqueeze(0).expand(B, -1, -1)  # [B, 8, dim]
+        attn_out, _ = self.attn(queries, context, context)
+        z = self.norm(queries + attn_out)
+        z = self.norm2(z + self.ff(z))  # [B, 8, dim]
 
-        return {"block_type_logits": block_logits}
+        logits = self.block_head(z)  # [B, 8, num_classes]
+        logits = logits.permute(0, 2, 1).reshape(B, self.num_classes, 2, 2, 2)
+        return {"block_type_logits": logits}
+
+
+# ── Model 2: LOD3 → LOD2 (4×4×4) — BaselineConv3D4Cube ──────────────
+
+
+class BaselineConv3D4Cube(ProgressiveLODModel):
+    """Notebook winner: AnchorCond3D4 + parent upsample + Conv3D refinement.
+
+    Uses ``AnchorCond3D4`` for rich 3D conditioning (height + biome spatial
+    + y_index), concatenated with upsampled parent occupancy.
+    Output: [B, block_vocab_size, 4, 4, 4]
+    """
+
+    def __init__(self, config: SimpleFlexibleConfig, base: int = 48):
+        super().__init__()
+        self.config = config
+        self.output_size = 4
+        self.cond = AnchorCond3D4(base=base, biome_vocab=config.biome_vocab_size)
+        self.parent_up = nn.Sequential(
+            nn.Conv3d(1, base, kernel_size=3, padding=1),
+            nn.GELU(),
+        )
+        self.main = nn.Sequential(
+            nn.Conv3d(base * 2, base, kernel_size=3, padding=1),
+            nn.GELU(),
+            nn.Conv3d(base, base, kernel_size=3, padding=1),
+            nn.GELU(),
+        )
+        self.block_head = nn.Conv3d(base, config.block_vocab_size, kernel_size=1)
+
+    def forward(
+        self,
+        height_planes: torch.Tensor,
+        biome_indices: torch.Tensor,
+        y_index: torch.Tensor,
+        x_parent: torch.Tensor,
+        tabular: Optional[torch.Tensor] = None,
+        biome_center: Optional[torch.Tensor] = None,
+        biome_mode: Optional[torch.Tensor] = None,
+    ) -> Dict[str, torch.Tensor]:
+        _ = (tabular, biome_mode)  # not used; conditioning is spatial
+
+        if biome_center is None:
+            biome_center = _safe_biome_center(biome_indices)
+
+        # Parent: interpolate any input size (1³, 2³, 8³) → 4³
+        parent = F.interpolate(
+            x_parent.float(), size=(4, 4, 4), mode="trilinear", align_corners=False
+        )
+        parent = self.parent_up(parent)
+
+        # Anchor conditioning → 3D features at 4³
+        cond = self.cond(height_planes, biome_indices, y_index, biome_center)
+
+        logits = self.block_head(self.main(torch.cat([parent, cond], dim=1)))
+        return {"block_type_logits": logits}
+
+
+# ── Model 3: LOD2 → LOD1 (8×8×8) — TinyUNet8Cube ────────────────────
+
+
+class TinyUNet8Cube(ProgressiveLODModel):
+    """Notebook winner: AnchorCond3D8 + encoder-decoder with skip connection.
+
+    Architecture::
+
+        parent (→ 8³) + cond (8³) → in_conv → x0
+        x0 → down (stride-2) → x1 → mid → x2
+        x2 → up (deconv) → x3
+        cat(x3, x0) → out → logits
+
+    Output: [B, block_vocab_size, 8, 8, 8]
+    """
+
+    def __init__(self, config: SimpleFlexibleConfig, base: int = 32):
+        super().__init__()
+        self.config = config
+        self.output_size = 8
+        self.cond = AnchorCond3D8(base=base, biome_vocab=config.biome_vocab_size)
+        self.in_conv = nn.Sequential(nn.Conv3d(1 + base, base, 3, padding=1), nn.GELU())
+        self.down = nn.Sequential(nn.Conv3d(base, base * 2, 3, stride=2, padding=1), nn.GELU())
+        self.mid = nn.Sequential(nn.Conv3d(base * 2, base * 2, 3, padding=1), nn.GELU())
+        self.up = nn.Sequential(nn.ConvTranspose3d(base * 2, base, 2, 2), nn.GELU())
+        self.refine = nn.Sequential(
+            nn.Conv3d(base * 2, base, 3, padding=1),
+            nn.GELU(),
+        )
+        # Separate block_head for prior initialization
+        self.block_head = nn.Conv3d(base, config.block_vocab_size, 1)
+
+    def forward(
+        self,
+        height_planes: torch.Tensor,
+        biome_indices: torch.Tensor,
+        y_index: torch.Tensor,
+        x_parent: torch.Tensor,
+        tabular: Optional[torch.Tensor] = None,
+        biome_center: Optional[torch.Tensor] = None,
+        biome_mode: Optional[torch.Tensor] = None,
+    ) -> Dict[str, torch.Tensor]:
+        _ = (tabular, biome_mode)  # not used; conditioning is spatial
+
+        if biome_center is None:
+            biome_center = _safe_biome_center(biome_indices)
+
+        # Parent: interpolate any input size → 8³
+        parent = F.interpolate(
+            x_parent.float(), size=(8, 8, 8), mode="trilinear", align_corners=False
+        )
+
+        cond = self.cond(height_planes, biome_indices, y_index, biome_center)
+
+        x0 = self.in_conv(torch.cat([parent, cond], dim=1))
+        x1 = self.down(x0)
+        x2 = self.mid(x1)
+        x3 = self.up(x2)
+        x = self.refine(torch.cat([x3, x0], dim=1))
+        logits = self.block_head(x)
+
+        return {"block_type_logits": logits}
 
 
 # ── Factory functions for the 4-model family ──────────────────────────────
@@ -325,20 +435,20 @@ class ProgressiveLODModel(nn.Module):
 
 
 def create_init_model(config: SimpleFlexibleConfig) -> ProgressiveLODModel0_Initial:
-    """Init: Noise → LOD4 (1×1×1 output, tiny MLP)"""
+    """Init: Noise → LOD4 (1×1×1 output, TabularResidualMLP)"""
     return ProgressiveLODModel0_Initial(config, output_size=1)
 
 
-def create_lod4_to_lod3_model(config: SimpleFlexibleConfig) -> ProgressiveLODModel:
-    """LOD4 → LOD3: outputs 2×2×2 (small capacity)"""
-    return ProgressiveLODModel(config, output_size=2)
+def create_lod4_to_lod3_model(config: SimpleFlexibleConfig) -> nn.Module:
+    """LOD4 → LOD3 winner: TinyAttentionUpscaler (2×2×2 output)."""
+    return TinyAttentionUpscaler(config)
 
 
-def create_lod3_to_lod2_model(config: SimpleFlexibleConfig) -> ProgressiveLODModel:
-    """LOD3 → LOD2: outputs 4×4×4 (medium capacity)"""
-    return ProgressiveLODModel(config, output_size=4)
+def create_lod3_to_lod2_model(config: SimpleFlexibleConfig) -> nn.Module:
+    """LOD3 → LOD2 winner: BaselineConv3D4Cube (4×4×4 output)."""
+    return BaselineConv3D4Cube(config)
 
 
-def create_lod2_to_lod1_model(config: SimpleFlexibleConfig) -> ProgressiveLODModel:
-    """LOD2 → LOD1: outputs 8×8×8 (medium-large capacity)"""
-    return ProgressiveLODModel(config, output_size=8)
+def create_lod2_to_lod1_model(config: SimpleFlexibleConfig) -> nn.Module:
+    """LOD2 → LOD1 winner: TinyUNet8Cube (8×8×8 output)."""
+    return TinyUNet8Cube(config)
