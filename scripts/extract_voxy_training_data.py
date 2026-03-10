@@ -37,7 +37,7 @@ Y_BASE_SECTION = -4
 # Ensure project root is importable
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from scripts.voxy_reader import VoxyReader
+from scripts.voxy_reader import VoxyReader  # noqa: E402
 
 
 # ------------------------------------------------------------------
