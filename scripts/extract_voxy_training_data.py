@@ -121,14 +121,15 @@ def _compute_heightmap(block_ids: npt.NDArray[np.int32]) -> npt.NDArray[np.float
     Returns (16, 16) float32 in (z, x) order.
     """
     occ = block_ids > 0  # (y, z, x) bool
-    height = np.zeros((16, 16), dtype=np.float32)
-    for z in range(16):
-        for x in range(16):
-            col = occ[:, z, x]
-            nz = np.nonzero(col)[0]
-            if len(nz) > 0:
-                height[z, x] = (nz[-1] + 1) / 16.0
-    return height
+    any_occ = occ.any(axis=0)  # (z, x)
+    # Reverse y so argmax finds the first True from the top
+    first_true_from_top = np.argmax(occ[::-1, :, :], axis=0)  # (z, x)
+    top_y = (occ.shape[0] - 1) - first_true_from_top  # (z, x)
+    return np.where(
+        any_occ,
+        (top_y + 1).astype(np.float32) / float(occ.shape[0]),
+        0.0,
+    ).astype(np.float32)
 
 
 def _compute_biome_2d(biome_ids: npt.NDArray[np.int32]) -> npt.NDArray[np.int32]:
@@ -136,13 +137,17 @@ def _compute_biome_2d(biome_ids: npt.NDArray[np.int32]) -> npt.NDArray[np.int32]
 
     Returns (16, 16) int32.
     """
-    result = np.zeros((16, 16), dtype=np.int32)
-    for z in range(16):
-        for x in range(16):
-            col = biome_ids[:, z, x]
-            vals, counts = np.unique(col, return_counts=True)
-            result[z, x] = vals[np.argmax(counts)]
-    return result
+    # Reshape to (y, z*x) so apply_along_axis iterates over each column
+    cols = biome_ids.reshape(biome_ids.shape[0], -1)
+
+    def _col_mode(col: npt.NDArray[np.int32]) -> int:
+        offset = int(col.min())
+        shifted = col - offset if offset < 0 else col
+        counts = np.bincount(shifted)
+        return int(np.argmax(counts)) + offset
+
+    modes_flat = np.apply_along_axis(_col_mode, axis=0, arr=cols)
+    return modes_flat.reshape(biome_ids.shape[1], biome_ids.shape[2]).astype(np.int32)
 
 
 # ------------------------------------------------------------------
@@ -188,55 +193,54 @@ def extract(
         section_count = 0
 
         # helper to transform a sub-block and write NPZ; returns (saved, skipped)
-    def _process_sub(sub: dict[str, npt.NDArray[np.int32]]) -> tuple[int, int]:
-        nonlocal lut, output_dir, prefix, min_solid_fraction
-        blk_voxy = sub["block_ids"]
-        bio_voxy = sub["biome_ids"]
-        # Convert per-world Voxy IDs → canonical vocab IDs
-        max_id = lut.shape[0] - 1
-        blk_canon = lut[np.clip(blk_voxy, 0, max_id)]
+        def _process_sub(sub: dict[str, npt.NDArray[np.int32]]) -> tuple[int, int]:
+            blk_voxy = sub["block_ids"]
+            bio_voxy = sub["biome_ids"]
+            # Convert per-world Voxy IDs → canonical vocab IDs
+            max_id = lut.shape[0] - 1
+            blk_canon = lut[np.clip(blk_voxy, 0, max_id)]
 
-        solid_frac = float(np.mean(blk_canon > 0))
-        if solid_frac < min_solid_fraction:
-            return 0, 1
+            solid_frac = float(np.mean(blk_canon > 0))
+            if solid_frac < min_solid_fraction:
+                return 0, 1
 
-        biome_2d = _compute_biome_2d(bio_voxy)
-        heightmap = _compute_heightmap(blk_canon)
-        y_index = sub["world_y"] - Y_BASE_SECTION
-        wx, wy, wz = sub["world_x"], sub["world_y"], sub["world_z"]
-        fname = "%svoxy_lod0_x%d_y%d_z%d.npz" % (prefix, wx, wy, wz)
-        np.savez_compressed(
-            output_dir / fname,
-            labels16=blk_canon.astype(np.int32),
-            biome_patch=biome_2d.astype(np.int32),
-            heightmap_patch=heightmap.astype(np.float32),
-            y_index=np.int64(y_index),
-        )
-        return 1, 0
+            biome_2d = _compute_biome_2d(bio_voxy)
+            heightmap = _compute_heightmap(blk_canon)
+            y_index = sub["world_y"] - Y_BASE_SECTION
+            wx, wy, wz = sub["world_x"], sub["world_y"], sub["world_z"]
+            fname = "%svoxy_lod0_x%d_y%d_z%d.npz" % (prefix, wx, wy, wz)
+            np.savez_compressed(
+                output_dir / fname,
+                labels16=blk_canon.astype(np.int32),
+                biome_patch=biome_2d.astype(np.int32),
+                heightmap_patch=heightmap.astype(np.float32),
+                y_index=np.int64(y_index),
+            )
+            return 1, 0
 
-    # create a thread pool for processing sub-blocks
-    workers = os.cpu_count() or 4
-    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
-        for section in reader.iter_sections(level=0):
-            if max_sections is not None and section_count >= max_sections:
-                break
-            section_count += 1
+        # create a thread pool for processing sub-blocks
+        workers = os.cpu_count() or 4
+        with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
+            for section in reader.iter_sections(level=0):
+                if max_sections is not None and section_count >= max_sections:
+                    break
+                section_count += 1
 
-            subs = list(reader.section_to_subblocks(section))
-            total_subblocks += len(subs)
+                subs = list(reader.section_to_subblocks(section))
+                total_subblocks += len(subs)
 
-            # submit all subs; use as_completed for progress
-            futures = [executor.submit(_process_sub, s) for s in subs]
-            for fut in concurrent.futures.as_completed(futures):
-                s, sk = fut.result()
-                saved += s
-                skipped_empty += sk
+                # submit all subs; use as_completed for progress
+                futures = [executor.submit(_process_sub, s) for s in subs]
+                for fut in concurrent.futures.as_completed(futures):
+                    s, sk = fut.result()
+                    saved += s
+                    skipped_empty += sk
 
-            if section_count % 500 == 0:
-                print(
-                    "  ... processed %d sections, %d sub-blocks, %d saved"
-                    % (section_count, total_subblocks, saved)
-                )
+                if section_count % 500 == 0:
+                    print(
+                        "  ... processed %d sections, %d sub-blocks, %d saved"
+                        % (section_count, total_subblocks, saved)
+                    )
 
     print()
     print("Extraction complete:")
