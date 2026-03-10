@@ -468,8 +468,22 @@ def main():
             "blocks (granite, dirt, wood…) are trained as aggressively as stone."
         ),
     )
-
+    parser.add_argument(
+        "--num-threads",
+        type=int,
+        default=None,
+        metavar="N",
+        help=(
+            "Limit PyTorch intra-op CPU threads (torch.set_num_threads). "
+            "Useful when sharing a machine. Defaults to PyTorch's auto-detection."
+        ),
+    )
     args = parser.parse_args()
+
+    # Limit CPU threads if requested
+    if args.num_threads is not None:
+        torch.set_num_threads(args.num_threads)
+        print(f"CPU threads limited to: {args.num_threads}")
 
     # Setup device
     if args.device == "auto":
