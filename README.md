@@ -12,7 +12,7 @@ Rather than generating entire terrain blocks from scratch, VoxelTree learns to *
 
 VoxelTree models take:
 - A coarse parent occupancy voxel (`x_parent`: 8×8×8, Mipper-derived)
-- Anchor conditioning signals (`x_height_planes`, `x_router6`, `x_biome`)
+- Anchor conditioning signals (`x_height_planes`, `x_biome`)
 - Vertical position (`x_y_index`) and LOD coarseness token (`x_lod`)
 
 And outputs:
@@ -95,7 +95,7 @@ VoxelTree is **in active development** — contributors welcome, but please read
 - ✅ Voxy-native block vocabulary (1102 canonical entries)
 - ✅ Voxy RocksDB extraction pipeline (multi-world)
 - ✅ Voxy Mipper (100% parity with Voxy's own LOD coarsening)
-- ✅ V2 anchor-conditioned model (height planes + router6 + biome)
+- ✅ V2 anchor-conditioned model (height planes + biome)
 - ✅ Two-phase pipeline orchestrator (`pipeline.py`)
 - ✅ Multi-LOD training with dynamic coarsening
 - ✅ Static ONNX export with Voxy vocab embedding

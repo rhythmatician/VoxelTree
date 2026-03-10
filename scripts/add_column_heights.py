@@ -154,8 +154,8 @@ def main() -> None:
     print(f"Found {len(files)} NPZ files")
 
     # Check how many already have heightmap_surface
-    sample = np.load(files[0])
-    has_surface = "heightmap_surface" in sample
+    with np.load(files[0]) as sample:
+        has_surface = "heightmap_surface" in sample
     if has_surface:
         print("WARNING: Files already contain heightmap_surface — will overwrite")
 

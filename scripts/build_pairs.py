@@ -95,6 +95,20 @@ def build(
         print("  Run 'python data-cli.py extract' first.")
         sys.exit(1)
 
+    # If val_files is empty and val_split > 0, carve off a deterministic fraction
+    if not val_files and val_split > 0.0:
+        import random
+
+        rng = random.Random(42)
+        shuffled = list(train_files)
+        rng.shuffle(shuffled)
+        n_val = int(round(len(shuffled) * val_split))
+        if n_val < 1:
+            n_val = 1
+        val_files = shuffled[:n_val]
+        train_files = shuffled[n_val:]
+        print(f"Auto-split: {len(train_files)} train, {len(val_files)} val (val_split={val_split})")
+
     print(f"Source chunks: train={len(train_files)}, val={len(val_files)}")
     print()
 
