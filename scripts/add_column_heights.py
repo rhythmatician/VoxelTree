@@ -29,16 +29,10 @@ Octree mode:
     L3 → 256×256 blocks footprint → pool 256×256 → 32×32
     L4 → 512×512 blocks footprint → pool 512×512 → 32×32
 
-Usage (legacy)::
-
-    python scripts/add_column_heights.py data/voxy \\
-        --noise-dump-dir LODiffusion/run/noise_dumps
-
-Usage (octree)::
+Usage::
 
     python scripts/add_column_heights.py data/voxy_octree \\
-        --noise-dump-dir tools/fabric-server/runtime/noise_dumps \\
-        --octree
+        --noise-dump-dir tools/fabric-server/runtime/noise_dumps
 """
 
 from __future__ import annotations
@@ -48,12 +42,8 @@ import numpy.typing as npt
 import argparse
 import glob
 import json
-import re
 import sys
 from pathlib import Path
-import concurrent.futures
-import os
-
 import numpy as np
 from tqdm import tqdm
 
@@ -296,129 +286,6 @@ def build_octree_heightmap(
     return compute_height_planes(surface_32, ocean_32)
 
 
-# ---------------------------------------------------------------------------
-# Legacy mode (original 16×16 workflow)
-# ---------------------------------------------------------------------------
-
-
-def run_legacy(args: argparse.Namespace) -> None:
-    """Original column-heights merge for LOD-0 16×16 NPZ files."""
-
-    dumps = load_noise_dumps(args.noise_dump_dir)
-
-    # Find all NPZ files (support optional world prefix like w0_voxy_lod0_*.npz)
-    pattern = str(args.data_dir / "*voxy_lod0_*.npz")
-    files = glob.glob(pattern)
-    if not files:
-        pattern = str(args.data_dir / "**" / "*voxy_lod0_*.npz")
-        files = glob.glob(pattern, recursive=True)
-
-    if not files:
-        print(f"No voxy_lod0_*.npz files found in {args.data_dir}")
-        sys.exit(1)
-
-    print(f"Found {len(files)} NPZ files")
-
-    with np.load(files[0]) as sample:
-        has_surface = "heightmap_surface" in sample
-    if has_surface:
-        print("WARNING: Files already contain heightmap_surface — will overwrite")
-
-    if args.dry_run:
-        print("Dry run — no files will be modified")
-        matched = 0
-        missing = 0
-        for f in files:
-            m = re.search(r"x(-?\d+)_y(-?\d+)_z(-?\d+)", f)
-            if m and (int(m.group(1)), int(m.group(3))) in dumps:
-                matched += 1
-            else:
-                missing += 1
-        print(f"  Would update {matched} files, {missing} have no matching JSON")
-        return
-
-    def _process_file(fpath: str) -> tuple[str, tuple[int, int] | None]:
-        m = re.search(r"x(-?\d+)_y(-?\d+)_z(-?\d+)", fpath)
-        if not m:
-            return ("skipped", None)
-
-        wx = int(m.group(1))
-        wz = int(m.group(3))
-        dump = dumps.get((wx, wz))
-        if dump is None:
-            return ("skipped", (wx, wz))
-
-        surface = parse_heightmap(dump["heightmap_surface"])
-        ocean_floor = parse_heightmap(dump["heightmap_ocean_floor"])
-
-        data = dict(np.load(fpath))
-        data["heightmap_surface"] = surface
-        data["heightmap_ocean_floor"] = ocean_floor
-        if "biome_names" in dump:
-            data["biome_patch"] = parse_biome_names(dump["biome_names"])
-        np.savez_compressed(fpath, **data)
-        return ("updated", None)
-
-    updated = 0
-    skipped = 0
-    missing_chunks: list[tuple[int, int]] = []
-
-    workers = os.cpu_count() or 4
-    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
-        futures = {executor.submit(_process_file, f): f for f in files}
-        for fut in tqdm(
-            concurrent.futures.as_completed(futures), total=len(files), desc="Merging heightmaps"
-        ):
-            status, coord = fut.result()
-            if status == "updated":
-                updated += 1
-            else:
-                skipped += 1
-                if coord is not None:
-                    missing_chunks.append(coord)
-
-    print(f"\nUpdated {updated} NPZ files with vanilla heightmaps + biomes")
-    if skipped:
-        print(f"Skipped {skipped} files (no matching noise dump)")
-    if missing_chunks:
-        unique_missing = sorted(set(missing_chunks))
-        print(f"  Missing chunks: {len(unique_missing)} unique (x,z) positions")
-        if len(unique_missing) <= 10:
-            for cx, cz in unique_missing:
-                print(f"    chunk ({cx}, {cz})")
-        else:
-            for cx, cz in unique_missing[:5]:
-                print(f"    chunk ({cx}, {cz})")
-            print(f"    ... and {len(unique_missing) - 5} more")
-
-    if updated == 0:
-        print("\nERROR: No files were updated — check that noise dump coords match NPZ coords")
-        sys.exit(1)
-
-    sample_file = files[0]
-    d = np.load(sample_file)
-    if "heightmap_surface" in d:
-        hs = d["heightmap_surface"]
-        print(f"\nVerification ({Path(sample_file).name}):")
-        print(f"  heightmap_surface:     shape={hs.shape} min={hs.min():.1f} max={hs.max():.1f}")
-        if "heightmap_ocean_floor" in d:
-            hof = d["heightmap_ocean_floor"]
-            print(
-                f"  heightmap_ocean_floor: shape={hof.shape} min={hof.min():.1f} max={hof.max():.1f}"
-            )
-        if "biome_patch" in d:
-            bp = d["biome_patch"]
-            print(
-                f"  biome_patch:           shape={bp.shape} unique={len(np.unique(bp))} "
-                f"range=[{bp.min()},{bp.max()}]"
-            )
-
-
-# ---------------------------------------------------------------------------
-# Octree mode (32×32 multi-level)
-# ---------------------------------------------------------------------------
-
-
 def run_octree(args: argparse.Namespace) -> None:
     """Merge 5-plane heightmaps into octree-extracted NPZ files at all levels."""
 
@@ -521,6 +388,8 @@ def run_octree(args: argparse.Namespace) -> None:
             d = np.load(sf)
             if "heightmap32" in d:
                 hm = d["heightmap32"]
+                if hm is None:
+                    raise ValueError("heightmap32 is None")
                 print(f"\n  Verification L{level} ({sf.name}):")
                 print(
                     f"    heightmap32: shape={hm.shape} " f"min={hm.min():.3f} max={hm.max():.3f}"
@@ -549,8 +418,7 @@ def main() -> None:
     parser.add_argument(
         "data_dir",
         type=Path,
-        help="Directory containing NPZ files "
-        "(legacy: voxy_lod0_*.npz; octree: level_N/ subdirs).",
+        help="Directory containing NPZ files " "(level_N/ subdirs).",
     )
     parser.add_argument(
         "--noise-dump-dir",
@@ -560,21 +428,14 @@ def main() -> None:
         help="Directory containing /dumpnoise chunk_*.json files.",
     )
     parser.add_argument(
-        "--octree",
-        action="store_true",
-        help="Use octree mode: 32×32 5-plane heightmaps for multi-level data.",
-    )
-    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Just report what would be done; don't modify files.",
     )
     args = parser.parse_args()
 
-    if args.octree:
-        run_octree(args)
-    else:
-        run_legacy(args)
+    run_octree(args)
+    return
 
 
 if __name__ == "__main__":

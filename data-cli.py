@@ -736,7 +736,6 @@ def _step_column_heights_octree(args: argparse.Namespace) -> bool:
         str(data_dir),
         "--noise-dump-dir",
         str(noise_dump_dir),
-        "--octree",
     ]
     result = subprocess.run(cmd, cwd=str(_HERE))
     return result.returncode == 0
