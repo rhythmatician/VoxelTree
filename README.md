@@ -11,15 +11,17 @@ Rather than generating entire terrain blocks from scratch, VoxelTree learns to *
 ## 🧠 What It Does
 
 VoxelTree models take:
-- A coarse parent voxel (e.g., 8×8×8 air/solid mask or block types)
-- Local seed-derived metadata (biome, heightmap, river signal, y-index)
-- A target LOD timestep
+- A coarse parent occupancy voxel (`x_parent`: 8×8×8, Mipper-derived)
+- Anchor conditioning signals (`x_height_planes`, `x_biome`)
+- Vertical position (`x_y_index`) and LOD coarseness token (`x_lod`)
 
 And outputs:
-- A refined terrain mask (16×16×16 air/solid)
-- Detailed block type predictions (logits or classes)
+- Block type predictions (`block_logits`: 1102-class Voxy-native vocabulary over 16×16×16)
+- Air probability mask (`air_mask`: 16×16×16)
 
-This allows terrain to be generated **progressively and locally**, with higher detail closer to the player.
+Training data is extracted directly from **Voxy RocksDB** databases using a canonical
+1102-entry block vocabulary. LOD coarsening uses the **Voxy Mipper algorithm** (opacity-biased
+corner selection), ensuring exact parity with Voxy's own LOD pipeline.
 
 ---
 
@@ -50,21 +52,37 @@ Each feature is implemented in a **micro-commit cycle**:
 
 ## 📁 Key Directories
 
-| Path         | Purpose                          |
-|--------------|----------------------------------|
-| `train/`     | Model, dataset, training loop    |
-| `scripts/`   | Evaluation, ONNX export          |
-| `tests/`     | Unit tests (PyTest)              |
-| `models/`    | Saved checkpoints + ONNX         |
-| `docs/`      | Architecture, project outline    |
+| Path         | Purpose                                        |
+|--------------|------------------------------------------------|
+| `train/`     | Model architecture, dataset loader, losses, metrics |
+| `scripts/`   | Voxy extraction, ONNX export, mipper, benchmarks |
+| `config/`    | Canonical Voxy vocabulary (`voxy_vocab.json`)  |
+| `tests/`     | Unit tests (PyTest)                            |
+| `models/`    | Saved checkpoints + ONNX exports (git-ignored) |
+| `data/`      | Extracted training NPZs (git-ignored)          |
+| `docs/`      | Architecture, acceptance criteria, reflections |
+
+---
+
+## 🧰 Key Scripts
+
+| Script                                    | Purpose                                          |
+|-------------------------------------------|--------------------------------------------------|
+| `pipeline.py`                             | Two-phase orchestrator: extract → train → export → deploy |
+| `train_multi_lod.py`                      | Multi-LOD training CLI with Voxy vocab           |
+| `scripts/extract_voxy_training_data.py`   | Voxy RocksDB → NPZ training patches             |
+| `scripts/voxy_reader.py`                  | RocksDB reader (SaveLoadSystem3 decoder)         |
+| `scripts/mipper.py`                       | Voxy Mipper (canonical LOD coarsening)           |
+| `scripts/export_lod.py`                   | Static ONNX export (opset ≥ 17)                  |
+| `scripts/verify_onnx.py`                  | ONNX export + test vector verification           |
 
 ---
 
 ## 📘 Docs
 
 - [Project Outline](docs/PROJECT-OUTLINE.md)
-- [Training Overview](docs/TRAINING-OVERVIEW.md)
-- [Contributing Guide](docs/CONTRIBUTING.md)
+- [Acceptance Criteria](docs/AC.md)
+- [Voxy Format](docs/VOXY-FORMAT.md)
 - [Copilot Instructions](.github/copilot-instructions.md)
 
 ---
@@ -72,6 +90,17 @@ Each feature is implemented in a **micro-commit cycle**:
 ## 🛠 Status
 
 VoxelTree is **in active development** — contributors welcome, but please read the CI and TDD guidelines first.
+
+### Recent Progress:
+- ✅ Voxy-native block vocabulary (1102 canonical entries)
+- ✅ Voxy RocksDB extraction pipeline (multi-world)
+- ✅ Voxy Mipper (100% parity with Voxy's own LOD coarsening)
+- ✅ V2 anchor-conditioned model (height planes + biome)
+- ✅ Two-phase pipeline orchestrator (`pipeline.py`)
+- ✅ Multi-LOD training with dynamic coarsening
+- ✅ Static ONNX export with Voxy vocab embedding
+- ⏳ Full training run on Voxy-extracted data
+- ⏳ In-game deployment via LODiffusion mod
 
 ---
 

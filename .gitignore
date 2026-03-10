@@ -1,9 +1,49 @@
-*.pyc
 .coverage
 .fabric/
 libraries/
 logs/
+*.log
 tools/fabric-server/runtime/eula.txt
 data/test_world/region/*
 debug_*
 output.txt
+runs/*
+artifacts/
+*.npz
+check_*.py
+*.mca
+eula.txt
+usercache.json
+whitelist.json
+ops.json
+banned-players.json
+banned-ips.json
+level.dat
+server.properties
+session.lock
+mc-wiki-strongholds.txt
+mc-wiki-strongholdgeneration.txt
+training_run.txt
+test_metrics_report.json
+
+# Python cache files
+*.pyc
+tests/__pycache__/*
+
+# Model checkpoints and exports
+multi_lod_test/
+onnx_export/
+models/
+*.pt
+*.onnx
+
+# External repos for reference
+reference-code/
+
+# Noise dumps and generated world data (can be large and regenerated as needed)
+tools/fabric-server/runtime/world/
+tools/fabric-server/runtime/noise_dumps/*.json
+production/
+
+# Experimental notebooks
+notebooks/experimental/*.ipynb
