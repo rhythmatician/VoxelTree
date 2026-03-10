@@ -11,7 +11,7 @@
 
   * `model.onnx` loads in a Java DJL harness and reproduces PyTorch outputs on provided vectors with **max\_abs\_diff ≤ 1e‑4**.
   * **Static shapes**, **opset ≥ 17**, **no dynamic axes**, no control‑flow/custom ops.
-  * Output names **exactly:** `block_logits`, `air_mask`.
+  * Output names **exactly:** `block_logits` (single-head: air = class 0 in unified softmax).
 * **Artifacts shipped:** `model.onnx`, `model_config.json`, `test_vectors.npz` (1–3 realistic samples).
 
 ## 2) Runtime Performance (mid‑range CPU)
@@ -53,10 +53,9 @@ Report **overall** and **frequent‑set** (top ≈50 terrain blocks; air exclude
 
 **Outputs**
 
-* `block_logits` **\[1, 1102, 16,16,16] float32** — Voxy-native vocabulary (1102 block types)
-* `air_mask` **\[1,1,16,16,16] float32** — P(air)
+* `block_logits` **\[1, 1104, 16,16,16] float32** — Voxy-native vocabulary (1104 block types); argmax(dim=1) yields block indices, where class 0 represents air.
 
-> Block vocabulary: 1102 entries from canonical Voxy vocabulary (`config/voxy_vocab.json`), air=0.
+> Block vocabulary: 1102 entries from canonical Voxy vocabulary (`config/voxy_vocab.json`), **air=class 0**.
 
 ## 5) Data Pipeline (truthful Voxy labels)
 
@@ -82,7 +81,7 @@ Report **overall** and **frequent‑set** (top ≈50 terrain blocks; air exclude
 * At runtime, LODiffusion chains: LOD4→LOD3→LOD2→LOD1→LOD0, each step feeding
   the previous prediction as the next parent.
 * **Scheduled sampling**: with p≈0.1→0.3, form parent from the model's own previous prediction (argmax → Mipper) to stabilize rollouts.
-* **Loss**: `CE(block_logits, target_labels) + λ_air * BCEWithLogits(air_mask, target_occ)`; start `λ_air=0.25`.
+* **Loss**: `CE(block_logits, target_labels)` — unified cross-entropy on all 1102 classes (air=class 0).
 
 ## 7) Evaluation
 
@@ -94,8 +93,8 @@ Report **overall** and **frequent‑set** (top ≈50 terrain blocks; air exclude
 
 * Export **static ONNX** (opset ≥17), ordered inputs/outputs:
 
-  * Inputs: `x_parent, x_height_planes, x_router6, x_biome, x_y_index, x_lod`
-  * Outputs: `block_logits, air_mask`
+  * Inputs: `x_parent, x_height_planes, x_router6, x_biome, x_y_index, x_lod` (per-step models; init has no x_parent)
+  * Outputs: `block_logits` (single-head: argmax(axis=1) → block indices, air=class 0)
 * `model_config.json` includes: schemas & dtypes, normalization, `block_mapping` from `config/voxy_vocab.json` (Voxy-native), `block_id_to_name` reverse mapping, MC version, git SHAs, dataset ID.
 * `test_vectors.npz` contains at least one realistic sample (inputs + expected outputs) for harness verification.
 * LODiffusion's `VoxyBlockMapper` reads `block_mapping` from `model_config.json` at runtime.

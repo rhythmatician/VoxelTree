@@ -8,6 +8,8 @@
 
 The `NoiseTap` interface provides a single-call mechanism to capture all vanilla noise-derived anchor signals for a given chunk. This eliminates the need for multiple sampling calls and ensures consistency across all anchor channels.
 
+> **Phase 1 Scope:** This interface is **design-phase documentation**. Phase 1 focuses on height planes and router6 conditioning only. Expensive 3D signals (barrier, aquifer, cavePrior) are deferred to Phase 2. See section §Implementation Notes at end of document.
+
 ## Interface Definition
 
 ```java
@@ -201,4 +203,16 @@ Unit tests should verify:
 - Support for custom noise configurations
 - Per-dimension implementations (Overworld, Nether, End)
 - Sampling at different Y levels for 3D features
+
+## Implementation Notes: Phase 1 Scope
+
+> **Phase 1 (Current):** Height planes (`surface`, `ocean_floor`, `slope_x`, `slope_z`, `curvature`) + Router6 conditioning are implemented and active in the training pipeline.
+>
+> **Phase 2+ Only:** The following 3D features are deferred:
+> - `barrier`: expensive 3D noise, used rarely in vanilla; skipped to reduce runtime cost
+> - `aquifer3`: three-channel aquifer system; only visible where caves break surface; can be approximated post-hoc
+> - `cavePrior`: coarse cave likelihood mask; complex to compute at runtime; reserved for when cave topology is proven critical
+>
+> These features are left in the `VanillaNoiseTap` code above as **documentation of the full design space**. Phase 2 can enable them selectively if needed. For Phase 1, we focus on surface-visible terrain, which needs only height planes and biome signals.
+
 - Integration with structure placement hints
