@@ -44,3 +44,6 @@ reference-code/
 tools/fabric-server/runtime/world/
 tools/fabric-server/runtime/noise_dumps/*.json
 production/
+
+# Experimental notebooks
+notebooks/experimental/*.ipynb
