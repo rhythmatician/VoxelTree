@@ -5,10 +5,27 @@ Data preparation (extract → column-heights → build-pairs, optionally
 preceded by RCON pregen/voxy-import) now lives in **data-cli.py**.
 Use ``python data-cli.py dataprep --from-step <step>`` for data prep.
 
-This file handles stage 2+:
-  Phase 2   train:   *_pairs_v2.npz  →  model weights
-  Phase 3   export:  checkpoint      →  production/model.onnx
-  Phase 4   deploy:  ONNX + config   →  LODiffusion config directory
+This file handles the MODEL TRAINING & DEPLOYMENT pipeline:
+
+  Phase 2: TRAINING
+    └─ Input:  data/voxy/*_pairs_v2.npz (from data-cli.py)
+    └─ Output: models/<dir>/best_model.pt
+    └─ Command: python pipeline.py train --epochs <N>
+
+  Phase 3: EXPORT (ONNX conversion)
+    └─ Input:  checkpoint (best_model.pt)
+    └─ Output: production/model.onnx + model_config.json
+    └─ Command: python pipeline.py export --checkpoint <path>
+
+  Phase 4: DEPLOY
+    └─ Input:  production/model.onnx + model_config.json
+    └─ Output: ../LODiffusion/config/lodiffusion/(model.onnx + config)
+    └─ Command: python pipeline.py deploy
+
+Typical workflow (end-to-end):
+  1. Prepare data:  python data-cli.py dataprep --from-step extract ...
+  2. Train model:   python pipeline.py run --epochs 20 --export --deploy
+     (This chains: train → export → deploy)
 
 The ``run`` meta-command delegates data preparation to *data-cli.py*
 then runs train [+ export + deploy].
@@ -54,6 +71,10 @@ DEFAULT_EXPORT_DIR = Path("production")
 # Data-preparation functions have moved to data-cli.py.
 # Use:  python data-cli.py dataprep --from-step <step>
 # ------------------------------------------------------------------
+
+# ==================================================================
+# PHASE 2: TRAINING — *_pairs_v2.npz → model checkpoint
+# ==================================================================
 
 
 def phase2_train(
@@ -129,6 +150,12 @@ def phase2_train(
     if best.exists():
         print("Best checkpoint: %s" % best)
     return best if best.exists() else None
+
+
+# ==================================================================
+# PHASES 3–4: EXPORT & DEPLOY (always run together)
+# —  checkpoint → ONNX → LODiffusion config
+# ==================================================================
 
 
 def phase3_export(

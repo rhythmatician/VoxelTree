@@ -13,6 +13,32 @@ Canonical pipeline steps (run all, or start from any step):
   5) column-heights  — Merge vanilla heightmaps from dumpnoise JSON into NPZs
   6) build-pairs     — NPZ → LOD training pair caches (*_pairs_v2.npz)
 
+Data Flow & Composition
+-----------------------
+Steps logically group into three phases:
+
+  WORLD & NOISE GENERATION (Steps 1–3):
+    └─ RCON commands: freeze/pregen/dumpnoise
+    └─ Outputs: Voxy RocksDB + noise_dumps/*.json
+    └─ Only needed if regenerating data or switching world seeds
+
+  DATA EXTRACTION (Step 4):
+    └─ Convert: Voxy RocksDB → raw training chunks (*.npz)
+    └─ Input: Voxy database(s) from LODiffusion/run/saves
+    └─ Output: data/voxy/*.npz (raw block grids)
+    └─ Must run when: New world is generated
+
+  TRAINING PREPARATION (Steps 5–6):
+    └─ Steps 5–6 form a pair: ALWAYS run together
+    └─ Step 5: Add vanilla heightmaps to chunks
+    └─ Step 6: Build LOD pairs (input for train.py)
+    └─ Output: data/voxy/*_pairs_v2.npz (ready for training)
+
+Common workflows:
+  • Full pipeline (new world):  from-step pregen  (all steps 1–6)
+  • Existing Voxy DB:           from-step extract (only 4–6)
+  • Cached NPZs:                from-step column-heights (only 5–6, re-pair with new params)
+
 Usage examples
 --------------
   # Full dataprep from pregen through build-pairs:
