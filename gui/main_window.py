@@ -10,7 +10,13 @@ from PySide6.QtWidgets import QMainWindow
 
 from gui.dashboard_table import DashboardTable
 from gui.detail_panel import DetailPanel
-from gui.profile_editor import ProfileEditorDialog, list_profiles, load_profile
+from gui.profile_editor import (
+    ProfileDeleteDialog,
+    ProfileEditorDialog,
+    delete_profile_data,
+    list_profiles,
+    load_profile,
+)
 from gui.run_registry import RunRegistry
 
 _PROFILES_DIR = Path(__file__).resolve().parent.parent / "profiles"
@@ -47,6 +53,7 @@ class MainWindow(QMainWindow):
         self._dashboard = DashboardTable()
         print("[MW.init.6] Connecting dashboard signals...", flush=True)
         self._dashboard.details_clicked.connect(self._on_details_clicked)
+        self._dashboard.delete_profile_requested.connect(self._on_delete_profile)
         self._dashboard.new_profile_requested.connect(self._on_new_profile)
         print("[MW.init.7] Setting central widget...", flush=True)
         self.setCentralWidget(self._dashboard)
@@ -125,6 +132,24 @@ class MainWindow(QMainWindow):
             else:
                 self._profiles[profile_name] = load_profile(profile_name)
             self._dashboard.refresh_profile(profile_name)
+
+    @Slot(str)
+    def _on_delete_profile(self, profile_name: str) -> None:
+        profile_data = self._profiles.get(profile_name, {})
+        dlg = ProfileDeleteDialog(profile_name, profile_data, parent=self)
+        if not dlg.exec():
+            return
+
+        delete_profile_data(dlg.selected_paths())
+
+        # Remove from UI and caches
+        self._dashboard.remove_profile(profile_name)
+        self._profiles.pop(profile_name, None)
+        self._registries.pop(profile_name, None)
+
+        # Hide detail panel if it was showing this profile
+        if self._detail.isVisible():
+            self._detail.hide()
 
     # ------------------------------------------------------------------
     # Called by DetailPanel after a step finishes

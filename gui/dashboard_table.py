@@ -30,6 +30,7 @@ class DashboardTable(QWidget):
     details_clicked: Signal = Signal(str)
     node_clicked: Signal = Signal(str, str)
     new_profile_requested: Signal = Signal()
+    delete_profile_requested: Signal = Signal(str)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -126,6 +127,7 @@ class DashboardTable(QWidget):
             return
         row = ProfileRow(profile_name, registry)
         row.details_clicked.connect(self.details_clicked)
+        row.delete_clicked.connect(self.delete_profile_requested)
         row.node_clicked.connect(self.node_clicked)
         row.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         row.setStyleSheet(

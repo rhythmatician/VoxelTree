@@ -1,9 +1,11 @@
 """profile_editor.py — Dialog to create or edit a run profile YAML."""
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 
 import yaml
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QCheckBox,
     QDialog,
@@ -12,15 +14,19 @@ from PySide6.QtWidgets import (
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
+    QLabel,
     QLineEdit,
     QMessageBox,
+    QPushButton,
     QScrollArea,
     QSpinBox,
     QVBoxLayout,
     QWidget,
 )
 
-_PROFILES_DIR = Path(__file__).resolve().parent.parent / "profiles"
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+_PROFILES_DIR = _PROJECT_ROOT / "profiles"
+_RUNS_DIR = _PROJECT_ROOT / "runs"
 
 # Default profile structure — used when creating a new profile
 _DEFAULT_PROFILE: dict = {
@@ -84,6 +90,138 @@ def list_profiles() -> list[str]:
     """Return sorted list of profile names (stems of *.yaml in profiles/)."""
     _PROFILES_DIR.mkdir(parents=True, exist_ok=True)
     return sorted(p.stem for p in _PROFILES_DIR.glob("*.yaml"))
+
+
+def delete_profile(profile_name: str) -> bool:
+    """Delete a profile YAML file. Returns True if successful, False otherwise."""
+    path = _PROFILES_DIR / f"{profile_name}.yaml"
+    if path.exists():
+        path.unlink()
+        return True
+    return False
+
+
+def delete_profile_data(paths: list[Path]) -> None:
+    """Delete each path — unlinks files, rmtrees directories.  Silently skips missing."""
+    for p in paths:
+        if not p.exists():
+            continue
+        if p.is_dir():
+            shutil.rmtree(p)
+        else:
+            p.unlink()
+
+
+class ProfileDeleteDialog(QDialog):
+    """Confirmation dialog for deleting a profile and its per-profile artifacts.
+
+    Shows checkboxes for each artifact that exists on disk.  The caller
+    can query ``selected_paths()`` after ``exec()`` returns ``Accepted``.
+    """
+
+    def __init__(
+        self,
+        profile_name: str,
+        profile_data: dict,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.setWindowTitle(f"Delete Profile — {profile_name}")
+        self.setMinimumWidth(460)
+        self.setStyleSheet("background: #1e1e1e; color: #cccccc;")
+
+        self._checkboxes: list[tuple[QCheckBox, Path]] = []
+
+        root = QVBoxLayout(self)
+        root.setSpacing(12)
+        root.setContentsMargins(16, 16, 16, 16)
+
+        # ── Title ──
+        title = QLabel(f"Delete <b>{profile_name}</b>")
+        title.setStyleSheet("font-size: 14px; color: #ff9999;")
+        root.addWidget(title)
+
+        # ── Artifact checkboxes ──
+        items_box = QGroupBox("Items to delete")
+        items_box.setStyleSheet(
+            "QGroupBox { border: 1px solid #444; border-radius: 4px; margin-top: 8px;"
+            " padding-top: 8px; color: #aaaaaa; }"
+            "QGroupBox::title { subcontrol-origin: margin; left: 8px; }"
+        )
+        items_layout = QVBoxLayout(items_box)
+        items_layout.setSpacing(6)
+
+        def _add_item(label: str, path: Path, exists_required: bool = True) -> None:
+            if exists_required and not path.exists():
+                return
+            rel = path.relative_to(_PROJECT_ROOT) if path.is_relative_to(_PROJECT_ROOT) else path
+            chk = QCheckBox(f"{label}\n  {rel}")
+            chk.setChecked(True)
+            chk.setStyleSheet("color: #cccccc; font-size: 11px;")
+            items_layout.addWidget(chk)
+            self._checkboxes.append((chk, path))
+
+        # Always-present items
+        _add_item("Profile YAML", _PROFILES_DIR / f"{profile_name}.yaml", exists_required=False)
+        _add_item("Run state", _RUNS_DIR / profile_name, exists_required=False)
+
+        # Per-profile directories derived from the profile YAML
+        train_out = profile_data.get("train", {}).get("output_dir", "")
+        if train_out:
+            _add_item("Trained model", (_PROJECT_ROOT / train_out).resolve())
+
+        export_out = profile_data.get("export", {}).get("output_dir", "")
+        if export_out:
+            _add_item("Exported files", (_PROJECT_ROOT / export_out).resolve())
+
+        root.addWidget(items_box)
+
+        # ── Shared-data info note ──
+        shared_data_dir = profile_data.get("data", {}).get("data_dir", "data/voxy_octree")
+        note = QLabel(
+            f"ℹ  <b>Shared data is never deleted.</b><br>"
+            f"<span style='color:#888888'>{shared_data_dir} (extract/heights/pairs outputs) "
+            f"is used by all profiles and will not be touched.</span>"
+        )
+        note.setWordWrap(True)
+        note.setTextFormat(Qt.TextFormat.RichText)
+        note.setStyleSheet(
+            "background: #252525; border: 1px solid #444; border-radius: 4px;"
+            " padding: 8px; color: #aaaaaa; font-size: 11px;"
+        )
+        root.addWidget(note)
+
+        # ── Buttons ──
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.setFixedWidth(80)
+        cancel_btn.setStyleSheet(
+            "QPushButton { background: #3a3a3a; color: #cccccc; border: 1px solid #555;"
+            " border-radius: 4px; padding: 5px 10px; }"
+            "QPushButton:hover { background: #4a4a4a; }"
+        )
+        cancel_btn.clicked.connect(self.reject)
+        btn_row.addWidget(cancel_btn)
+
+        btn_row.addSpacing(8)
+
+        delete_btn = QPushButton("Delete Selected")
+        delete_btn.setFixedWidth(120)
+        delete_btn.setStyleSheet(
+            "QPushButton { background: #6a2a2a; color: #ffaaaa; border: 1px solid #aa4a4a;"
+            " border-radius: 4px; padding: 5px 10px; font-weight: bold; }"
+            "QPushButton:hover { background: #8a3a3a; }"
+        )
+        delete_btn.clicked.connect(self.accept)
+        btn_row.addWidget(delete_btn)
+
+        root.addLayout(btn_row)
+
+    def selected_paths(self) -> list[Path]:
+        """Return the paths whose checkboxes are checked."""
+        return [path for chk, path in self._checkboxes if chk.isChecked()]
 
 
 class ProfileEditorDialog(QDialog):

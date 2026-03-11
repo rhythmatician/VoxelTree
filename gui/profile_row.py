@@ -21,17 +21,20 @@ _CONNECTOR_H = 2
 
 
 class ProfileRow(QWidget):
-    """Horizontal strip: [ Profile Name ]──( N )══( N )══…══( S )  [ Details ]
+    """Horizontal strip: [ Profile Name ]──( N )══( N )══…══( S )  [ Details ] [ Delete ]
 
     Signals
     -------
     details_clicked(str)
         Emitted when the Details button is pressed.  Carries profile_name.
+    delete_clicked(str)
+        Emitted when the Delete button is pressed.  Carries profile_name.
     node_clicked(str, str)
         Emitted when a node is clicked.  Carries (profile_name, step_id).
     """
 
     details_clicked: Signal = Signal(str)
+    delete_clicked: Signal = Signal(str)
     node_clicked: Signal = Signal(str, str)
 
     def __init__(
@@ -96,6 +99,20 @@ class ProfileRow(QWidget):
         )
         btn.clicked.connect(lambda: self.details_clicked.emit(self.profile_name))
         layout.addWidget(btn)
+
+        layout.addSpacing(4)
+
+        # Delete button
+        del_btn = QPushButton("✕")
+        del_btn.setFixedWidth(30)
+        del_btn.setStyleSheet(
+            "QPushButton { background: #5a3a3a; color: #ff9999; border: 1px solid #8a5a5a;"
+            " border-radius: 4px; padding: 2px 4px; font-weight: bold; }"
+            "QPushButton:hover { background: #7a4a4a; }"
+        )
+        del_btn.setToolTip(f"Delete profile '{self.profile_name}'")
+        del_btn.clicked.connect(lambda: self.delete_clicked.emit(self.profile_name))
+        layout.addWidget(del_btn)
 
     def _on_node_clicked(self, step_id: str) -> None:
         self.node_clicked.emit(self.profile_name, step_id)
