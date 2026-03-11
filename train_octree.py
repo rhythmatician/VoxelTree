@@ -73,6 +73,12 @@ class OctreeLoss(nn.Module):
     by OGN's emphasis on hard-to-classify mixed/occupied nodes).  When 0,
     falls back to plain BCE.
 
+    RocNet insight: ``occ_pos_weight`` applies asymmetric weighting to
+    penalize false negatives (missed occupied octants) more than false
+    positives.  In recursive octrees, a false negative erases an entire
+    subtree, so FN cost >> FP cost.  ``occ_pos_weight > 1.0`` biases
+    toward recall.
+
     Args:
         occ_weight: Weight for the occupancy loss term.
         class_weights: Optional per-class weight tensor for CE loss,
@@ -81,6 +87,9 @@ class OctreeLoss(nn.Module):
             plain BCE, >0 down-weights easy examples.  OGN-inspired.
         focal_alpha: Focal-loss alpha for the positive (occupied) class.
             Higher values up-weight the occupied minority class.
+        occ_pos_weight: Positive class weight for BCE occupancy loss.
+            Values > 1.0 penalize false negatives (missed subtrees) more
+            heavily.  RocNet-inspired.  Ignored when focal_gamma > 0.
     """
 
     def __init__(
@@ -90,12 +99,14 @@ class OctreeLoss(nn.Module):
         focal_gamma: float = 0.0,
         focal_alpha: float = 0.75,
         level_occ_weights: Optional[Dict[int, float]] = None,
+        occ_pos_weight: float = 1.0,
     ) -> None:
         super().__init__()
         self.occ_weight = occ_weight
         self.focal_gamma = focal_gamma
         self.focal_alpha = focal_alpha
         self.level_occ_weights = level_occ_weights  # e.g. {4: 2.0, 3: 1.5}
+        self.occ_pos_weight = occ_pos_weight
         self.register_buffer("class_weights", class_weights)
 
     def forward(
@@ -153,7 +164,16 @@ class OctreeLoss(nn.Module):
                     reduction="mean",
                 )
             else:
-                occ_loss = nn.functional.binary_cross_entropy_with_logits(occ_logits, occ_targets)
+                # Plain BCE with optional pos_weight for asymmetric FN penalty.
+                # RocNet: false negatives erase subtrees so FN >> FP cost.
+                pos_weight = (
+                    torch.tensor(self.occ_pos_weight, device=device)
+                    if self.occ_pos_weight != 1.0
+                    else None
+                )
+                occ_loss = nn.functional.binary_cross_entropy_with_logits(
+                    occ_logits, occ_targets, pos_weight=pos_weight
+                )
 
         # Resolve effective occ weight (override > per-level > global)
         if occ_weight_override is not None:
@@ -239,9 +259,24 @@ def compute_octree_metrics(
         recall = tp / (tp + fn) if (tp + fn) > 0 else 1.0
         f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0.0
 
+        # RocNet insight: false-negative rate is the critical metric for
+        # recursive octrees.  A false negative erases an entire subtree,
+        # so even 1% FNR can compound across levels to lose significant
+        # geometry.  Track it separately for visibility.
+        fnr = fn / (tp + fn) if (tp + fn) > 0 else 0.0
+
+        # Also compute recall at the runtime threshold (default 0.3)
+        # to match what actually happens at inference
+        occ_pred_runtime = (occ_logits > -0.8473).float()  # sigmoid(x)>0.3 ⟺ x>ln(0.3/0.7)≈-0.8473
+        tp_rt = (occ_pred_runtime * occ_targets).sum().item()
+        fn_rt = ((1 - occ_pred_runtime) * occ_targets).sum().item()
+        recall_rt = tp_rt / (tp_rt + fn_rt) if (tp_rt + fn_rt) > 0 else 1.0
+
         metrics["occ_precision"] = precision
         metrics["occ_recall"] = recall
         metrics["occ_f1"] = f1
+        metrics["occ_fnr"] = fnr
+        metrics["occ_recall_rt"] = recall_rt
 
     return metrics
 
@@ -384,16 +419,45 @@ def train_octree_epoch(
 
         targets = _prepare_targets(batch, device)
 
-        # Scheduled sampling: zero out parent context with probability p
-        # to train robustness to imperfect parent predictions (OGN PROP_PRED)
-        if (
-            scheduled_sampling_p > 0.0
-            and model_type in ("refine", "leaf")
-            and random.random() < scheduled_sampling_p
-        ):
+        # Scheduled sampling: simulate imperfect parent predictions to
+        # train robustness for recursive autoregressive rollout.
+        #
+        # RocNet insight: the parent→child handoff is the primary failure
+        # surface in recursive octree systems.  Simply zeroing the parent
+        # doesn't match the actual inference distribution (where the model
+        # sees its own argmax predictions, not zeros).  We instead corrupt
+        # the ground-truth parent with realistic noise:
+        #   - With prob p/2: random block IDs in occupied voxels (simulates
+        #     wrong block type predictions)
+        #   - With prob p/2: zero out parent entirely (simulates absent
+        #     parent context / worst-case mismatch)
+        if scheduled_sampling_p > 0.0 and model_type in ("refine", "leaf"):
             parent = batch.get("parent_labels32")
-            if isinstance(parent, torch.Tensor):
-                batch["parent_labels32"] = torch.zeros_like(parent)
+            if isinstance(parent, torch.Tensor) and random.random() < scheduled_sampling_p:
+                if random.random() < 0.5:
+                    # Corrupt: replace non-air voxels with random block IDs
+                    # to simulate argmax errors from the parent model
+                    corrupted = parent.clone()
+                    non_air = corrupted > 0
+                    num_non_air = int(non_air.sum().item())
+                    if num_non_air > 0:
+                        # Replace ~30% of non-air voxels with random IDs
+                        noise_mask = torch.rand_like(corrupted.float()) < 0.3
+                        replace_mask = non_air & noise_mask
+                        num_replace = int(replace_mask.sum().item())
+                        if num_replace > 0:
+                            random_ids = torch.randint(
+                                1,
+                                1104,
+                                (num_replace,),
+                                dtype=corrupted.dtype,
+                                device=corrupted.device,
+                            )
+                            corrupted[replace_mask] = random_ids
+                    batch["parent_labels32"] = corrupted
+                else:
+                    # Zero out entirely (worst-case mismatch)
+                    batch["parent_labels32"] = torch.zeros_like(parent)
 
         optimizer.zero_grad()
         predictions = _forward_batch(models, batch, device)
@@ -641,6 +705,17 @@ def main() -> None:
         help=(
             "Number of epochs to linearly ramp occupancy weight from 0 "
             "to --occ-weight (default: 0, no warmup)."
+        ),
+    )
+    parser.add_argument(
+        "--occ-pos-weight",
+        type=float,
+        default=1.0,
+        help=(
+            "Positive class weight for occupancy BCE loss (default: 1.0). "
+            "Values > 1.0 penalize false negatives (missed subtrees) more "
+            "heavily.  RocNet-inspired: in recursive octrees, FN cost >> FP cost. "
+            "Recommended: 2.0-3.0.  Ignored when --focal-gamma > 0."
         ),
     )
     parser.add_argument(
@@ -928,6 +1003,7 @@ def main() -> None:
         focal_gamma=args.focal_gamma,
         focal_alpha=args.focal_alpha,
         level_occ_weights=level_occ_weights,
+        occ_pos_weight=args.occ_pos_weight,
     ).to(device)
 
     # Stash warmup configuration on the loss_fn for use in the training loop
@@ -1030,7 +1106,12 @@ def main() -> None:
             f"Block: {train_metrics.get('block_accuracy', 0):.3f})"
         )
         if "occ_f1" in train_metrics:
-            print(f"  Train — Occ F1: {train_metrics['occ_f1']:.3f}")
+            print(
+                f"  Train — Occ F1: {train_metrics['occ_f1']:.3f}"
+                f"  Recall: {train_metrics.get('occ_recall', 0):.3f}"
+                f"  FNR: {train_metrics.get('occ_fnr', 0):.3f}"
+                f"  Recall@0.3: {train_metrics.get('occ_recall_rt', 0):.3f}"
+            )
 
         # Per-type breakdown
         type_counts = train_metrics.get("type_counts", {})
@@ -1054,6 +1135,13 @@ def main() -> None:
                 f"(Air: {val_metrics.get('air_accuracy', 0):.3f}, "
                 f"Block: {val_metrics.get('block_accuracy', 0):.3f})"
             )
+            if "occ_f1" in val_metrics:
+                print(
+                    f"  Val   — Occ F1: {val_metrics['occ_f1']:.3f}"
+                    f"  Recall: {val_metrics.get('occ_recall', 0):.3f}"
+                    f"  FNR: {val_metrics.get('occ_fnr', 0):.3f}"
+                    f"  Recall@0.3: {val_metrics.get('occ_recall_rt', 0):.3f}"
+                )
 
             # Per-type/level breakdown
             for prefix in ("init", "refine", "leaf", "L0", "L1", "L2", "L3", "L4"):

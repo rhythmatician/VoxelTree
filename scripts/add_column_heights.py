@@ -67,6 +67,7 @@ def load_noise_dumps(noise_dump_dir: Path) -> dict[tuple[int, int], dict[str, An
     Returns:
         dict mapping (chunk_x, chunk_z) → parsed JSON dict
     """
+    print(f"Loading noise dumps from {noise_dump_dir}...")
     pattern = str(noise_dump_dir / "chunk_*.json")
     files = glob.glob(pattern)
     if not files:
@@ -74,7 +75,7 @@ def load_noise_dumps(noise_dump_dir: Path) -> dict[tuple[int, int], dict[str, An
         sys.exit(1)
 
     dumps: dict[tuple[int, int], dict[str, Any]] = {}
-    for fpath in files:
+    for fpath in tqdm(files, desc="Loading noise dumps", unit="file", dynamic_ncols=True):
         with open(fpath) as f:
             data = json.load(f)
         cx = data["chunk_x"]
@@ -298,6 +299,10 @@ def run_octree(args: argparse.Namespace) -> None:
     total_skipped = 0
     total_missing = 0
 
+    print(f"\n{'='*60}")
+    print("  VoxelTree — Add Column Heights to NPZs")
+    print(f"{'='*60}\n")
+
     for level in range(max_level + 1):
         level_dir = data_dir / f"level_{level}"
         if not level_dir.is_dir():
@@ -412,6 +417,10 @@ def run_octree(args: argparse.Namespace) -> None:
 
 
 def main() -> None:
+    print("\n" + "=" * 60)
+    print("  VoxelTree — Add Column Heights to NPZs")
+    print("=" * 60 + "\n")
+
     parser = argparse.ArgumentParser(
         description="Merge vanilla heightmaps from /dumpnoise JSON into training NPZ files.",
     )
