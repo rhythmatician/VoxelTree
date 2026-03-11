@@ -55,6 +55,7 @@ from train.octree_models import (  # noqa: E402
     create_leaf_model,
     create_refine_model,
 )
+from train.prior_init import init_models_from_train_priors  # noqa: E402
 
 # Default paths
 DEFAULT_VOCAB_PATH = Path("config/voxy_vocab.json")
@@ -785,6 +786,14 @@ def main() -> None:
             "Applies median-frequency balancing to block-type CE loss."
         ),
     )
+    parser.add_argument(
+        "--init-block-bias",
+        action="store_true",
+        help=(
+            "Initialize init/refine/leaf block_head biases from training-split "
+            "log-frequency block priors before training. Ignored when --resume is used."
+        ),
+    )
     # ── Step 8: OGN-inspired model options ───────────────────────────
     parser.add_argument(
         "--bottleneck-extra-depth",
@@ -908,6 +917,19 @@ def main() -> None:
     for name, m in models.items():
         n = sum(p.numel() for p in m.parameters())
         print(f"  {name}: {n:,} params")
+
+    if args.init_block_bias:
+        if args.resume is not None:
+            print("\nSkipping block-head bias init because --resume will load checkpoint weights.")
+        else:
+            print("\nInitializing block_head biases from training-split block priors...")
+            init_models_from_train_priors(
+                models,
+                data_dir,
+                block_vocab_size,
+                split="train",
+                verbose=True,
+            )
 
     # Print Step 8 feature status
     step8_active = []
