@@ -1285,3 +1285,314 @@ class TestParentEmbedDimCLI:
             assert (
                 actual_in == expected_in
             ), f"dim={dim}: expected {expected_in} input channels, got {actual_in}"
+
+
+# ===========================================================================
+# Step 8: OGN-inspired targeted model improvements
+# ===========================================================================
+
+
+class TestBottleneckExtraDepth:
+    """Tests for the bottleneck_extra_depth config option."""
+
+    def test_default_has_no_extra(self) -> None:
+        """Default config should have no extra bottleneck blocks."""
+        unet = UNet3D32(in_channels=5, channels=(8, 16, 32))
+        assert unet.bottleneck_extra is None
+
+    def test_extra_depth_adds_blocks(self) -> None:
+        """Setting extra depth > 0 should add DoubleConv3d blocks."""
+        unet = UNet3D32(in_channels=5, channels=(8, 16, 32), bottleneck_extra_depth=2)
+        assert unet.bottleneck_extra is not None
+        assert len(unet.bottleneck_extra) == 2
+
+    def test_extra_depth_same_output_shape(self) -> None:
+        """Extra bottleneck blocks should not change output shapes."""
+        x = torch.randn(2, 5, 32, 32, 32)
+        unet_0 = UNet3D32(in_channels=5, channels=(8, 16, 32), bottleneck_extra_depth=0)
+        unet_2 = UNet3D32(in_channels=5, channels=(8, 16, 32), bottleneck_extra_depth=2)
+
+        f0, b0 = unet_0(x)
+        f2, b2 = unet_2(x)
+        assert f0.shape == f2.shape == (2, 8, 32, 32, 32)
+        assert b0.shape == b2.shape == (2, 32, 8, 8, 8)
+
+    def test_extra_depth_increases_params(self) -> None:
+        """More bottleneck depth should mean more parameters."""
+        unet_0 = UNet3D32(in_channels=5, channels=(8, 16, 32), bottleneck_extra_depth=0)
+        unet_1 = UNet3D32(in_channels=5, channels=(8, 16, 32), bottleneck_extra_depth=1)
+        n0 = sum(p.numel() for p in unet_0.parameters())
+        n1 = sum(p.numel() for p in unet_1.parameters())
+        assert n1 > n0
+
+    def test_gradient_flows_through_extra(self) -> None:
+        """Gradients should flow through extra bottleneck blocks."""
+        unet = UNet3D32(in_channels=5, channels=(8, 16, 32), bottleneck_extra_depth=1)
+        x = torch.randn(1, 5, 32, 32, 32)
+        f, b = unet(x)
+        (f.sum() + b.sum()).backward()
+        # Check that extra block got gradients
+        for p in unet.bottleneck_extra.parameters():
+            assert p.grad is not None, "Extra bottleneck params should receive gradients"
+
+    def test_encode_decode_matches_forward(self) -> None:
+        """encode+decode should produce same result as forward."""
+        unet = UNet3D32(in_channels=5, channels=(8, 16, 32), bottleneck_extra_depth=1)
+        unet.eval()
+        x = torch.randn(1, 5, 32, 32, 32)
+
+        with torch.no_grad():
+            f_fwd, b_fwd = unet(x)
+            e1, e2, bn = unet.encode(x)
+            f_split = unet.decode(e1, e2, bn)
+
+        assert torch.allclose(f_fwd, f_split, atol=1e-6)
+        assert torch.allclose(b_fwd, bn, atol=1e-6)
+
+    def test_init_model_with_extra_depth(self, tiny_config: OctreeConfig) -> None:
+        """Init model should work with bottleneck_extra_depth."""
+        tiny_config.bottleneck_extra_depth = 1
+        model = create_init_model(tiny_config)
+        out = model(
+            heightmap=torch.randn(1, 5, 32, 32),
+            biome=torch.randint(0, 16, (1, 32, 32)),
+            y_position=torch.tensor([0]),
+        )
+        assert "block_type_logits" in out
+        assert "occ_logits" in out
+        assert out["block_type_logits"].shape == (1, 32, 32, 32, 32)
+
+    def test_refine_model_with_extra_depth(self, tiny_config: OctreeConfig) -> None:
+        """Refine model should work with bottleneck_extra_depth."""
+        tiny_config.bottleneck_extra_depth = 2
+        model = create_refine_model(tiny_config)
+        out = model(
+            heightmap=torch.randn(1, 5, 32, 32),
+            biome=torch.randint(0, 16, (1, 32, 32)),
+            y_position=torch.tensor([0]),
+            level=torch.tensor([2]),
+            parent_blocks=torch.randint(0, 32, (1, 32, 32, 32)),
+        )
+        assert out["block_type_logits"].shape == (1, 32, 32, 32, 32)
+        assert out["occ_logits"].shape == (1, 8)
+
+
+class TestParentRefineConv:
+    """Tests for the parent_refine_conv config option."""
+
+    def test_default_no_refine_conv(self, tiny_config: OctreeConfig) -> None:
+        """Default config should not have parent refine conv."""
+        assert not tiny_config.parent_refine_conv
+        model = create_refine_model(tiny_config)
+        assert model.parent_refine_conv_layer is None
+
+    def test_refine_conv_adds_layer(self, tiny_config: OctreeConfig) -> None:
+        """Setting parent_refine_conv=True should add a Conv3dBlock."""
+        tiny_config.parent_refine_conv = True
+        model = create_refine_model(tiny_config)
+        assert model.parent_refine_conv_layer is not None
+        # Should be a Conv3dBlock with parent_embed_dim in/out
+        assert model.parent_refine_conv_layer.conv.in_channels == tiny_config.parent_embed_dim
+        assert model.parent_refine_conv_layer.conv.out_channels == tiny_config.parent_embed_dim
+
+    def test_refine_conv_forward(self, tiny_config: OctreeConfig) -> None:
+        """Model should produce valid outputs with parent_refine_conv=True."""
+        tiny_config.parent_refine_conv = True
+        model = create_refine_model(tiny_config)
+        out = model(
+            heightmap=torch.randn(2, 5, 32, 32),
+            biome=torch.randint(0, 16, (2, 32, 32)),
+            y_position=torch.tensor([0, 1]),
+            level=torch.tensor([2, 3]),
+            parent_blocks=torch.randint(0, 32, (2, 32, 32, 32)),
+        )
+        assert out["block_type_logits"].shape == (2, 32, 32, 32, 32)
+        assert out["occ_logits"].shape == (2, 8)
+
+    def test_refine_conv_gradient(self, tiny_config: OctreeConfig) -> None:
+        """Gradients should flow through the parent refine conv."""
+        tiny_config.parent_refine_conv = True
+        model = create_refine_model(tiny_config)
+        out = model(
+            heightmap=torch.randn(1, 5, 32, 32),
+            biome=torch.randint(0, 16, (1, 32, 32)),
+            y_position=torch.tensor([0]),
+            level=torch.tensor([2]),
+            parent_blocks=torch.randint(0, 32, (1, 32, 32, 32)),
+        )
+        out["block_type_logits"].sum().backward()
+        for p in model.parent_refine_conv_layer.parameters():
+            assert p.grad is not None
+
+    def test_leaf_model_refine_conv(self, tiny_config: OctreeConfig) -> None:
+        """Leaf model should also support parent_refine_conv."""
+        tiny_config.parent_refine_conv = True
+        model = create_leaf_model(tiny_config)
+        assert model.parent_refine_conv_layer is not None
+        out = model(
+            heightmap=torch.randn(1, 5, 32, 32),
+            biome=torch.randint(0, 16, (1, 32, 32)),
+            y_position=torch.tensor([0]),
+            parent_blocks=torch.randint(0, 32, (1, 32, 32, 32)),
+        )
+        assert "block_type_logits" in out
+
+    def test_refine_conv_disabled_mode_no_layer(self, tiny_config: OctreeConfig) -> None:
+        """parent_refine_conv with disabled parent mode should not add layer."""
+        tiny_config.parent_refine_conv = True
+        tiny_config.parent_context_mode = "disabled"
+        model = create_refine_model(tiny_config)
+        assert model.parent_refine_conv_layer is None
+
+
+class TestOccGateModule:
+    """Tests for the OccGateModule occupancy-gated bottleneck modulation."""
+
+    def test_output_shapes(self) -> None:
+        """OccGateModule should return (gated_bottleneck, occ_logits)."""
+        gate = OccGateModule(in_channels=32)
+        bn = torch.randn(2, 32, 8, 8, 8)
+        gated, occ = gate(bn)
+        assert gated.shape == (2, 32, 8, 8, 8)
+        assert occ.shape == (2, 8)
+
+    def test_occ_logits_match_standalone_head(self) -> None:
+        """OccGateModule.occ_head should produce same logits as standalone."""
+        gate = OccGateModule(in_channels=16)
+        gate.eval()
+        bn = torch.randn(1, 16, 8, 8, 8)
+        with torch.no_grad():
+            _, occ_from_gate = gate(bn)
+            occ_standalone = gate.occ_head(bn)
+        assert torch.allclose(occ_from_gate, occ_standalone)
+
+    def test_gating_attenuates_empty_octants(self) -> None:
+        """Octants predicted as empty should have attenuated features."""
+        gate = OccGateModule(in_channels=16)
+        gate.eval()
+
+        # Force occ_head to predict specific pattern by using extreme values
+        bn = torch.ones(1, 16, 8, 8, 8)
+        with torch.no_grad():
+            gated, occ = gate(bn)
+            # Sigmoid < 0.5 means octant predicted empty → features attenuated
+            for i in range(8):
+                y_idx = (i >> 2) & 1
+                z_idx = (i >> 1) & 1
+                x_idx = i & 1
+                octant_gate = torch.sigmoid(occ[:, i]).item()
+                octant_features = gated[:, :, y_idx * 4:(y_idx + 1) * 4,
+                                        z_idx * 4:(z_idx + 1) * 4,
+                                        x_idx * 4:(x_idx + 1) * 4]
+                orig_features = bn[:, :, y_idx * 4:(y_idx + 1) * 4,
+                                   z_idx * 4:(z_idx + 1) * 4,
+                                   x_idx * 4:(x_idx + 1) * 4]
+                # Gated features should be original * gate value
+                expected = orig_features * octant_gate
+                assert torch.allclose(octant_features, expected, atol=1e-5)
+
+    def test_gradient_flows(self) -> None:
+        """Gradients should flow through both the gate and bottleneck."""
+        gate = OccGateModule(in_channels=16)
+        bn = torch.randn(1, 16, 8, 8, 8, requires_grad=True)
+        gated, occ = gate(bn)
+        (gated.sum() + occ.sum()).backward()
+        assert bn.grad is not None
+
+    def test_init_model_with_occ_gate(self, tiny_config: OctreeConfig) -> None:
+        """Init model should work with use_occ_gate=True."""
+        tiny_config.use_occ_gate = True
+        model = create_init_model(tiny_config)
+        assert hasattr(model, "occ_gate")
+        out = model(
+            heightmap=torch.randn(1, 5, 32, 32),
+            biome=torch.randint(0, 16, (1, 32, 32)),
+            y_position=torch.tensor([0]),
+        )
+        assert out["block_type_logits"].shape == (1, 32, 32, 32, 32)
+        assert out["occ_logits"].shape == (1, 8)
+
+    def test_refine_model_with_occ_gate(self, tiny_config: OctreeConfig) -> None:
+        """Refine model should work with use_occ_gate=True."""
+        tiny_config.use_occ_gate = True
+        model = create_refine_model(tiny_config)
+        assert hasattr(model, "occ_gate")
+        out = model(
+            heightmap=torch.randn(1, 5, 32, 32),
+            biome=torch.randint(0, 16, (1, 32, 32)),
+            y_position=torch.tensor([0]),
+            level=torch.tensor([2]),
+            parent_blocks=torch.randint(0, 32, (1, 32, 32, 32)),
+        )
+        assert out["block_type_logits"].shape == (1, 32, 32, 32, 32)
+        assert out["occ_logits"].shape == (1, 8)
+
+    def test_occ_gate_backward(self, tiny_config: OctreeConfig) -> None:
+        """Full model backward should work with occ_gate enabled."""
+        tiny_config.use_occ_gate = True
+        model = create_init_model(tiny_config)
+        out = model(
+            heightmap=torch.randn(1, 5, 32, 32),
+            biome=torch.randint(0, 16, (1, 32, 32)),
+            y_position=torch.tensor([0]),
+        )
+        loss = out["block_type_logits"].sum() + out["occ_logits"].sum()
+        loss.backward()
+        # occ_gate params should have gradients
+        for p in model.occ_gate.parameters():
+            assert p.grad is not None
+
+
+class TestStep8Combined:
+    """Tests for combinations of Step 8 features."""
+
+    def test_all_features_together(self, tiny_config: OctreeConfig) -> None:
+        """All Step 8 features enabled simultaneously should work."""
+        tiny_config.bottleneck_extra_depth = 1
+        tiny_config.parent_refine_conv = True
+        tiny_config.use_occ_gate = True
+        model = create_refine_model(tiny_config)
+        out = model(
+            heightmap=torch.randn(1, 5, 32, 32),
+            biome=torch.randint(0, 16, (1, 32, 32)),
+            y_position=torch.tensor([0]),
+            level=torch.tensor([2]),
+            parent_blocks=torch.randint(0, 32, (1, 32, 32, 32)),
+        )
+        assert out["block_type_logits"].shape == (1, 32, 32, 32, 32)
+        assert out["occ_logits"].shape == (1, 8)
+        # Backward should work
+        (out["block_type_logits"].sum() + out["occ_logits"].sum()).backward()
+
+    def test_defaults_unchanged(self) -> None:
+        """Default OctreeConfig should have all Step 8 features off."""
+        cfg = OctreeConfig()
+        assert cfg.bottleneck_extra_depth == 0
+        assert cfg.parent_refine_conv is False
+        assert cfg.use_occ_gate is False
+
+    def test_param_count_increases(self, tiny_config: OctreeConfig) -> None:
+        """Enabling Step 8 features should increase parameter count."""
+        base = create_refine_model(tiny_config)
+        n_base = sum(p.numel() for p in base.parameters())
+
+        tiny_config.bottleneck_extra_depth = 1
+        tiny_config.parent_refine_conv = True
+        tiny_config.use_occ_gate = True
+        enhanced = create_refine_model(tiny_config)
+        n_enhanced = sum(p.numel() for p in enhanced.parameters())
+
+        assert n_enhanced > n_base, (
+            f"Enhanced ({n_enhanced}) should have more params than base ({n_base})"
+        )
+
+    def test_unet_encode_decode_api(self) -> None:
+        """UNet3D32.encode() and decode() should be usable independently."""
+        unet = UNet3D32(in_channels=5, channels=(8, 16, 32))
+        x = torch.randn(1, 5, 32, 32, 32)
+        e1, e2, bn = unet.encode(x)
+        assert e1.shape == (1, 8, 32, 32, 32)
+        assert e2.shape == (1, 16, 16, 16, 16)
+        assert bn.shape == (1, 32, 8, 8, 8)
+        features = unet.decode(e1, e2, bn)
+        assert features.shape == (1, 8, 32, 32, 32)
