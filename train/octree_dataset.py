@@ -109,11 +109,42 @@ class OctreeDataset(Dataset[Dict[str, Any]]):
         ]
         self._weight_values = [self._sampling_weights[lv] for lv in self._weight_levels]
 
+    _REQUIRED_KEYS: tuple = (
+        "labels32",
+        "parent_labels32",
+        "heightmap32",
+        "biome32",
+        "y_position",
+        "level",
+        "non_empty_children",
+    )
+
     def _load_cache(self, path: Path) -> None:
         """Load pair cache arrays into memory."""
         t0 = time.time()
         print(f"Loading octree pair cache: {path} ...")
         data = np.load(path, allow_pickle=False)
+
+        # Validate required keys before accessing
+        missing = [k for k in self._REQUIRED_KEYS if k not in data]
+        if missing:
+            raise KeyError(
+                f"Octree pair cache {path} is missing required key(s): {missing}\n"
+                f"Available keys: {sorted(data.files)}\n"
+                f"Re-run data-cli.py to rebuild the cache."
+            )
+
+        # Validate array shapes
+        labels = data["labels32"]
+        if labels.ndim != 4 or labels.shape[1:] != (32, 32, 32):
+            raise ValueError(
+                f"labels32 must have shape [N, 32, 32, 32], got {labels.shape}"
+            )
+        heightmap = data["heightmap32"]
+        if heightmap.ndim != 4 or heightmap.shape[1:] != (5, 32, 32):
+            raise ValueError(
+                f"heightmap32 must have shape [N, 5, 32, 32], got {heightmap.shape}"
+            )
 
         self._labels32: np.ndarray = data["labels32"]  # [N, 32, 32, 32]
         self._parent_labels32: np.ndarray = data["parent_labels32"]  # [N, 32, 32, 32]
@@ -159,7 +190,10 @@ class OctreeDataset(Dataset[Dict[str, Any]]):
             "biome32": torch.from_numpy(self._biome32[i].astype(np.int64)),
             "y_position": torch.tensor(int(self._y_position[i]), dtype=torch.long),
             "level": torch.tensor(level, dtype=torch.long),
-            "non_empty_children": torch.tensor(int(self._non_empty_children[i]), dtype=torch.long),
+            "non_empty_children": torch.tensor(
+                int(self._non_empty_children[i]),  # uint8→int: safe for 8-bit occupancy masks
+                dtype=torch.long,
+            ),
             "model_type": model_type,  # str for collate routing
         }
 

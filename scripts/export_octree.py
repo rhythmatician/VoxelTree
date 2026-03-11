@@ -17,13 +17,13 @@ ONNX I/O Contracts::
       Outputs: block_logits float32[N,V,32,32,32], occ_logits float32[N,8]
 
     octree_refine.onnx:
-      Inputs:  parent_context float32[N,C_parent,32,32,32],
+      Inputs:  parent_blocks int64[N,32,32,32],
                heightmap float32[N,5,32,32], biome int64[N,32,32],
                y_position int64[N], level int64[N]
       Outputs: block_logits float32[N,V,32,32,32], occ_logits float32[N,8]
 
     octree_leaf.onnx:
-      Inputs:  parent_context float32[N,C_parent,32,32,32],
+      Inputs:  parent_blocks int64[N,32,32,32],
                heightmap float32[N,5,32,32], biome int64[N,32,32],
                y_position int64[N]
       Outputs: block_logits float32[N,V,32,32,32]
@@ -34,9 +34,6 @@ Usage::
         --checkpoint octree_training/best_model.pt \\
         --out-dir production
 
-The parent_context for refine/leaf models is **pre-embedded** float32.
-The Java runtime performs the embedding lookup (exported in the sidecar
-JSON + ``parent_embedding.npz``).
 """
 
 from __future__ import annotations
@@ -156,11 +153,11 @@ class OctreeInitAdapter(torch.nn.Module):
 class OctreeRefineAdapter(torch.nn.Module):
     """ONNX adapter for OctreeRefineModel (L3/L2/L1).
 
-    Takes **pre-embedded** parent context (float32) — the Java runtime
-    performs the embedding lookup using weights exported in the sidecar.
+    Accepts raw int64 block IDs — the ParentEncoder embedding is baked
+    into the ONNX graph so the Java runtime passes block IDs directly.
 
     Inputs (N = dynamic batch):
-      parent_context : float32[N, C_parent, 32, 32, 32]
+      parent_blocks  : int64[N, 32, 32, 32]
       heightmap      : float32[N, 5, 32, 32]
       biome          : int64[N, 32, 32]
       y_position     : int64[N]
@@ -177,7 +174,7 @@ class OctreeRefineAdapter(torch.nn.Module):
 
     def forward(
         self,
-        parent_context: torch.Tensor,
+        parent_blocks: torch.Tensor,
         heightmap: torch.Tensor,
         biome: torch.Tensor,
         y_position: torch.Tensor,
@@ -188,7 +185,7 @@ class OctreeRefineAdapter(torch.nn.Module):
             biome=biome,
             y_position=y_position,
             level=level,
-            parent_context=parent_context,
+            parent_blocks=parent_blocks,
         )
         return out["block_type_logits"], out["occ_logits"]
 
@@ -196,10 +193,11 @@ class OctreeRefineAdapter(torch.nn.Module):
 class OctreeLeafAdapter(torch.nn.Module):
     """ONNX adapter for OctreeLeafModel (L0).
 
-    Takes **pre-embedded** parent context (float32).
+    Accepts raw int64 block IDs — the ParentEncoder embedding is baked
+    into the ONNX graph.
 
     Inputs (N = dynamic batch):
-      parent_context : float32[N, C_parent, 32, 32, 32]
+      parent_blocks  : int64[N, 32, 32, 32]
       heightmap      : float32[N, 5, 32, 32]
       biome          : int64[N, 32, 32]
       y_position     : int64[N]
@@ -214,7 +212,7 @@ class OctreeLeafAdapter(torch.nn.Module):
 
     def forward(
         self,
-        parent_context: torch.Tensor,
+        parent_blocks: torch.Tensor,
         heightmap: torch.Tensor,
         biome: torch.Tensor,
         y_position: torch.Tensor,
@@ -223,7 +221,7 @@ class OctreeLeafAdapter(torch.nn.Module):
             heightmap=heightmap,
             biome=biome,
             y_position=y_position,
-            parent_context=parent_context,
+            parent_blocks=parent_blocks,
         )
         return out["block_type_logits"]
 
@@ -343,21 +341,19 @@ def _export_refine(
     onnx_filename = "octree_refine.onnx"
     onnx_path = out_dir / onnx_filename
 
-    C = config.parent_embed_dim
-
     # Dummy inputs
-    dummy_parent = torch.rand(1, C, 32, 32, 32)
+    dummy_parent = torch.randint(0, config.block_vocab_size, (1, 32, 32, 32), dtype=torch.long)
     dummy_height = torch.rand(1, 5, 32, 32)
     dummy_biome = torch.randint(0, config.biome_vocab_size, (1, 32, 32), dtype=torch.long)
     dummy_y = torch.tensor([12], dtype=torch.long)
     dummy_level = torch.tensor([2], dtype=torch.long)
     dummy = (dummy_parent, dummy_height, dummy_biome, dummy_y, dummy_level)
 
-    input_names = ["parent_context", "heightmap", "biome", "y_position", "level"]
+    input_names = ["parent_blocks", "heightmap", "biome", "y_position", "level"]
     output_names = ["block_logits", "occ_logits"]
 
     dynamic_axes = {
-        "parent_context": {0: "batch"},
+        "parent_blocks": {0: "batch"},
         "heightmap": {0: "batch"},
         "biome": {0: "batch"},
         "y_position": {0: "batch"},
@@ -388,14 +384,14 @@ def _export_refine(
         "model": "octree_refine",
         "levels": [1, 2, 3],
         "inputs": {
-            "parent_context": [1, C, 32, 32, 32],
+            "parent_blocks": [1, 32, 32, 32],
             "heightmap": [1, 5, 32, 32],
             "biome": [1, 32, 32],
             "y_position": [1],
             "level": [1],
         },
         "input_dtypes": {
-            "parent_context": "float32",
+            "parent_blocks": "int64",
             "heightmap": "float32",
             "biome": "int64",
             "y_position": "int64",
@@ -406,7 +402,6 @@ def _export_refine(
             "occ_logits": [1, 8],
         },
         "output_resolution": 32,
-        "parent_embed_dim": C,
         "dynamic_batch": True,
         "biome_vocab_size": config.biome_vocab_size,
         "block_vocab_size": V,
@@ -417,13 +412,7 @@ def _export_refine(
             "y_position_range": [0, config.y_vocab_size - 1],
             "level_range": [1, 3],
             "height_planes_normalized": True,
-            "parent_context": (
-                "Pre-embedded float32. Java runtime must: "
-                "(1) argmax parent block_logits → int[32³], "
-                "(2) extract 16³ octant, "
-                "(3) nearest-upsample 2× → 32³, "
-                "(4) lookup in parent_embedding.npz → float[C_parent, 32³]."
-            ),
+            "parent_blocks": "int64 block IDs; embedding is baked into ONNX graph",
         },
         "provenance": collect_export_provenance(),
     }
@@ -433,23 +422,12 @@ def _export_refine(
     with open(config_path, "w") as f:
         json.dump(model_config, f, indent=2)
 
-    # Export parent embedding weights for Java runtime
-    parent_emb_weights = model.parent_encoder.embedding.weight.detach().cpu().numpy()
-    emb_path = out_dir / "parent_embedding.npz"
-    np.savez(
-        emb_path,
-        weight=parent_emb_weights,
-        block_vocab_size=config.block_vocab_size,
-        embed_dim=C,
-    )
-    LOGGER.info("Parent embedding (%s): %s", parent_emb_weights.shape, emb_path)
-
     # Test vectors
     with torch.no_grad():
         block_logits, occ_logits = adapter(*dummy)
 
     vectors: Dict[str, np.ndarray] = {
-        "parent_context": dummy_parent.numpy(),
+        "parent_blocks": dummy_parent.numpy(),
         "heightmap": dummy_height.numpy(),
         "biome": dummy_biome.numpy(),
         "y_position": dummy_y.numpy(),
@@ -476,20 +454,18 @@ def _export_leaf(
     onnx_filename = "octree_leaf.onnx"
     onnx_path = out_dir / onnx_filename
 
-    C = config.parent_embed_dim
-
     # Dummy inputs
-    dummy_parent = torch.rand(1, C, 32, 32, 32)
+    dummy_parent = torch.randint(0, config.block_vocab_size, (1, 32, 32, 32), dtype=torch.long)
     dummy_height = torch.rand(1, 5, 32, 32)
     dummy_biome = torch.randint(0, config.biome_vocab_size, (1, 32, 32), dtype=torch.long)
     dummy_y = torch.tensor([12], dtype=torch.long)
     dummy = (dummy_parent, dummy_height, dummy_biome, dummy_y)
 
-    input_names = ["parent_context", "heightmap", "biome", "y_position"]
+    input_names = ["parent_blocks", "heightmap", "biome", "y_position"]
     output_names = ["block_logits"]
 
     dynamic_axes = {
-        "parent_context": {0: "batch"},
+        "parent_blocks": {0: "batch"},
         "heightmap": {0: "batch"},
         "biome": {0: "batch"},
         "y_position": {0: "batch"},
@@ -518,13 +494,13 @@ def _export_leaf(
         "model": "octree_leaf",
         "level": 0,
         "inputs": {
-            "parent_context": [1, C, 32, 32, 32],
+            "parent_blocks": [1, 32, 32, 32],
             "heightmap": [1, 5, 32, 32],
             "biome": [1, 32, 32],
             "y_position": [1],
         },
         "input_dtypes": {
-            "parent_context": "float32",
+            "parent_blocks": "int64",
             "heightmap": "float32",
             "biome": "int64",
             "y_position": "int64",
@@ -533,7 +509,6 @@ def _export_leaf(
             "block_logits": [1, V, 32, 32, 32],
         },
         "output_resolution": 32,
-        "parent_embed_dim": C,
         "dynamic_batch": True,
         "biome_vocab_size": config.biome_vocab_size,
         "block_vocab_size": V,
@@ -542,10 +517,7 @@ def _export_leaf(
         "assumptions": {
             "y_position_range": [0, config.y_vocab_size - 1],
             "height_planes_normalized": True,
-            "parent_context": (
-                "Pre-embedded float32. Same embedding as octree_refine "
-                "(shared parent_embedding.npz weights)."
-            ),
+            "parent_blocks": "int64 block IDs; embedding is baked into ONNX graph",
         },
         "provenance": collect_export_provenance(),
     }
@@ -560,7 +532,7 @@ def _export_leaf(
         block_logits = adapter(*dummy)
 
     vectors: Dict[str, np.ndarray] = {
-        "parent_context": dummy_parent.numpy(),
+        "parent_blocks": dummy_parent.numpy(),
         "heightmap": dummy_height.numpy(),
         "biome": dummy_biome.numpy(),
         "y_position": dummy_y.numpy(),
@@ -747,7 +719,6 @@ def main() -> None:
         "octree_refine_config.json",
         "octree_leaf.onnx",
         "octree_leaf_config.json",
-        "parent_embedding.npz",
     ]
 
     manifest: Dict[str, Any] = {
@@ -770,7 +741,6 @@ def main() -> None:
                 "has_parent": True,
                 "has_occ_head": True,
                 "output_resolution": 32,
-                "parent_embed_dim": config.parent_embed_dim,
             },
             {
                 "model": "octree_leaf",
@@ -779,7 +749,6 @@ def main() -> None:
                 "has_parent": True,
                 "has_occ_head": False,
                 "output_resolution": 32,
-                "parent_embed_dim": config.parent_embed_dim,
             },
         ],
         "block_vocab_size": config.block_vocab_size,

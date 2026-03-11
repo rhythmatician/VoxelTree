@@ -227,9 +227,9 @@ class ParentEncoder(nn.Module):
     and produces ``[B, embed_dim, 32, 32, 32]`` via a learned
     ``Embedding(block_vocab_size, embed_dim)`` lookup.
 
-    At ONNX export time the embedding weights are exported separately so
-    the Java runtime can pre-compute the lookup; the ONNX graph receives
-    pre-embedded ``float32[B, embed_dim, 32, 32, 32]`` instead.
+    At ONNX export time, the embedding is retained **inside** the ONNX
+    graph — models accept raw int64 block IDs directly and perform the
+    lookup internally.
     """
 
     def __init__(self, block_vocab_size: int, embed_dim: int) -> None:
@@ -346,6 +346,18 @@ class OctreeInitModel(nn.Module):
             Dict with ``block_type_logits`` ``[B, V, 32, 32, 32]``
             and ``occ_logits`` ``[B, 8]``.
         """
+        # Input validation
+        if heightmap.shape != torch.Size([heightmap.shape[0], 5, 32, 32]):
+            raise ValueError(f"heightmap must be [B, 5, 32, 32], got {list(heightmap.shape)}")
+        if biome.shape != torch.Size([biome.shape[0], 32, 32]):
+            raise ValueError(f"biome must be [B, 32, 32], got {list(biome.shape)}")
+        if y_position.shape != torch.Size([y_position.shape[0]]):
+            raise ValueError(f"y_position must be [B], got {list(y_position.shape)}")
+        if not (0 <= y_position.min() and y_position.max() < self.config.y_vocab_size):
+            raise ValueError(
+                f"y_position values must be in [0, {self.config.y_vocab_size - 1}], "
+                f"got min={y_position.min().item()} max={y_position.max().item()}"
+            )
         # Build 3D conditioning
         h3d = _build_height_3d(heightmap.float())
         b3d = _build_biome_3d(biome, self.biome_embed)
@@ -361,10 +373,68 @@ class OctreeInitModel(nn.Module):
         }
 
 
+# ── Shared base for conditioned models (Refine + Leaf) ───────────────
+
+
+class _OctreeConditionedBase(nn.Module):
+    """Abstract base for refine and leaf models that share parent/biome/y conditioning.
+
+    Provides shared ``__init__`` fields and the ``_resolve_parent()`` helper
+    so the parent-resolution guard is defined once rather than copy-pasted.
+    """
+
+    parent_encoder: Optional[ParentEncoder]
+    biome_embed: nn.Embedding
+    y_embed: nn.Embedding
+    config: OctreeConfig
+    _parent_mode: str
+
+    def _resolve_parent(
+        self,
+        parent_blocks: Optional[torch.Tensor],
+        parent_context: Optional[torch.Tensor],
+        batch_size: int,
+        device: torch.device,
+    ) -> Optional[torch.Tensor]:
+        """Resolve parent context from either raw block IDs or pre-embedded float.
+
+        Args:
+            parent_blocks:  ``[B, 32, 32, 32]`` int64 — training path.
+            parent_context: ``[B, C_parent, 32, 32, 32]`` float32 — ONNX path.
+            batch_size: B, used for zeros mode.
+            device: target device.
+
+        Returns:
+            Resolved ``[B, C_parent, 32, 32, 32]`` float32, or ``None`` if
+            mode is ``"disabled"``.
+
+        Raises:
+            ValueError: if mode is ``"embed"`` and both inputs are ``None``.
+        """
+        if self._parent_mode == "embed":
+            if parent_context is None:
+                if parent_blocks is None:
+                    raise ValueError(
+                        "Must supply either parent_blocks (int64) or " "parent_context (float32)"
+                    )
+                parent_context = self.parent_encoder(parent_blocks)  # type: ignore[misc]
+        elif self._parent_mode == "zeros":
+            parent_context = torch.zeros(
+                batch_size,
+                self.config.parent_embed_dim,
+                32,
+                32,
+                32,
+                device=device,
+            )
+        # else "disabled": returns None
+        return parent_context
+
+
 # ── Model B: OctreeRefineModel (shared L3, L2, L1) ───────────────────
 
 
-class OctreeRefineModel(nn.Module):
+class OctreeRefineModel(_OctreeConditionedBase):
     """Shared refinement model for L3/L2/L1 WorldSections.
 
     Takes parent context (block-ID embedding or pre-embedded float) plus
@@ -438,18 +508,34 @@ class OctreeRefineModel(nn.Module):
             Dict with ``block_type_logits`` ``[B, V, 32, 32, 32]``
             and ``occ_logits`` ``[B, 8]``.
         """
+        # Input validation
+        if (
+            heightmap.dim() != 4
+            or heightmap.shape[1] != 5
+            or heightmap.shape[2] != 32
+            or heightmap.shape[3] != 32
+        ):
+            raise ValueError(f"heightmap must be [B, 5, 32, 32], got {list(heightmap.shape)}")
+        if biome.dim() != 3 or biome.shape[1] != 32 or biome.shape[2] != 32:
+            raise ValueError(f"biome must be [B, 32, 32], got {list(biome.shape)}")
+        if y_position.dim() != 1:
+            raise ValueError(f"y_position must be [B], got {list(y_position.shape)}")
+        if level.dim() != 1:
+            raise ValueError(f"level must be [B], got {list(level.shape)}")
+        if parent_blocks is not None and (
+            parent_blocks.dim() != 4
+            or parent_blocks.shape[1] != 32
+            or parent_blocks.shape[2] != 32
+            or parent_blocks.shape[3] != 32
+        ):
+            raise ValueError(
+                f"parent_blocks must be [B, 32, 32, 32], got {list(parent_blocks.shape)}"
+            )
         B = heightmap.shape[0]
         device = heightmap.device
 
         # Resolve parent context based on ablation mode
-        if self._parent_mode == "embed":
-            if parent_context is None:
-                if parent_blocks is None:
-                    raise ValueError("Must supply either parent_blocks or parent_context")
-                parent_context = self.parent_encoder(parent_blocks)
-        elif self._parent_mode == "zeros":
-            parent_context = torch.zeros(B, self.config.parent_embed_dim, 32, 32, 32, device=device)
-        # else "disabled": no parent channels at all
+        parent_context = self._resolve_parent(parent_blocks, parent_context, B, device)
 
         # Build 3D conditioning
         h3d = _build_height_3d(heightmap.float())
@@ -473,7 +559,7 @@ class OctreeRefineModel(nn.Module):
 # ── Model C: OctreeLeafModel (L0 — full resolution, no occ head) ─────
 
 
-class OctreeLeafModel(nn.Module):
+class OctreeLeafModel(_OctreeConditionedBase):
     """Leaf model for L0 (block-level) WorldSections.
 
     Takes parent context but does **not** produce occupancy logits
@@ -529,18 +615,32 @@ class OctreeLeafModel(nn.Module):
         Returns:
             Dict with ``block_type_logits`` ``[B, V, 32, 32, 32]`` only.
         """
+        # Input validation
+        if (
+            heightmap.dim() != 4
+            or heightmap.shape[1] != 5
+            or heightmap.shape[2] != 32
+            or heightmap.shape[3] != 32
+        ):
+            raise ValueError(f"heightmap must be [B, 5, 32, 32], got {list(heightmap.shape)}")
+        if biome.dim() != 3 or biome.shape[1] != 32 or biome.shape[2] != 32:
+            raise ValueError(f"biome must be [B, 32, 32], got {list(biome.shape)}")
+        if y_position.dim() != 1:
+            raise ValueError(f"y_position must be [B], got {list(y_position.shape)}")
+        if parent_blocks is not None and (
+            parent_blocks.dim() != 4
+            or parent_blocks.shape[1] != 32
+            or parent_blocks.shape[2] != 32
+            or parent_blocks.shape[3] != 32
+        ):
+            raise ValueError(
+                f"parent_blocks must be [B, 32, 32, 32], got {list(parent_blocks.shape)}"
+            )
         B = heightmap.shape[0]
         device = heightmap.device
 
         # Resolve parent context based on ablation mode
-        if self._parent_mode == "embed":
-            if parent_context is None:
-                if parent_blocks is None:
-                    raise ValueError("Must supply either parent_blocks or parent_context")
-                parent_context = self.parent_encoder(parent_blocks)
-        elif self._parent_mode == "zeros":
-            parent_context = torch.zeros(B, self.config.parent_embed_dim, 32, 32, 32, device=device)
-        # else "disabled": no parent channels at all
+        parent_context = self._resolve_parent(parent_blocks, parent_context, B, device)
 
         h3d = _build_height_3d(heightmap.float())
         b3d = _build_biome_3d(biome, self.biome_embed)
