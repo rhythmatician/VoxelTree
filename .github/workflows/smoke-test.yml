@@ -25,8 +25,5 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Run single epoch training
-        run: python train.py --epochs 1 --data-dir data/voxy
-
-      - name: Export model to ONNX
-        run: python scripts/export_lod.py
+      - name: Run tests
+        run: pytest --tb=short --disable-warnings
