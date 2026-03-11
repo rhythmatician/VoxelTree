@@ -63,6 +63,25 @@ class OctreeConfig:
     #   "disabled" — remove parent channels entirely (smaller U-Net input)
     parent_context_mode: str = "embed"
 
+    # ── Step 8: OGN-inspired targeted improvements ────────────────────
+    # All default to off (0 / False) so existing checkpoints are unaffected.
+
+    # A. Stronger refine bottleneck: extra DoubleConv3d blocks at 8³.
+    #    OGN applies multiple convolutions per octree level — deeper
+    #    bottleneck gives the occupancy head richer features to work with.
+    bottleneck_extra_depth: int = 0
+
+    # B. Parent feature refiner: a Conv3dBlock after the embedding lookup
+    #    so the model can learn local spatial correlations from parent
+    #    block IDs before concatenation.
+    parent_refine_conv: bool = False
+
+    # D. Occupancy-gated feature modulation: sigmoid(occ_logits) produces
+    #    per-octant attention weights broadcast to 8³ and multiplicatively
+    #    gate the bottleneck before decoding.  OGN-inspired: the propagation
+    #    decision feeds back into how features are expanded to children.
+    use_occ_gate: bool = False
+
 
 # ── Building blocks ───────────────────────────────────────────────────
 
@@ -119,7 +138,12 @@ class UNet3D32(nn.Module):
         channels: ``(C₀, C₁, C₂)`` — widths at each encoder level.
     """
 
-    def __init__(self, in_channels: int, channels: Tuple[int, int, int]) -> None:
+    def __init__(
+        self,
+        in_channels: int,
+        channels: Tuple[int, int, int],
+        bottleneck_extra_depth: int = 0,
+    ) -> None:
         super().__init__()
         c0, c1, c2 = channels
 
@@ -130,11 +154,57 @@ class UNet3D32(nn.Module):
         self.pool2 = nn.MaxPool3d(2)
         self.bottleneck = DoubleConv3d(c1, c2)
 
+        # Extra bottleneck depth (OGN-inspired: multiple convolutions per level)
+        if bottleneck_extra_depth > 0:
+            self.bottleneck_extra = nn.Sequential(
+                *[DoubleConv3d(c2, c2) for _ in range(bottleneck_extra_depth)]
+            )
+        else:
+            self.bottleneck_extra = None  # type: ignore[assignment]
+
         # Decoder
         self.up1 = nn.Upsample(scale_factor=2, mode="nearest")
         self.dec1 = DoubleConv3d(c2 + c1, c1)
         self.up2 = nn.Upsample(scale_factor=2, mode="nearest")
         self.dec2 = DoubleConv3d(c1 + c0, c0)
+
+    def encode(
+        self, x: torch.Tensor
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Encoder path only.
+
+        Args:
+            x: ``[B, in_channels, 32, 32, 32]``
+
+        Returns:
+            ``(e1, e2, bottleneck)`` — skip features and bottleneck.
+        """
+        e1 = self.enc1(x)  # [B, C₀, 32, 32, 32]
+        e2 = self.enc2(self.pool1(e1))  # [B, C₁, 16, 16, 16]
+        bn = self.bottleneck(self.pool2(e2))  # [B, C₂, 8, 8, 8]
+        if self.bottleneck_extra is not None:
+            bn = self.bottleneck_extra(bn)
+        return e1, e2, bn
+
+    def decode(
+        self,
+        e1: torch.Tensor,
+        e2: torch.Tensor,
+        bn: torch.Tensor,
+    ) -> torch.Tensor:
+        """Decoder path only, using pre-computed skip features.
+
+        Args:
+            e1: ``[B, C₀, 32, 32, 32]`` — level-1 skip.
+            e2: ``[B, C₁, 16, 16, 16]`` — level-2 skip.
+            bn: ``[B, C₂, 8, 8, 8]``   — (possibly gated) bottleneck.
+
+        Returns:
+            ``[B, C₀, 32, 32, 32]`` decoded features.
+        """
+        d1 = self.dec1(torch.cat([self.up1(bn), e2], dim=1))
+        d2 = self.dec2(torch.cat([self.up2(d1), e1], dim=1))
+        return d2
 
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """Forward pass.
@@ -146,15 +216,8 @@ class UNet3D32(nn.Module):
             ``(features, bottleneck)`` where features is ``[B, C₀, 32, 32, 32]``
             and bottleneck is ``[B, C₂, 8, 8, 8]``.
         """
-        # Encoder
-        e1 = self.enc1(x)  # [B, C₀, 32, 32, 32]
-        e2 = self.enc2(self.pool1(e1))  # [B, C₁, 16, 16, 16]
-        bn = self.bottleneck(self.pool2(e2))  # [B, C₂, 8, 8, 8]
-
-        # Decoder
-        d1 = self.dec1(torch.cat([self.up1(bn), e2], dim=1))  # [B, C₁, 16, 16, 16]
-        d2 = self.dec2(torch.cat([self.up2(d1), e1], dim=1))  # [B, C₀, 32, 32, 32]
-
+        e1, e2, bn = self.encode(x)
+        d2 = self.decode(e1, e2, bn)
         return d2, bn
 
 
@@ -214,6 +277,60 @@ class OccupancyHead(nn.Module):
         x = x.reshape(B, C, 8).permute(0, 2, 1)  # [B, 8, C]
         logits = self.mlp(x)  # [B, 8, 1]
         return logits.squeeze(-1)  # [B, 8]
+
+
+class OccGateModule(nn.Module):
+    """Occupancy-gated bottleneck modulation (OGN-inspired propagation block).
+
+    Computes occupancy logits from the 8³ bottleneck, converts them to
+    per-octant attention weights via sigmoid, broadcasts to 8³ spatial
+    grid, and multiplicatively gates the bottleneck features before they
+    reach the decoder.
+
+    This mimics OGN's propagation layer: the occupancy decision (which
+    octants are non-empty) directly influences how features are expanded
+    to finer levels.  Unlike OGN's hard gating (only MIXED nodes get
+    children), this uses soft gating so the gradient flows everywhere
+    and ONNX export remains straightforward.
+
+    Architecture::
+
+        bottleneck [B, C₂, 8, 8, 8]
+          ├── OccupancyHead → occ_logits [B, 8]
+          │                 → sigmoid → [B, 8]
+          │                 → reshape [B, 1, 2, 2, 2]
+          │                 → F.interpolate(4) → [B, 1, 8, 8, 8]
+          └── * gate → gated_bottleneck [B, C₂, 8, 8, 8]
+
+    The gated bottleneck replaces the raw bottleneck in the U-Net
+    decoder, while occ_logits are returned unchanged for the loss.
+    """
+
+    def __init__(self, in_channels: int) -> None:
+        super().__init__()
+        self.occ_head = OccupancyHead(in_channels)
+
+    def forward(
+        self, bottleneck: torch.Tensor
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Apply occupancy gate to bottleneck features.
+
+        Args:
+            bottleneck: ``[B, C₂, 8, 8, 8]``
+
+        Returns:
+            ``(gated_bottleneck, occ_logits)`` where gated_bottleneck has
+            the same shape as the input and ``occ_logits`` is ``[B, 8]``.
+        """
+        occ_logits = self.occ_head(bottleneck)  # [B, 8]
+        # Soft gate: per-octant attention from occupancy prediction
+        gate = torch.sigmoid(occ_logits)  # [B, 8]
+        # Reshape to 2×2×2 octant grid, upsample to 8×8×8
+        gate_3d = gate.reshape(gate.shape[0], 1, 2, 2, 2)
+        gate_3d = torch.nn.functional.interpolate(
+            gate_3d, size=(8, 8, 8), mode="nearest"
+        )  # [B, 1, 8, 8, 8]
+        return bottleneck * gate_3d, occ_logits
 
 
 # ── Parent context encoder ────────────────────────────────────────────
@@ -323,11 +440,16 @@ class OctreeInitModel(nn.Module):
 
         # U-Net
         in_channels = config.height_channels + config.biome_embed_dim + config.y_embed_dim
-        self.unet = UNet3D32(in_channels, config.init_channels)
+        self.unet = UNet3D32(in_channels, config.init_channels, config.bottleneck_extra_depth)
 
         # Heads
         self.block_head = nn.Conv3d(c0, config.block_vocab_size, kernel_size=1)
-        self.occ_head = OccupancyHead(c2)
+        self._use_occ_gate = config.use_occ_gate
+        if config.use_occ_gate:
+            self.occ_gate = OccGateModule(c2)
+            self.occ_head = self.occ_gate.occ_head  # expose for weight sharing
+        else:
+            self.occ_head = OccupancyHead(c2)
 
     def forward(
         self,
@@ -365,11 +487,17 @@ class OctreeInitModel(nn.Module):
 
         x = torch.cat([h3d, b3d, y3d], dim=1)  # [B, in_ch, 32, 32, 32]
 
-        features, bottleneck = self.unet(x)
+        if self._use_occ_gate:
+            e1, e2, bn = self.unet.encode(x)
+            gated_bn, occ_logits = self.occ_gate(bn)
+            features = self.unet.decode(e1, e2, gated_bn)
+        else:
+            features, bn = self.unet(x)
+            occ_logits = self.occ_head(bn)
 
         return {
             "block_type_logits": self.block_head(features),
-            "occ_logits": self.occ_head(bottleneck),
+            "occ_logits": occ_logits,
         }
 
 
@@ -384,6 +512,7 @@ class _OctreeConditionedBase(nn.Module):
     """
 
     parent_encoder: Optional[ParentEncoder]
+    parent_refine_conv_layer: Optional[Conv3dBlock]
     biome_embed: nn.Embedding
     y_embed: nn.Embedding
     config: OctreeConfig
@@ -397,6 +526,11 @@ class _OctreeConditionedBase(nn.Module):
         device: torch.device,
     ) -> Optional[torch.Tensor]:
         """Resolve parent context from either raw block IDs or pre-embedded float.
+
+        If ``config.parent_refine_conv`` is True, a learned Conv3dBlock is
+        applied after the embedding lookup to capture spatial correlations
+        in the parent context.  This mirrors how OGN convolves features at
+        each level before propagating them downward.
 
         Args:
             parent_blocks:  ``[B, 32, 32, 32]`` int64 — training path.
@@ -428,6 +562,11 @@ class _OctreeConditionedBase(nn.Module):
                 device=device,
             )
         # else "disabled": returns None
+
+        # Apply optional parent feature refiner (OGN-inspired spatial conv)
+        if parent_context is not None and self.parent_refine_conv_layer is not None:
+            parent_context = self.parent_refine_conv_layer(parent_context)
+
         return parent_context
 
 
@@ -458,6 +597,14 @@ class OctreeRefineModel(_OctreeConditionedBase):
         else:
             self.parent_encoder = None  # type: ignore[assignment]
 
+        # Optional parent feature refiner (OGN-inspired spatial conv)
+        if config.parent_refine_conv and self._parent_mode != "disabled":
+            self.parent_refine_conv_layer = Conv3dBlock(
+                config.parent_embed_dim, config.parent_embed_dim
+            )
+        else:
+            self.parent_refine_conv_layer = None  # type: ignore[assignment]
+
         # Conditioning embeddings
         self.biome_embed = nn.Embedding(config.biome_vocab_size, config.biome_embed_dim)
         self.y_embed = nn.Embedding(config.y_vocab_size, config.y_embed_dim)
@@ -472,11 +619,16 @@ class OctreeRefineModel(_OctreeConditionedBase):
             + config.y_embed_dim
             + config.level_embed_dim
         )
-        self.unet = UNet3D32(in_channels, config.refine_channels)
+        self.unet = UNet3D32(in_channels, config.refine_channels, config.bottleneck_extra_depth)
 
         # Heads
         self.block_head = nn.Conv3d(c0, config.block_vocab_size, kernel_size=1)
-        self.occ_head = OccupancyHead(c2)
+        self._use_occ_gate = config.use_occ_gate
+        if config.use_occ_gate:
+            self.occ_gate = OccGateModule(c2)
+            self.occ_head = self.occ_gate.occ_head
+        else:
+            self.occ_head = OccupancyHead(c2)
 
     def forward(
         self,
@@ -548,11 +700,17 @@ class OctreeRefineModel(_OctreeConditionedBase):
             parts.insert(0, parent_context)
         x = torch.cat(parts, dim=1)
 
-        features, bottleneck = self.unet(x)
+        if self._use_occ_gate:
+            e1, e2, bn = self.unet.encode(x)
+            gated_bn, occ_logits = self.occ_gate(bn)
+            features = self.unet.decode(e1, e2, gated_bn)
+        else:
+            features, bn = self.unet(x)
+            occ_logits = self.occ_head(bn)
 
         return {
             "block_type_logits": self.block_head(features),
-            "occ_logits": self.occ_head(bottleneck),
+            "occ_logits": occ_logits,
         }
 
 
@@ -581,6 +739,14 @@ class OctreeLeafModel(_OctreeConditionedBase):
         else:
             self.parent_encoder = None  # type: ignore[assignment]
 
+        # Optional parent feature refiner (OGN-inspired spatial conv)
+        if config.parent_refine_conv and self._parent_mode != "disabled":
+            self.parent_refine_conv_layer = Conv3dBlock(
+                config.parent_embed_dim, config.parent_embed_dim
+            )
+        else:
+            self.parent_refine_conv_layer = None  # type: ignore[assignment]
+
         # Conditioning embeddings
         self.biome_embed = nn.Embedding(config.biome_vocab_size, config.biome_embed_dim)
         self.y_embed = nn.Embedding(config.y_vocab_size, config.y_embed_dim)
@@ -590,7 +756,7 @@ class OctreeLeafModel(_OctreeConditionedBase):
         in_channels = (
             parent_ch + config.height_channels + config.biome_embed_dim + config.y_embed_dim
         )
-        self.unet = UNet3D32(in_channels, config.leaf_channels)
+        self.unet = UNet3D32(in_channels, config.leaf_channels, config.bottleneck_extra_depth)
 
         # Block head only — no occupancy head for L0
         self.block_head = nn.Conv3d(c0, config.block_vocab_size, kernel_size=1)

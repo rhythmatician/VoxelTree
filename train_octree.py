@@ -325,6 +325,7 @@ def train_octree_epoch(
     optimizer: optim.Optimizer,
     device: torch.device,
     active_types: Optional[Set[str]] = None,
+    scheduled_sampling_p: float = 0.0,
 ) -> Dict[str, Any]:
     """Train for one epoch, routing each batch to the correct model.
 
@@ -335,6 +336,10 @@ def train_octree_epoch(
         optimizer: Shared optimizer over all active model parameters.
         device: Torch device.
         active_types: If set, only these model types are trained (others frozen).
+        scheduled_sampling_p: Probability of replacing GT parent context with
+            zeros during training (default 0.0 = always use GT).  Inspired by
+            OGN's PROP_KNOWN → PROP_PRED transition — trains robustness to
+            imperfect parent predictions at inference time.
 
     Returns:
         Dict of averaged metrics across the epoch.
@@ -368,6 +373,17 @@ def train_octree_epoch(
             continue
 
         targets = _prepare_targets(batch, device)
+
+        # Scheduled sampling: zero out parent context with probability p
+        # to train robustness to imperfect parent predictions (OGN PROP_PRED)
+        if (
+            scheduled_sampling_p > 0.0
+            and model_type in ("refine", "leaf")
+            and random.random() < scheduled_sampling_p
+        ):
+            parent = batch.get("parent_labels32")
+            if isinstance(parent, torch.Tensor):
+                batch["parent_labels32"] = torch.zeros_like(parent)
 
         optimizer.zero_grad()
         predictions = _forward_batch(models, batch, device)
@@ -670,6 +686,48 @@ def main() -> None:
             "Applies median-frequency balancing to block-type CE loss."
         ),
     )
+    # ── Step 8: OGN-inspired model options ───────────────────────────
+    parser.add_argument(
+        "--bottleneck-extra-depth",
+        type=int,
+        default=0,
+        help=(
+            "Extra DoubleConv3d blocks at 8³ bottleneck (default: 0). "
+            "Deepens the representation where occupancy decisions are made. "
+            "OGN-inspired: multiple convolutions per octree level."
+        ),
+    )
+    parser.add_argument(
+        "--parent-refine-conv",
+        action="store_true",
+        default=False,
+        help=(
+            "Add a Conv3dBlock after parent embedding lookup to learn "
+            "spatial correlations before concatenation (OGN-inspired)."
+        ),
+    )
+    parser.add_argument(
+        "--use-occ-gate",
+        action="store_true",
+        default=False,
+        help=(
+            "Enable occupancy-gated bottleneck modulation (OGN-inspired). "
+            "Sigmoid(occ_logits) gates bottleneck features before decoding, "
+            "so occupancy predictions influence block-type generation."
+        ),
+    )
+    parser.add_argument(
+        "--scheduled-sampling",
+        type=float,
+        default=0.0,
+        metavar="P",
+        help=(
+            "Scheduled sampling probability (0.0-1.0, default: 0.0). "
+            "During training, with probability P replace GT parent_labels32 "
+            "with the parent model's own argmax predictions.  Inspired by "
+            "OGN's PROP_KNOWN → PROP_PRED transition."
+        ),
+    )
     args = parser.parse_args()
 
     # CPU thread limit
@@ -735,6 +793,9 @@ def main() -> None:
         leaf_channels=tuple(args.leaf_channels),
         parent_embed_dim=args.parent_embed_dim,
         parent_context_mode=args.parent_context_mode,
+        bottleneck_extra_depth=args.bottleneck_extra_depth,
+        parent_refine_conv=args.parent_refine_conv,
+        use_occ_gate=args.use_occ_gate,
     )
 
     models: Dict[str, nn.Module] = {
@@ -748,6 +809,19 @@ def main() -> None:
     for name, m in models.items():
         n = sum(p.numel() for p in m.parameters())
         print(f"  {name}: {n:,} params")
+
+    # Print Step 8 feature status
+    step8_active = []
+    if config.bottleneck_extra_depth > 0:
+        step8_active.append(f"bottleneck_extra_depth={config.bottleneck_extra_depth}")
+    if config.parent_refine_conv:
+        step8_active.append("parent_refine_conv")
+    if config.use_occ_gate:
+        step8_active.append("occ_gate")
+    if args.scheduled_sampling > 0:
+        step8_active.append(f"scheduled_sampling={args.scheduled_sampling:.2f}")
+    if step8_active:
+        print(f"\nStep 8 (OGN-inspired): {', '.join(step8_active)}")
 
     # ── Datasets ─────────────────────────────────────────────────────
     print("\nLoading datasets...")
@@ -907,7 +981,14 @@ def main() -> None:
             loss_fn.occ_weight = _occ_weight_full
 
         # Train
-        train_metrics = train_octree_epoch(models, train_loader, loss_fn, optimizer, device)
+        train_metrics = train_octree_epoch(
+            models,
+            train_loader,
+            loss_fn,
+            optimizer,
+            device,
+            scheduled_sampling_p=args.scheduled_sampling,
+        )
 
         # Step scheduler
         if isinstance(scheduler, optim.lr_scheduler.CosineAnnealingLR):

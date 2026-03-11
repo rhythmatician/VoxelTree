@@ -52,7 +52,10 @@ from train.octree_dataset import (
     collate_octree_batch,
 )
 from train.octree_models import (
+    OccGateModule,
+    OccupancyHead,
     OctreeConfig,
+    UNet3D32,
     create_init_model,
     create_leaf_model,
     create_refine_model,
