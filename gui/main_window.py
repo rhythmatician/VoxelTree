@@ -55,6 +55,7 @@ class MainWindow(QMainWindow):
         self._dashboard.details_clicked.connect(self._on_details_clicked)
         self._dashboard.delete_profile_requested.connect(self._on_delete_profile)
         self._dashboard.new_profile_requested.connect(self._on_new_profile)
+        self._dashboard.node_clicked.connect(self._on_node_clicked)
         print("[MW.init.7] Setting central widget...", flush=True)
         self.setCentralWidget(self._dashboard)
 
@@ -132,6 +133,14 @@ class MainWindow(QMainWindow):
             else:
                 self._profiles[profile_name] = load_profile(profile_name)
             self._dashboard.refresh_profile(profile_name)
+
+    @Slot(str, str)
+    def _on_node_clicked(self, profile_name: str, step_id: str) -> None:
+        """Run a step when its node is clicked."""
+        registry = self._registries.get(profile_name)
+        if registry and registry.can_run(step_id):
+            self._detail.load_profile(profile_name, registry)
+            self._detail.run_step(step_id)
 
     @Slot(str)
     def _on_delete_profile(self, profile_name: str) -> None:

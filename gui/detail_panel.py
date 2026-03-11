@@ -1,4 +1,5 @@
 """detail_panel.py — Right-side dock panel: run controls + live log for one profile."""
+
 from __future__ import annotations
 
 from datetime import datetime
@@ -33,7 +34,9 @@ class DetailPanel(QDockWidget):
 
     def __init__(self, parent=None) -> None:
         super().__init__("Details", parent)
-        self.setAllowedAreas(Qt.DockWidgetArea.RightDockWidgetArea | Qt.DockWidgetArea.BottomDockWidgetArea)
+        self.setAllowedAreas(
+            Qt.DockWidgetArea.RightDockWidgetArea | Qt.DockWidgetArea.BottomDockWidgetArea
+        )
         self.setFeatures(
             QDockWidget.DockWidgetFeature.DockWidgetMovable
             | QDockWidget.DockWidgetFeature.DockWidgetFloatable
@@ -191,6 +194,10 @@ class DetailPanel(QDockWidget):
     # Step execution
     # ------------------------------------------------------------------
 
+    def run_step(self, step_id: str) -> None:
+        """Public method to run a single step (if prerequisites are met)."""
+        self._run_step(step_id)
+
     def _run_step(self, step_id: str) -> None:
         if not self._registry or self._worker and self._worker.isRunning():
             return
@@ -282,6 +289,7 @@ class DetailPanel(QDockWidget):
 
     def _copy_log(self) -> None:
         from PySide6.QtWidgets import QApplication
+
         QApplication.clipboard().setText(self._log.toPlainText())
 
     def _get_profile_dict(self) -> dict | None:
@@ -296,10 +304,11 @@ class DetailPanel(QDockWidget):
 # Per-step control row inside the detail panel
 # ---------------------------------------------------------------------------
 
+
 class _StepControlRow(QWidget):
     """One row: status indicator + step label + Run / Run From / Cancel buttons."""
 
-    run_clicked = Signal(str)        # step_id
+    run_clicked = Signal(str)  # step_id
     run_from_clicked = Signal(str)
     cancel_clicked = Signal(str)
 

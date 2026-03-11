@@ -557,9 +557,7 @@ def _check_prerequisites(from_step: str, args: argparse.Namespace) -> bool:
                 print("ERROR: Octree NPZ files missing heightmap32:")
                 for f in missing_hm:
                     print(f"  - {f.name}")
-                print(
-                    "  Run: python data-cli.py dataprep --from-step column-heights-octree ..."
-                )
+                print("  Run: python data-cli.py dataprep --from-step column-heights-octree ...")
                 return False
             sample_found = True
             break
@@ -682,7 +680,7 @@ def cmd_dataprep(args: argparse.Namespace) -> None:
 
     print()
     print("=" * 70)
-    print(f"  DATAPREP PIPELINE:  {' → '.join(steps_to_run)}")
+    print(f"  DATAPREP PIPELINE:  {' -> '.join(steps_to_run)}")
     print("=" * 70)
 
     # ---- prerequisite gate ----

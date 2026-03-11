@@ -23,7 +23,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
 
-from gui.step_definitions import PIPELINE_STEPS, STEP_BY_ID
+from gui.step_definitions import ACTIVE_STEPS, PIPELINE_STEPS, STEP_BY_ID
 
 StepStatus = Literal["not_run", "running", "success", "failed"]
 
@@ -102,6 +102,31 @@ class RunRegistry:
 
     def any_running(self) -> bool:
         return any(v.get("status") == "running" for v in self._state.values())
+
+    def get_next_runnable_step(self) -> str | None:
+        """Return the step_id of the next runnable step.
+
+        This is the first step AFTER the last completed (success) step.
+        If no steps are completed, returns the first step.
+        If all steps are completed, returns None.
+        Returns None if a step is currently running.
+        """
+        if self.any_running():
+            return None
+
+        # Find the last step with status "success"
+        last_success_idx = -1
+        for idx, step in enumerate(ACTIVE_STEPS):
+            if self.get_status(step.id) == "success":
+                last_success_idx = idx
+
+        # Return the next step
+        next_idx = last_success_idx + 1
+        if next_idx < len(ACTIVE_STEPS):
+            return ACTIVE_STEPS[next_idx].id
+
+        # All steps completed
+        return None
 
     # ------------------------------------------------------------------
     # Mutators

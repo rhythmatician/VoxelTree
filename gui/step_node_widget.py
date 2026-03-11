@@ -49,6 +49,7 @@ class StepNodeWidget(QWidget):
         self._metadata: str | None = None  # optional text override (e.g., "5 epochs")
         self._pulse = False  # amber blink state
         self._pulse_on = False
+        self._runnable = False  # highlight as next runnable step
 
         self._timer = QTimer(self)
         self._timer.setInterval(600)
@@ -80,6 +81,11 @@ class StepNodeWidget(QWidget):
         self._metadata = text
         self.update()
 
+    def set_runnable(self, runnable: bool) -> None:
+        """Highlight this node as the next runnable step."""
+        self._runnable = runnable
+        self.update()
+
     # ------------------------------------------------------------------
     # Internals
     # ------------------------------------------------------------------
@@ -107,7 +113,10 @@ class StepNodeWidget(QWidget):
 
         # Fill
         painter.setBrush(self._fill_color())
-        pen = QPen(self._border_color(), 2)
+        if self._runnable:
+            pen = QPen(QColor("#ffdd00"), 3)  # yellow highlight for next runnable
+        else:
+            pen = QPen(self._border_color(), 2)
         painter.setPen(pen)
         painter.drawEllipse(margin, margin, d, d)
 

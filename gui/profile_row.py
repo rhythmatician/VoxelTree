@@ -45,6 +45,7 @@ class ProfileRow(QWidget):
         self.registry = registry
 
         self._nodes: dict[str, StepNodeWidget] = {}
+        self._runnable_step: str | None = None
         self._build_ui()
         self.refresh()
 
@@ -115,7 +116,9 @@ class ProfileRow(QWidget):
         layout.addWidget(del_btn)
 
     def _on_node_clicked(self, step_id: str) -> None:
-        self.node_clicked.emit(self.profile_name, step_id)
+        # Only allow running the next runnable step
+        if step_id == self._runnable_step:
+            self.node_clicked.emit(self.profile_name, step_id)
 
     # ------------------------------------------------------------------
     # Public
@@ -124,9 +127,14 @@ class ProfileRow(QWidget):
     def refresh(self) -> None:
         """Re-read registry and update all node colours and metadata."""
         self.registry.reload()
+
+        # Determine which step is runnable next
+        self._runnable_step = self.registry.get_next_runnable_step()
+
         for step_id, node in self._nodes.items():
             status = self.registry.get_status(step_id)
             node.set_status(status)
+            node.set_runnable(step_id == self._runnable_step)
 
             # For train step, show epoch count if available
             if step_id == "train":
