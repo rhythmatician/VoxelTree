@@ -1481,12 +1481,20 @@ class TestOccGateModule:
                 z_idx = (i >> 1) & 1
                 x_idx = i & 1
                 octant_gate = torch.sigmoid(occ[:, i]).item()
-                octant_features = gated[:, :, y_idx * 4:(y_idx + 1) * 4,
-                                        z_idx * 4:(z_idx + 1) * 4,
-                                        x_idx * 4:(x_idx + 1) * 4]
-                orig_features = bn[:, :, y_idx * 4:(y_idx + 1) * 4,
-                                   z_idx * 4:(z_idx + 1) * 4,
-                                   x_idx * 4:(x_idx + 1) * 4]
+                octant_features = gated[
+                    :,
+                    :,
+                    y_idx * 4 : (y_idx + 1) * 4,
+                    z_idx * 4 : (z_idx + 1) * 4,
+                    x_idx * 4 : (x_idx + 1) * 4,
+                ]
+                orig_features = bn[
+                    :,
+                    :,
+                    y_idx * 4 : (y_idx + 1) * 4,
+                    z_idx * 4 : (z_idx + 1) * 4,
+                    x_idx * 4 : (x_idx + 1) * 4,
+                ]
                 # Gated features should be original * gate value
                 expected = orig_features * octant_gate
                 assert torch.allclose(octant_features, expected, atol=1e-5)
@@ -1582,9 +1590,9 @@ class TestStep8Combined:
         enhanced = create_refine_model(tiny_config)
         n_enhanced = sum(p.numel() for p in enhanced.parameters())
 
-        assert n_enhanced > n_base, (
-            f"Enhanced ({n_enhanced}) should have more params than base ({n_base})"
-        )
+        assert (
+            n_enhanced > n_base
+        ), f"Enhanced ({n_enhanced}) should have more params than base ({n_base})"
 
     def test_unet_encode_decode_api(self) -> None:
         """UNet3D32.encode() and decode() should be usable independently."""

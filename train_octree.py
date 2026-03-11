@@ -104,6 +104,7 @@ class OctreeLoss(nn.Module):
         targets: Dict[str, torch.Tensor],
         model_type: str,
         level: Optional[int] = None,
+        occ_weight_override: Optional[float] = None,
     ) -> Dict[str, torch.Tensor]:
         """Compute losses.
 
@@ -113,6 +114,8 @@ class OctreeLoss(nn.Module):
                      and ``occ_targets`` ``[B, 8]`` float (for init/refine).
             model_type: ``"init"``, ``"refine"``, or ``"leaf"``.
             level: Optional LOD level (4, 3, 2, 1, 0) for per-level occ weight.
+            occ_weight_override: If provided, overrides the default occ_weight for this call
+                (e.g., for warmup scheduling). Takes precedence over level-based weights.
 
         Returns:
             Dict with ``total_loss``, ``block_loss``, and ``occ_loss`` tensors.
@@ -152,10 +155,13 @@ class OctreeLoss(nn.Module):
             else:
                 occ_loss = nn.functional.binary_cross_entropy_with_logits(occ_logits, occ_targets)
 
-        # Resolve effective occ weight (per-level override or global)
-        effective_occ_weight = self.occ_weight
-        if level is not None and self.level_occ_weights is not None:
+        # Resolve effective occ weight (override > per-level > global)
+        if occ_weight_override is not None:
+            effective_occ_weight = occ_weight_override
+        elif level is not None and self.level_occ_weights is not None:
             effective_occ_weight = self.level_occ_weights.get(level, self.occ_weight)
+        else:
+            effective_occ_weight = self.occ_weight
 
         total_loss = block_loss + effective_occ_weight * occ_loss
 
@@ -326,6 +332,7 @@ def train_octree_epoch(
     device: torch.device,
     active_types: Optional[Set[str]] = None,
     scheduled_sampling_p: float = 0.0,
+    occ_warmup_scale: float = 1.0,
 ) -> Dict[str, Any]:
     """Train for one epoch, routing each batch to the correct model.
 
@@ -340,6 +347,9 @@ def train_octree_epoch(
             zeros during training (default 0.0 = always use GT).  Inspired by
             OGN's PROP_KNOWN → PROP_PRED transition — trains robustness to
             imperfect parent predictions at inference time.
+        occ_warmup_scale: Warmup scale for occupancy weight (0.0–1.0).
+            Linearly interpolates from 0 to full weight during warmup epochs.
+            Default 1.0 (no warmup).
 
     Returns:
         Dict of averaged metrics across the epoch.
@@ -398,7 +408,16 @@ def train_octree_epoch(
         elif model_type == "leaf":
             level_val = 0
 
-        losses = loss_fn(predictions, targets, model_type, level=level_val)
+        # Compute effective warmup-scaled occ weight
+        warmup_occ_weight = loss_fn.occ_weight * occ_warmup_scale
+
+        losses = loss_fn(
+            predictions,
+            targets,
+            model_type,
+            level=level_val,
+            occ_weight_override=warmup_occ_weight,
+        )
         loss = losses["total_loss"]
 
         loss.backward()
@@ -485,7 +504,12 @@ def validate_octree_epoch(
             elif model_type == "leaf":
                 level_val = 0
 
-            losses = loss_fn(predictions, targets, model_type, level=level_val)
+            losses = loss_fn(
+                predictions,
+                targets,
+                model_type,
+                level=level_val,
+            )
             metrics = compute_octree_metrics(predictions, targets, model_type)
 
             num_batches += 1
@@ -908,7 +932,6 @@ def main() -> None:
 
     # Stash warmup configuration on the loss_fn for use in the training loop
     _occ_warmup_epochs: int = args.occ_warmup_epochs
-    _occ_weight_full: float = args.occ_weight
 
     all_params = list(p for m in models.values() for p in m.parameters() if p.requires_grad)
     optimizer = optim.AdamW(all_params, lr=args.lr, weight_decay=1e-4)
@@ -974,11 +997,10 @@ def main() -> None:
     ):
         epoch_start = time.time()
 
-        # Occupancy weight warmup: ramp from 0 → _occ_weight_full
+        # Compute occupancy weight warmup scale (without mutating loss_fn)
+        occ_warmup_scale = 1.0
         if _occ_warmup_epochs > 0 and epoch <= _occ_warmup_epochs:
-            loss_fn.occ_weight = _occ_weight_full * (epoch / _occ_warmup_epochs)
-        else:
-            loss_fn.occ_weight = _occ_weight_full
+            occ_warmup_scale = epoch / _occ_warmup_epochs
 
         # Train
         train_metrics = train_octree_epoch(
@@ -988,6 +1010,7 @@ def main() -> None:
             optimizer,
             device,
             scheduled_sampling_p=args.scheduled_sampling,
+            occ_warmup_scale=occ_warmup_scale,
         )
 
         # Step scheduler
