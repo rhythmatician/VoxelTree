@@ -160,29 +160,57 @@ sample_init = {
 }
 ```
 
-#### Model 1: LOD4 → LOD3
+#### Octree sample specification
 
-```python
-sample_lod4_to_3 = {
-    # Inputs
-    "x_parent_prev": lod_pyramid[4]["occupancy"][None, None, ...],  # [1, 1, 1, 1, 1]
-    "x_height_planes": feature_bundle.height_planes,  # [1, 5, 1, 16, 16]
-    "x_biome_quart": feature_bundle.biome_quart,  # [1, 6, 4, 4, 4]
-    "x_router6": feature_bundle.router6,  # [1, 6, 1, 16, 16]
-    "x_chunk_pos": np.array([[chunk_x, chunk_z]], dtype=np.float32),  # [1, 2]
-    "x_lod": np.array([[3]], dtype=np.float32),  # [1, 1]
-    
-    # Targets
-    "block_logits_target": lod_pyramid[3]["blocks"],  # [2, 2, 2] → [1, N_blocks, 2, 2, 2]
-    "air_mask_target": lod_pyramid[3]["occupancy"],  # [1, 1, 2, 2, 2]
-}
-```
+The dataset now provides three distinct sample types corresponding to the
+octree pipeline. Each training example is independent; the recursive structure
+is handled during inference by the job scheduler.
 
-#### Models 2-4: Similar pattern
+1. **Init sample**
+   ```python
+   sample_init = {
+       # Inputs
+       "x_height_planes": feature_bundle.height_planes,  # [1,5,16,16]
+       "x_router6": feature_bundle.router6,             # [1,6,16,16]
+       "x_biome": feature_bundle.biome,                # [1,16,16]
+       "x_y_index": feature_bundle.y_index,            # [1]
+       # no parent
+       # Targets
+       "block_logits_target": lod_pyramid[4]["blocks"],  # [1,N,1,1,1]
+   }
+   ```
 
-- Model 2 (LOD3→2): parent=[1,1,2,2,2], target=[4,4,4]
-- Model 3 (LOD2→1): parent=[1,1,4,4,4], target=[8,8,8]
-- Model 4 (LOD1→0): parent=[1,1,8,8,8], target=[16,16,16]
+2. **Refine sample** (used for all intermediate levels L4→L3, L3→L2, L2→L1, L1→L0):
+   ```python
+   sample_refine = {
+       "x_parent": parent_blocks,      # e.g. [1,N,1,1,1] or [1,N,2,2,2], etc.
+       "x_height_planes": feature_bundle.height_planes,
+       "x_router6": feature_bundle.router6,
+       "x_biome": feature_bundle.biome,
+       "x_y_index": feature_bundle.y_index,
+       # Targets
+       "block_logits_target": child_blocks,  # [1,N,2,2,2]
+   }
+   ```
+   The parent/child sizes double each step; sampling code can iterate levels or
+   randomly pick a level to train on.
+
+3. **Leaf sample** (final expansion to 32³):
+   ```python
+   sample_leaf = {
+       "x_parent": l1_parent_blocks,   # [1,N,8,8,8]
+       "x_height_planes": feature_bundle.height_planes,
+       "x_router6": feature_bundle.router6,
+       "x_biome": feature_bundle.biome,
+       "x_y_index": feature_bundle.y_index,
+       # Targets
+       "block_logits_target": leaf_volume,  # [1,N,32,32,32]
+   }
+   ```
+
+By unifying the sampling logic around octree node expansions, the dataset
+avoids any hard-coded LOD labels and simplifies training of the shared
+`octree_refine.onnx` model used at multiple depths.
 
 ## Shared Input Processing
 

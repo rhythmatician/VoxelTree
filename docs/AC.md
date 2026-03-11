@@ -78,10 +78,19 @@ Report **overall** and **frequent‑set** (top ≈50 terrain blocks; air exclude
     (for f=2 the target is `labels16` itself — full-detail LOD0)
   * `lod_token = log2(f)` (1,2,3,4)
   * `lod_transition = "lod{N}to{N-1}"` (lod1to0, lod2to1, lod3to2, lod4to3)
-* At runtime, LODiffusion chains: LOD4→LOD3→LOD2→LOD1→LOD0, each step feeding
-  the previous prediction as the next parent.
-* **Scheduled sampling**: with p≈0.1→0.3, form parent from the model's own previous prediction (argmax → Mipper) to stabilize rollouts.
-* **Loss**: `CE(block_logits, target_labels)` — unified cross-entropy on all 1102 classes (air=class 0).
+* Training samples are drawn from an **octree expansion process**:
+  1. **Init samples**: anchor channels → root node (1³) with no parent.
+  2. **Refine samples**: parent node of size `s` → eight child nodes of size `2s` (repeat for
+     s=1,2,4,8). Each refine sample includes the parent occupancy and the corresponding
+     multi-channel anchors.
+  3. **Leaf samples**: final L1 parent (`8³`) → full 32³ leaf volume prediction.
+  Each sample is treated independently; the recursive traversal is handled at
+  inference time by the octree scheduler.
+* **Scheduled sampling** remains useful for stability: with p≈0.1→0.3, child inputs
+  may be formed from the model’s own argmax prediction (mipped back to parent size)
+  before being used in the next refine step.
+* **Loss**: `CE(block_logits, target_labels)` — unified cross-entropy on all 1102 classes
+  (air=class 0).
 
 ## 7) Evaluation
 
@@ -101,12 +110,19 @@ Report **overall** and **frequent‑set** (top ≈50 terrain blocks; air exclude
 
 ## 9) Runtime (LODiffusion) — Just‑in‑Time
 
-* **LOD4 (16m/voxel):** coarsest; biome/height tint (no 3D inference in Phase‑1 minimal)
-* **LOD3 (8m):** run model LOD4→LOD3; render result
-* **LOD2 (4m):** run model LOD3→LOD2; render result
-* **LOD1 (2m):** run model LOD2→LOD1; render result
-* **LOD0 (1m):** run model LOD1→LOD0; render 16³ result; optionally handoff to vanilla in sim distance
-* Scheduler: speed‑aware forward cone; 360° when idle; preempt on player turn; tight D1 safety halo; cache & evict far‑behind first
+* **Octree traversal**: work queue seeded with L4 root nodes in the generation radius.
+  - **Level workers** pull `OctreeTask` objects from `OctreeQueue` (L4→L3→L2→L1→leaf).
+  - At each non‑leaf node, `OctreeModelRunner.runInit` (for L4) or `runRefine` is
+    invoked; children are enqueued based on occupancy mask and radius.
+  - Leaf nodes invoke `runLeaf` to produce a 32³ block volume, which the mod
+    immediately slices into eight 16³ Voxy sections and writes them to RocksDB.
+* **Scheduler**: speed‑aware forward cone; 360° when idle; preempt on player turn;
+  tight D1 safety halo; cache anchors & octree results; evict far‑behind nodes first.
+* **Fallback**: if inference cannot keep up, skip deeper levels and defer them until
+  next tick; Voxy renders missing sections as fog until ready.
+* **Vanilla handoff**: the leaf output is a distance render proxy only. When the
+  player nears a region, vanilla terrain generation overwrites any proxy data
+  (insert‑only policy guarantees no corruption).
 
 ## 10) CI / Definition of Done
 

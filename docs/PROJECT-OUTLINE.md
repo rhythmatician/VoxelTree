@@ -573,7 +573,7 @@ or majority vote. Source of truth: `scripts/mipper.py`.
 - [x] Train LOD2→1 refinement model — **separate ONNX, medium-large capacity** *(architecture defined; model trained)*
 - ~~Train LOD1→0 refinement model~~ — **DROPPED: vanilla handles LOD0** ✓
 - [ ] Achieve 99% accuracy on frequent blocks (goal) *(current: ~70% block accuracy on test set; needs further training or data/architecture improvements)*
-- [ ] Export all 4 models to separate ONNX files *(all 4 models exportable via export_lod.py; need to generate test_vectors.npz for deployment confidence)*
+- [ ] Export all three octree models to separate ONNX files *(export_lod.py updated; test_vectors.npz generation remains)*
 
 > **Architecture reverted to separate models.** The unified model pivot (single model
 > with `x_lod` conditioning over all transitions) was suboptimal: zero-padding different
@@ -582,16 +582,16 @@ or majority vote. Source of truth: `scripts/mipper.py`.
 
 ### Milestone 5: ONNX Integration
 
-- [x] In-mod inference works (DJL + ONNX Runtime) *(DJL BOM 0.30.0 active; ProgressiveModelRunner loads all 4 ONNX models)*
+- [x] In-mod inference works (DJL + ONNX Runtime) *(DJL BOM 0.30.0 active; OctreeModelRunner loads init/refine/leaf models)*
 - [x] Model outputs visible terrain via Voxy *(LodGenerationService writing 200+ LOD sections; confirmed in gameplay)*
-- [x] Migrate to per-step model loading (4 ONNX sessions, loaded once at startup) *(ProgressiveModelRunner.loadAll() fully implemented)*
+- [x] Migrate to per-step model loading (3 ONNX sessions, loaded once at startup) *(OctreeModelRunner.loadAll() fully implemented)*
 - [x] Implement insert-only RocksDB write guard (skip if key exists) *(VoxySectionWriter.sectionExists() guard active)*
 - [ ] DJL parity verified (test vectors match) *(test_vectors.npz infrastructure ready; verification harness needs Java implementation)*
 - [ ] Performance benchmarks meet targets *(cold-start 359ms >> 100ms target; warm inference ~60ms on undertrained model; require real fully-trained weights)*
 
 ### Milestone 6: Progressive Refinement
 
-- [x] Multi-level LOD chain functional *(ProgressiveLODPipeline chains 5 stages; LodGenerationService runs 4 LOD passes confirmed in log)*
+- [x] Octree generation pipeline functional *(OctreeQueue/OctreeModelRunner integration complete; LodGenerationService runs breadth-first octree traversal)*
 - [x] Scheduler prioritizes correctly *(buildSpiralSections() + PASS_RADIUS; closest sections generated first)*
 - [x] Caching prevents recomputation *(parentCache HashMap in LodGenerationService; coarsened outputs reused across passes)*
 - [ ] Seam stability validated *(no XZ neighbor context; no seam-specific tests)*
