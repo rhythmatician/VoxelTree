@@ -91,29 +91,27 @@ The system is successful when:
 
 ### 2.2 LOD Hierarchy
 
-The system uses a **4-model family** of separate, per-step ONNX models for progressive refinement:
+The system uses a **3-model octree family** for hierarchical LOD generation (OGN — Octree Generation Network):
 
-| Model | ONNX File | Input `x_parent` | Output `block_logits` | Relative Size |
-|-------|-----------|-------------------|-------------------------------------|---------------|
-| **Init** | `init_to_lod4.onnx` | None (zeros) | `[1,1104,1,1,1]` (air=class 0) | Tiny (MLP) |
-| **LOD4→3** | `refine_lod4_to_lod3.onnx` | `[1,1,1,1,1]` | `[1,1104,2,2,2]` | Small |
-| **LOD3→2** | `refine_lod3_to_lod2.onnx` | `[1,1,2,2,2]` | `[1,1104,4,4,4]` | Medium |
-| **LOD2→1** | `refine_lod2_to_lod1.onnx` | `[1,1,4,4,4]` | `[1,1104,8,8,8]` | Medium-Large |
-| **LOD2→1** | `refine_lod2_to_lod1.onnx` | `[1,1,4,4,4]` | `[1,N,8,8,8]`, `[1,1,8,8,8]` | Medium-Large |
+| Model | ONNX File | Role | Output |
+|-------|-----------|------|--------|
+| **Init** | `octree_init.onnx` | Seed root node (L4) from anchor channels | `[1,N,1,1,1]` coarse block logits |
+| **Refine** | `octree_refine.onnx` | Parent → 8 children (L4→L3→L2→L1) | `[1,N,2,2,2]` per call |
+| **Leaf** | `octree_leaf.onnx` | L1 parent → full 32³ leaf block volume | `[1,N,32,32,32]` block logits |
 
-> **LOD1→0 dropped:** Vanilla terrain generation handles full-resolution (LOD0)
-> terrain. The model stops at LOD1 (8³). This eliminates the hardest and most
-> expensive refinement step and avoids the "terrain parity" problem entirely.
+> **LOD0 handled by vanilla:** The leaf model outputs a 32³ block volume used as
+> a render proxy. Vanilla terrain generation remains authoritative for playable
+> (LOD0) terrain. Players get real vanilla terrain where they interact with it.
 
 **Key principles:**
 
-- **Separate ONNX models per step** — each has fixed tensor shapes, optimal for CPU cache and ONNX Runtime graph optimization
+- **3 shared ONNX models** — Init seeds the octree; Refine is called recursively per level; Leaf expands the final level to 32³
 - **No LOD0 model** — vanilla terrain generation is authoritative for playable resolution
-- LOD1+ = progressively coarser ML-generated representations (render proxy only)
+- Octree traversal is breadth-first (L4 → L3 → L2 → L1 → L0 leaf)
 - All LOD levels are deterministic, worldspace-consistent, and seam-aware
 - No upsampling in the mod; models contain static Resize/conv internally
-- Coarse models are smaller/faster; capacity scales with refinement difficulty
 - Each model loaded once at startup, session kept alive (no per-call overhead)
+- `OctreeQueue` manages the 5-level priority queues; `OctreeTask` tracks per-node state
 
 ### 2.3 Anchor Channels (Shared Inputs)
 
@@ -306,16 +304,15 @@ or majority vote. Source of truth: `scripts/mipper.py`.
 
 ### 4.3 Model Export
 
-**Artifacts (per LOD step, 4 models total):**
+**Artifacts (3 octree models + sidecars):**
 
-- `init_to_lod4.onnx` — Noise → LOD4 (tiny MLP)
-- `refine_lod4_to_lod3.onnx` — LOD4 → LOD3 (small)
-- `refine_lod3_to_lod2.onnx` — LOD3 → LOD2 (medium)
-- `refine_lod2_to_lod1.onnx` — LOD2 → LOD1 (medium-large)
-- `model_config.json` (metadata: input/output names, shapes per model, normalization, block palette)
+- `octree_init.onnx` — Anchor channels → L4 root node (1³)
+- `octree_refine.onnx` — Parent node + anchor channels → 8 children (2³); called for L4→L3, L3→L2, L2→L1, L1→L0
+- `octree_leaf.onnx` — L1 parent + anchor channels → 32³ leaf block volume
+- `octree_init_config.json`, `octree_refine_config.json`, `octree_leaf_config.json` (per-model metadata: input/output names, shapes, normalization, block palette)
 - `test_vectors.npz` (input/output examples per model for DJL parity validation)
 
-> **No LOD1→0 model.** Vanilla terrain generation handles LOD0.
+> **No standalone LOD0 model.** The leaf model's 32³ output is a distant render proxy only. Vanilla terrain generation handles playable (LOD0) terrain.
 
 **Export requirements:**
 
