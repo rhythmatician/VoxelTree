@@ -196,9 +196,9 @@ class TestExtractOctantAndUpsample:
         a = self._checkerboard()
         out = extract_octant_and_upsample(a, octant)
         assert out.shape == (32, 32, 32)
-        assert (out == octant).all(), (
-            f"Octant {octant} (bin {octant:03b}) contains unexpected values: {np.unique(out)}"
-        )
+        assert (
+            out == octant
+        ).all(), f"Octant {octant} (bin {octant:03b}) contains unexpected values: {np.unique(out)}"
 
     def test_output_shape_and_dtype(self) -> None:
         a = np.zeros((32, 32, 32), dtype=np.int32)
@@ -326,6 +326,7 @@ class TestOctreeInitModel:
         """Init model takes no parent_blocks argument at all."""
         model = create_init_model(tiny_config)
         import inspect
+
         sig = inspect.signature(model.forward)
         assert "parent_blocks" not in sig.parameters
         assert "parent_context" not in sig.parameters
@@ -380,12 +381,16 @@ class TestOctreeRefineModel:
         y = torch.tensor([5])
         parent = torch.randint(0, tiny_config.block_vocab_size, (1, 32, 32, 32))
 
-        out1 = model(heightmap=hm, biome=biome, y_position=y, level=torch.tensor([1]), parent_blocks=parent)
-        out3 = model(heightmap=hm, biome=biome, y_position=y, level=torch.tensor([3]), parent_blocks=parent)
-
-        assert not torch.allclose(out1["block_type_logits"], out3["block_type_logits"]), (
-            "Level 1 and level 3 should produce different logits"
+        out1 = model(
+            heightmap=hm, biome=biome, y_position=y, level=torch.tensor([1]), parent_blocks=parent
         )
+        out3 = model(
+            heightmap=hm, biome=biome, y_position=y, level=torch.tensor([3]), parent_blocks=parent
+        )
+
+        assert not torch.allclose(
+            out1["block_type_logits"], out3["block_type_logits"]
+        ), "Level 1 and level 3 should produce different logits"
 
     def test_gradient_flows_through_heightmap(self, tiny_config: OctreeConfig) -> None:
         model = create_refine_model(tiny_config)
@@ -484,8 +489,14 @@ class TestOctreeDataset:
         ds = OctreeDataset(tmp_path, split="train")
         sample = ds[0]
         expected = {
-            "labels32", "parent_labels32", "heightmap32", "biome32",
-            "y_position", "level", "non_empty_children", "model_type",
+            "labels32",
+            "parent_labels32",
+            "heightmap32",
+            "biome32",
+            "y_position",
+            "level",
+            "non_empty_children",
+            "model_type",
         }
         assert set(sample.keys()) == expected
 
@@ -582,8 +593,13 @@ class TestCollateOctreeBatch:
         samples = [self._make_sample(1) for _ in range(3)]
         batch = collate_octree_batch(samples)
         tensor_keys = [
-            "labels32", "parent_labels32", "heightmap32", "biome32",
-            "y_position", "level", "non_empty_children",
+            "labels32",
+            "parent_labels32",
+            "heightmap32",
+            "biome32",
+            "y_position",
+            "level",
+            "non_empty_children",
         ]
         for key in tensor_keys:
             assert isinstance(batch[key], torch.Tensor), f"'{key}' must be a tensor"
@@ -621,8 +637,8 @@ class TestBitmaskToBinary:
         bm = torch.tensor([0b00000001, 0b11111111, 0b10101010], dtype=torch.long)
         out = _bitmask_to_binary(bm)
         assert out.shape == (3, 8)
-        assert out[0, 0] == 1.0   # bit 0 of first value set
-        assert out[0, 1] == 0.0   # bit 1 of first value not set
+        assert out[0, 0] == 1.0  # bit 0 of first value set
+        assert out[0, 1] == 0.0  # bit 1 of first value not set
         assert (out[1] == 1).all()  # all bits of 255 set
 
     def test_output_dtype_is_float(self) -> None:
@@ -722,9 +738,7 @@ class TestOctreeLoss:
 
 
 class TestComputeOctreeMetrics:
-    def _make_inputs(
-        self, B: int = 2, V: int = 32, with_occ: bool = True
-    ) -> tuple[Dict, Dict]:
+    def _make_inputs(self, B: int = 2, V: int = 32, with_occ: bool = True) -> tuple[Dict, Dict]:
         preds: Dict[str, torch.Tensor] = {
             "block_type_logits": torch.randn(B, V, 32, 32, 32),
         }
@@ -866,14 +880,10 @@ class TestOctreeLossFocal:
         targets2 = self._targets()
         bce_loss2 = OctreeLoss(focal_gamma=0.0)(preds2, targets2, "refine")
 
-        assert bce_loss["occ_loss"].item() == pytest.approx(
-            bce_loss2["occ_loss"].item(), rel=1e-5
-        )
+        assert bce_loss["occ_loss"].item() == pytest.approx(bce_loss2["occ_loss"].item(), rel=1e-5)
 
     def test_focal_gamma_positive_produces_finite_loss(self) -> None:
-        ld = OctreeLoss(focal_gamma=2.0, focal_alpha=0.75)(
-            self._preds(), self._targets(), "refine"
-        )
+        ld = OctreeLoss(focal_gamma=2.0, focal_alpha=0.75)(self._preds(), self._targets(), "refine")
         assert torch.isfinite(ld["occ_loss"])
         assert torch.isfinite(ld["total_loss"])
 
@@ -915,9 +925,7 @@ class TestOctreeLossFocal:
     def test_focal_leaf_still_zero(self) -> None:
         """Leaf model_type should still have zero occ_loss even with focal params."""
         preds = {"block_type_logits": torch.randn(2, 32, 32, 32, 32)}
-        ld = OctreeLoss(focal_gamma=2.0, focal_alpha=0.75)(
-            preds, self._targets(), "leaf"
-        )
+        ld = OctreeLoss(focal_gamma=2.0, focal_alpha=0.75)(preds, self._targets(), "leaf")
         assert ld["occ_loss"].item() == pytest.approx(0.0)
 
     def test_focal_alpha_affects_loss(self) -> None:
@@ -995,7 +1003,9 @@ class TestOccupancyHeadSpatial:
             oy = (octant >> 2) & 1
 
             perturbed = baseline_bn.clone()
-            perturbed[:, :, oy * 4 : (oy + 1) * 4, oz * 4 : (oz + 1) * 4, ox * 4 : (ox + 1) * 4] = 10.0
+            perturbed[:, :, oy * 4 : (oy + 1) * 4, oz * 4 : (oz + 1) * 4, ox * 4 : (ox + 1) * 4] = (
+                10.0
+            )
             after = head(perturbed).detach()
             diff = (after - baseline).abs().squeeze()[octant]
             assert diff > 0, f"Octant {octant} logit should respond to its region"
@@ -1013,3 +1023,262 @@ class TestOccupancyHeadSpatial:
 
         head = OccupancyHead(in_channels=96)
         assert not hasattr(head, "gap"), "OccupancyHead should not have a 'gap' attribute"
+
+
+# ── Step 4: Refine-path experiments ──────────────────────────────────
+
+
+class TestParentContextAblation:
+    """Test parent_context_mode='embed'/'zeros'/'disabled' on refine + leaf."""
+
+    def _refine_fwd(self, mode: str) -> Dict[str, torch.Tensor]:
+        from train.octree_models import OctreeConfig, create_refine_model
+
+        cfg = OctreeConfig(
+            block_vocab_size=32,
+            refine_channels=(8, 16, 32),
+            parent_embed_dim=4,
+            biome_embed_dim=4,
+            y_embed_dim=4,
+            level_embed_dim=4,
+            parent_context_mode=mode,
+        )
+        model = create_refine_model(cfg)
+        model.eval()
+        B = 2
+        hm = torch.randn(B, 5, 32, 32)
+        biome = torch.randint(0, 16, (B, 32, 32))
+        y = torch.randint(0, 24, (B,))
+        level = torch.tensor([2, 2])
+        parent = torch.randint(0, 32, (B, 32, 32, 32))
+        with torch.no_grad():
+            return model(
+                heightmap=hm,
+                biome=biome,
+                y_position=y,
+                level=level,
+                parent_blocks=parent,
+            )
+
+    def _leaf_fwd(self, mode: str) -> Dict[str, torch.Tensor]:
+        from train.octree_models import OctreeConfig, create_leaf_model
+
+        cfg = OctreeConfig(
+            block_vocab_size=32,
+            leaf_channels=(8, 16, 32),
+            parent_embed_dim=4,
+            biome_embed_dim=4,
+            y_embed_dim=4,
+            level_embed_dim=4,
+            parent_context_mode=mode,
+        )
+        model = create_leaf_model(cfg)
+        model.eval()
+        B = 2
+        hm = torch.randn(B, 5, 32, 32)
+        biome = torch.randint(0, 16, (B, 32, 32))
+        y = torch.randint(0, 24, (B,))
+        parent = torch.randint(0, 32, (B, 32, 32, 32))
+        with torch.no_grad():
+            return model(
+                heightmap=hm,
+                biome=biome,
+                y_position=y,
+                parent_blocks=parent,
+            )
+
+    def test_refine_embed_mode(self) -> None:
+        out = self._refine_fwd("embed")
+        assert out["block_type_logits"].shape == (2, 32, 32, 32, 32)
+        assert out["occ_logits"].shape == (2, 8)
+
+    def test_refine_zeros_mode(self) -> None:
+        out = self._refine_fwd("zeros")
+        assert out["block_type_logits"].shape == (2, 32, 32, 32, 32)
+        assert out["occ_logits"].shape == (2, 8)
+
+    def test_refine_disabled_mode(self) -> None:
+        out = self._refine_fwd("disabled")
+        assert out["block_type_logits"].shape == (2, 32, 32, 32, 32)
+        assert out["occ_logits"].shape == (2, 8)
+
+    def test_leaf_embed_mode(self) -> None:
+        out = self._leaf_fwd("embed")
+        assert out["block_type_logits"].shape == (2, 32, 32, 32, 32)
+        assert "occ_logits" not in out
+
+    def test_leaf_zeros_mode(self) -> None:
+        out = self._leaf_fwd("zeros")
+        assert out["block_type_logits"].shape == (2, 32, 32, 32, 32)
+
+    def test_leaf_disabled_mode(self) -> None:
+        out = self._leaf_fwd("disabled")
+        assert out["block_type_logits"].shape == (2, 32, 32, 32, 32)
+
+    def test_disabled_has_fewer_params(self) -> None:
+        """Disabled mode should have fewer parameters than embed mode."""
+        from train.octree_models import OctreeConfig, create_refine_model
+
+        def _count(mode: str) -> int:
+            cfg = OctreeConfig(
+                block_vocab_size=32,
+                refine_channels=(8, 16, 32),
+                parent_embed_dim=8,
+                biome_embed_dim=4,
+                y_embed_dim=4,
+                level_embed_dim=4,
+                parent_context_mode=mode,
+            )
+            m = create_refine_model(cfg)
+            return sum(p.numel() for p in m.parameters())
+
+        embed_params = _count("embed")
+        disabled_params = _count("disabled")
+        assert (
+            disabled_params < embed_params
+        ), f"Disabled ({disabled_params}) should have fewer params than embed ({embed_params})"
+
+    def test_zeros_has_same_arch_as_embed(self) -> None:
+        """Zeros mode uses same U-Net input channels as embed, just zero-filled."""
+        from train.octree_models import OctreeConfig, create_refine_model
+
+        cfg_embed = OctreeConfig(
+            block_vocab_size=32,
+            refine_channels=(8, 16, 32),
+            parent_embed_dim=4,
+            biome_embed_dim=4,
+            y_embed_dim=4,
+            level_embed_dim=4,
+            parent_context_mode="embed",
+        )
+        cfg_zeros = OctreeConfig(
+            block_vocab_size=32,
+            refine_channels=(8, 16, 32),
+            parent_embed_dim=4,
+            biome_embed_dim=4,
+            y_embed_dim=4,
+            level_embed_dim=4,
+            parent_context_mode="zeros",
+        )
+        m_embed = create_refine_model(cfg_embed)
+        m_zeros = create_refine_model(cfg_zeros)
+        # Same U-Net input channels (DoubleConv3d.block[0] → Conv3dBlock)
+        in_ch_embed = m_embed.unet.enc1.block[0].conv.in_channels
+        in_ch_zeros = m_zeros.unet.enc1.block[0].conv.in_channels
+        assert in_ch_embed == in_ch_zeros
+
+    def test_embed_raises_without_parent(self) -> None:
+        """In embed mode, calling without parent should raise ValueError."""
+        from train.octree_models import OctreeConfig, create_refine_model
+
+        cfg = OctreeConfig(
+            block_vocab_size=32,
+            refine_channels=(8, 16, 32),
+            parent_embed_dim=4,
+            biome_embed_dim=4,
+            y_embed_dim=4,
+            level_embed_dim=4,
+            parent_context_mode="embed",
+        )
+        model = create_refine_model(cfg)
+        with pytest.raises(ValueError, match="parent"):
+            model(
+                heightmap=torch.randn(1, 5, 32, 32),
+                biome=torch.randint(0, 16, (1, 32, 32)),
+                y_position=torch.randint(0, 24, (1,)),
+                level=torch.tensor([2]),
+            )
+
+
+class TestPerLevelOccWeight:
+    """Test per-level occupancy weight overrides in OctreeLoss."""
+
+    def _make_loss_inputs(self) -> tuple:
+        """Return (predictions, targets) for a refine-type batch."""
+        preds = {
+            "block_type_logits": torch.randn(2, 32, 32, 32, 32),
+            "occ_logits": torch.randn(2, 8),
+        }
+        targets = {
+            "target_blocks": torch.randint(0, 32, (2, 32, 32, 32)),
+            "occ_targets": torch.rand(2, 8).round(),
+        }
+        return preds, targets
+
+    def test_no_level_occ_weights_uses_global(self) -> None:
+        """Without level_occ_weights, loss uses global occ_weight."""
+        loss_fn = OctreeLoss(occ_weight=2.0)
+        preds, targets = self._make_loss_inputs()
+        result_a = loss_fn(preds, targets, "refine", level=3)
+        result_b = loss_fn(preds, targets, "refine", level=None)
+        # Both should produce identical total_loss
+        assert torch.allclose(result_a["total_loss"], result_b["total_loss"])
+
+    def test_level_occ_weights_override(self) -> None:
+        """Per-level weights should override global occ_weight."""
+        loss_fn = OctreeLoss(occ_weight=1.0, level_occ_weights={3: 5.0, 2: 0.1})
+        preds, targets = self._make_loss_inputs()
+
+        result_3 = loss_fn(preds, targets, "refine", level=3)
+        result_2 = loss_fn(preds, targets, "refine", level=2)
+
+        # Same block_loss, different total due to different occ weighting
+        assert torch.allclose(result_3["block_loss"], result_2["block_loss"])
+        # L3 should have higher total_loss because occ_weight=5.0 vs 0.1
+        assert result_3["total_loss"] > result_2["total_loss"]
+
+    def test_unspecified_level_falls_back(self) -> None:
+        """Level not in dict should fall back to global occ_weight."""
+        loss_fn = OctreeLoss(occ_weight=1.0, level_occ_weights={3: 10.0})
+        preds, targets = self._make_loss_inputs()
+
+        result_1 = loss_fn(preds, targets, "refine", level=1)
+        result_no = loss_fn(preds, targets, "refine", level=None)
+        # Both use global occ_weight=1.0
+        assert torch.allclose(result_1["total_loss"], result_no["total_loss"])
+
+    def test_level_occ_weights_init(self) -> None:
+        """Init model (L4) should respect level_occ_weights."""
+        loss_fn = OctreeLoss(occ_weight=1.0, level_occ_weights={4: 0.0})
+        preds, targets = self._make_loss_inputs()
+
+        result = loss_fn(preds, targets, "init", level=4)
+        # With occ_weight=0 for L4, total_loss == block_loss
+        assert torch.allclose(result["total_loss"], result["block_loss"])
+
+
+class TestParentEmbedDimCLI:
+    """Test that parent_embed_dim is properly wired through config."""
+
+    def test_config_stores_parent_embed_dim(self) -> None:
+        from train.octree_models import OctreeConfig
+
+        cfg = OctreeConfig(parent_embed_dim=64)
+        assert cfg.parent_embed_dim == 64
+
+    def test_config_stores_parent_context_mode(self) -> None:
+        from train.octree_models import OctreeConfig
+
+        cfg = OctreeConfig(parent_context_mode="zeros")
+        assert cfg.parent_context_mode == "zeros"
+
+    def test_refine_model_uses_config_dim(self) -> None:
+        """Refine model U-Net input channels should reflect parent_embed_dim."""
+        from train.octree_models import OctreeConfig, create_refine_model
+
+        for dim in [4, 8, 32]:
+            cfg = OctreeConfig(
+                block_vocab_size=32,
+                refine_channels=(8, 16, 32),
+                parent_embed_dim=dim,
+                biome_embed_dim=4,
+                y_embed_dim=4,
+                level_embed_dim=4,
+                parent_context_mode="embed",
+            )
+            model = create_refine_model(cfg)
+            expected_in = dim + 5 + 4 + 4 + 4  # parent + height + biome + y + level
+            actual_in = model.unet.enc1.block[0].conv.in_channels
+            assert (
+                actual_in == expected_in
+            ), f"dim={dim}: expected {expected_in} input channels, got {actual_in}"

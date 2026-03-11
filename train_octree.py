@@ -89,11 +89,13 @@ class OctreeLoss(nn.Module):
         class_weights: Optional[torch.Tensor] = None,
         focal_gamma: float = 0.0,
         focal_alpha: float = 0.75,
+        level_occ_weights: Optional[Dict[int, float]] = None,
     ) -> None:
         super().__init__()
         self.occ_weight = occ_weight
         self.focal_gamma = focal_gamma
         self.focal_alpha = focal_alpha
+        self.level_occ_weights = level_occ_weights  # e.g. {4: 2.0, 3: 1.5}
         self.register_buffer("class_weights", class_weights)
 
     def forward(
@@ -101,6 +103,7 @@ class OctreeLoss(nn.Module):
         predictions: Dict[str, torch.Tensor],
         targets: Dict[str, torch.Tensor],
         model_type: str,
+        level: Optional[int] = None,
     ) -> Dict[str, torch.Tensor]:
         """Compute losses.
 
@@ -109,6 +112,7 @@ class OctreeLoss(nn.Module):
             targets: Dict with ``target_blocks`` ``[B, 32, 32, 32]`` int64,
                      and ``occ_targets`` ``[B, 8]`` float (for init/refine).
             model_type: ``"init"``, ``"refine"``, or ``"leaf"``.
+            level: Optional LOD level (4, 3, 2, 1, 0) for per-level occ weight.
 
         Returns:
             Dict with ``total_loss``, ``block_loss``, and ``occ_loss`` tensors.
@@ -146,11 +150,14 @@ class OctreeLoss(nn.Module):
                     reduction="mean",
                 )
             else:
-                occ_loss = nn.functional.binary_cross_entropy_with_logits(
-                    occ_logits, occ_targets
-                )
+                occ_loss = nn.functional.binary_cross_entropy_with_logits(occ_logits, occ_targets)
 
-        total_loss = block_loss + self.occ_weight * occ_loss
+        # Resolve effective occ weight (per-level override or global)
+        effective_occ_weight = self.occ_weight
+        if level is not None and self.level_occ_weights is not None:
+            effective_occ_weight = self.level_occ_weights.get(level, self.occ_weight)
+
+        total_loss = block_loss + effective_occ_weight * occ_loss
 
         return {
             "total_loss": total_loss,
@@ -364,7 +371,18 @@ def train_octree_epoch(
 
         optimizer.zero_grad()
         predictions = _forward_batch(models, batch, device)
-        losses = loss_fn(predictions, targets, model_type)
+
+        # Resolve level for per-level occ weight
+        level_val: Optional[int] = None
+        level_tensor = batch.get("level")
+        if isinstance(level_tensor, torch.Tensor) and level_tensor.numel() > 0:
+            level_val = int(level_tensor[0].item())
+        elif model_type == "init":
+            level_val = 4
+        elif model_type == "leaf":
+            level_val = 0
+
+        losses = loss_fn(predictions, targets, model_type, level=level_val)
         loss = losses["total_loss"]
 
         loss.backward()
@@ -440,7 +458,18 @@ def validate_octree_epoch(
 
             targets = _prepare_targets(batch, device)
             predictions = _forward_batch(models, batch, device)
-            losses = loss_fn(predictions, targets, model_type)
+
+            # Resolve level for per-level occ weight
+            level_val: Optional[int] = None
+            level_tensor = batch.get("level")
+            if isinstance(level_tensor, torch.Tensor) and level_tensor.numel() > 0:
+                level_val = int(level_tensor[0].item())
+            elif model_type == "init":
+                level_val = 4
+            elif model_type == "leaf":
+                level_val = 0
+
+            losses = loss_fn(predictions, targets, model_type, level=level_val)
             metrics = compute_octree_metrics(predictions, targets, model_type)
 
             num_batches += 1
@@ -574,6 +603,34 @@ def main() -> None:
             "to --occ-weight (default: 0, no warmup)."
         ),
     )
+    parser.add_argument(
+        "--parent-embed-dim",
+        type=int,
+        default=16,
+        help="Parent context embedding dimension (default: 16)",
+    )
+    parser.add_argument(
+        "--parent-context-mode",
+        type=str,
+        default="embed",
+        choices=["embed", "zeros", "disabled"],
+        help=(
+            "Parent context ablation mode (default: embed). "
+            "'embed' = learned embedding, 'zeros' = zero-filled channels, "
+            "'disabled' = remove parent channels entirely."
+        ),
+    )
+    parser.add_argument(
+        "--level-occ-weights",
+        type=str,
+        default=None,
+        metavar="SPEC",
+        help=(
+            "Per-level occupancy weight overrides as 'L:W,L:W,...'. "
+            "Example: '4:2.0,3:1.5' sets L4=2.0, L3=1.5. "
+            "Unspecified levels use --occ-weight."
+        ),
+    )
     parser.add_argument("--device", type=str, default="auto", help="Device (auto/cpu/cuda)")
     parser.add_argument("--save-every", type=int, default=10, help="Save checkpoint every N epochs")
     parser.add_argument("--validate-every", type=int, default=5, help="Validate every N epochs")
@@ -676,6 +733,8 @@ def main() -> None:
         init_channels=tuple(args.init_channels),
         refine_channels=tuple(args.refine_channels),
         leaf_channels=tuple(args.leaf_channels),
+        parent_embed_dim=args.parent_embed_dim,
+        parent_context_mode=args.parent_context_mode,
     )
 
     models: Dict[str, nn.Module] = {
@@ -754,11 +813,23 @@ def main() -> None:
             print(f"  Class weights: {nonzero}/{len(cw_arr)} non-zero classes")
 
     # ── Loss, optimizer, scheduler ───────────────────────────────────
+    # Parse per-level occ weights
+    level_occ_weights: Optional[Dict[int, float]] = None
+    if args.level_occ_weights is not None:
+        level_occ_weights = {}
+        for pair in args.level_occ_weights.split(","):
+            parts = pair.strip().split(":")
+            if len(parts) != 2:
+                raise ValueError(f"Bad --level-occ-weights format: '{pair}'. Expected L:W")
+            level_occ_weights[int(parts[0])] = float(parts[1])
+        print(f"Per-level occ weights: {level_occ_weights}")
+
     loss_fn = OctreeLoss(
         occ_weight=args.occ_weight,
         class_weights=class_weights_tensor,
         focal_gamma=args.focal_gamma,
         focal_alpha=args.focal_alpha,
+        level_occ_weights=level_occ_weights,
     ).to(device)
 
     # Stash warmup configuration on the loss_fn for use in the training loop

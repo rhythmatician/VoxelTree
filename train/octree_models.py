@@ -57,6 +57,12 @@ class OctreeConfig:
     # Heightmap channels (surface, ocean_floor, slope_x, slope_z, curvature)
     height_channels: int = 5
 
+    # Parent-context ablation mode:
+    #   "embed"    — learned embedding lookup (default, production path)
+    #   "zeros"    — replace parent features with zeros (same channel count)
+    #   "disabled" — remove parent channels entirely (smaller U-Net input)
+    parent_context_mode: str = "embed"
+
 
 # ── Building blocks ───────────────────────────────────────────────────
 
@@ -374,9 +380,13 @@ class OctreeRefineModel(nn.Module):
         super().__init__()
         self.config = config
         c0, c1, c2 = config.refine_channels
+        self._parent_mode = config.parent_context_mode
 
         # Parent embedding (used during training; bypassed in ONNX)
-        self.parent_encoder = ParentEncoder(config.block_vocab_size, config.parent_embed_dim)
+        if self._parent_mode == "embed":
+            self.parent_encoder = ParentEncoder(config.block_vocab_size, config.parent_embed_dim)
+        else:
+            self.parent_encoder = None  # type: ignore[assignment]
 
         # Conditioning embeddings
         self.biome_embed = nn.Embedding(config.biome_vocab_size, config.biome_embed_dim)
@@ -384,8 +394,9 @@ class OctreeRefineModel(nn.Module):
         self.level_embed = nn.Embedding(config.level_vocab_size, config.level_embed_dim)
 
         # U-Net
+        parent_ch = config.parent_embed_dim if self._parent_mode != "disabled" else 0
         in_channels = (
-            config.parent_embed_dim
+            parent_ch
             + config.height_channels
             + config.biome_embed_dim
             + config.y_embed_dim
@@ -410,7 +421,10 @@ class OctreeRefineModel(nn.Module):
 
         Supply **either** ``parent_blocks`` (int, for training) or
         ``parent_context`` (float, for ONNX inference).  If both are
-        ``None``, raises ``ValueError``.
+        ``None`` and mode is ``"embed"``, raises ``ValueError``.
+
+        In ``"zeros"`` mode, parent channels are replaced with all-zeros.
+        In ``"disabled"`` mode, parent channels are omitted entirely.
 
         Args:
             heightmap:      ``[B, 5, 32, 32]`` float.
@@ -424,11 +438,18 @@ class OctreeRefineModel(nn.Module):
             Dict with ``block_type_logits`` ``[B, V, 32, 32, 32]``
             and ``occ_logits`` ``[B, 8]``.
         """
-        # Resolve parent context
-        if parent_context is None:
-            if parent_blocks is None:
-                raise ValueError("Must supply either parent_blocks or parent_context")
-            parent_context = self.parent_encoder(parent_blocks)
+        B = heightmap.shape[0]
+        device = heightmap.device
+
+        # Resolve parent context based on ablation mode
+        if self._parent_mode == "embed":
+            if parent_context is None:
+                if parent_blocks is None:
+                    raise ValueError("Must supply either parent_blocks or parent_context")
+                parent_context = self.parent_encoder(parent_blocks)
+        elif self._parent_mode == "zeros":
+            parent_context = torch.zeros(B, self.config.parent_embed_dim, 32, 32, 32, device=device)
+        # else "disabled": no parent channels at all
 
         # Build 3D conditioning
         h3d = _build_height_3d(heightmap.float())
@@ -436,8 +457,10 @@ class OctreeRefineModel(nn.Module):
         y3d = _build_scalar_3d(y_position, self.y_embed)
         l3d = _build_scalar_3d(level, self.level_embed)
 
-        assert parent_context is not None  # guaranteed by check above
-        x = torch.cat([parent_context, h3d, b3d, y3d, l3d], dim=1)
+        parts = [h3d, b3d, y3d, l3d]
+        if parent_context is not None:
+            parts.insert(0, parent_context)
+        x = torch.cat(parts, dim=1)
 
         features, bottleneck = self.unet(x)
 
@@ -464,20 +487,22 @@ class OctreeLeafModel(nn.Module):
         super().__init__()
         self.config = config
         c0, c1, c2 = config.leaf_channels
+        self._parent_mode = config.parent_context_mode
 
         # Parent embedding
-        self.parent_encoder = ParentEncoder(config.block_vocab_size, config.parent_embed_dim)
+        if self._parent_mode == "embed":
+            self.parent_encoder = ParentEncoder(config.block_vocab_size, config.parent_embed_dim)
+        else:
+            self.parent_encoder = None  # type: ignore[assignment]
 
         # Conditioning embeddings
         self.biome_embed = nn.Embedding(config.biome_vocab_size, config.biome_embed_dim)
         self.y_embed = nn.Embedding(config.y_vocab_size, config.y_embed_dim)
 
         # U-Net
+        parent_ch = config.parent_embed_dim if self._parent_mode != "disabled" else 0
         in_channels = (
-            config.parent_embed_dim
-            + config.height_channels
-            + config.biome_embed_dim
-            + config.y_embed_dim
+            parent_ch + config.height_channels + config.biome_embed_dim + config.y_embed_dim
         )
         self.unet = UNet3D32(in_channels, config.leaf_channels)
 
@@ -504,17 +529,27 @@ class OctreeLeafModel(nn.Module):
         Returns:
             Dict with ``block_type_logits`` ``[B, V, 32, 32, 32]`` only.
         """
-        if parent_context is None:
-            if parent_blocks is None:
-                raise ValueError("Must supply either parent_blocks or parent_context")
-            parent_context = self.parent_encoder(parent_blocks)
+        B = heightmap.shape[0]
+        device = heightmap.device
+
+        # Resolve parent context based on ablation mode
+        if self._parent_mode == "embed":
+            if parent_context is None:
+                if parent_blocks is None:
+                    raise ValueError("Must supply either parent_blocks or parent_context")
+                parent_context = self.parent_encoder(parent_blocks)
+        elif self._parent_mode == "zeros":
+            parent_context = torch.zeros(B, self.config.parent_embed_dim, 32, 32, 32, device=device)
+        # else "disabled": no parent channels at all
 
         h3d = _build_height_3d(heightmap.float())
         b3d = _build_biome_3d(biome, self.biome_embed)
         y3d = _build_scalar_3d(y_position, self.y_embed)
 
-        assert parent_context is not None  # guaranteed by check above
-        x = torch.cat([parent_context, h3d, b3d, y3d], dim=1)
+        parts = [h3d, b3d, y3d]
+        if parent_context is not None:
+            parts.insert(0, parent_context)
+        x = torch.cat(parts, dim=1)
 
         features, _ = self.unet(x)
 
