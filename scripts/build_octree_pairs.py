@@ -226,14 +226,17 @@ def build_pairs_for_level(
 
         biome = child_data["biome32"]  # (32, 32) int32
         y_pos = int(child_data["section_y"])
+        # Stored NEC may be stale; we recompute below for robustness.
         nec_stored = np.uint8(child_data["non_empty_children"])
 
         if is_init:
-            # L4 init model: no parent context; use stored NEC
+            # L4 init model: no parent context
             parent_labels = np.zeros((32, 32, 32), dtype=np.int32)
+            # NEC for L4 is irrelevant for training the init model, but we
+            # still include it so the dataset schema stays uniform.
             nec = nec_stored
         else:
-            # Find parent
+            # Find parent section coordinates and octant index
             px, py, pz, octant = parent_coords_and_octant(cx, cy, cz)
             if (px, py, pz) not in parent_index:
                 skipped_no_parent += 1
@@ -242,21 +245,16 @@ def build_pairs_for_level(
             parent_data = load_section_npz(parent_index[(px, py, pz)])
             parent_full = parent_data["labels32"]  # (32,32,32)
 
-            # Extract octant and upsample to 32³
             parent_labels = extract_octant_and_upsample(parent_full, octant)
 
-            # Ground-truth NEC: check which octants of THIS section exist
-            # as children at child_level - 1
+            # Compute true NEC by inspecting the next-lower level index.
+            # This ensures the target matches our dataset rather than the
+            # possibly outdated stored bitmask.
             if child_level > 0:
-                grandchild_level = child_level - 1
-                gc_dir = data_dir / f"level_{grandchild_level}"
-                if gc_dir.is_dir():
-                    # We compute NEC from the child's perspective
-                    nec = nec_stored  # Use Voxy's stored value
-                else:
-                    nec = nec_stored
+                gc_index = build_section_index(data_dir, child_level - 1)
+                nec = compute_true_non_empty_children((cx, cy, cz), child_level, gc_index)
             else:
-                # L0 has no children — NEC is 0
+                # L0 has no children
                 nec = np.uint8(0)
 
         pairs.append(
