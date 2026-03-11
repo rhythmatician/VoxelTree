@@ -156,23 +156,36 @@ class UNet3D32(nn.Module):
 
 
 class OccupancyHead(nn.Module):
-    """Global-average-pool the 8³ bottleneck → MLP → 8 child-octant logits.
+    """Spatial octant pooling → shared MLP → 8 child-octant logits.
 
-    Used by init and refine models to predict which child octants are
-    non-empty, enabling octree pruning at inference.
+    Splits the 8³ bottleneck into eight 4³ sub-volumes (one per child
+    octant, using the Voxy bit convention: ``bit0=X, bit1=Z, bit2=Y``)
+    and average-pools each independently.  A shared MLP then predicts
+    a single occupancy logit per octant.
+
+    This is inspired by OGN's per-node classification: each octant
+    prediction is made from its own spatial features rather than from
+    a global average pool that discards spatial locality.
 
     Architecture::
 
-        GAP(8³) → Linear(C₂, 32) → ReLU → Linear(32, 8)
+        bottleneck [B, C₂, 8, 8, 8]
+          → reshape [B, C₂, 2,4, 2,4, 2,4]  # split Y,Z,X into half+local
+          → mean over local dims → [B, C₂, 2, 2, 2]
+          → reshape [B, C₂, 8] → permute [B, 8, C₂]
+          → shared Linear(C₂, 32) → ReLU → Linear(32, 1)
+          → squeeze → [B, 8]
+
+    Used by init and refine models to predict which child octants are
+    non-empty, enabling octree pruning at inference.
     """
 
     def __init__(self, in_channels: int) -> None:
         super().__init__()
-        self.gap = nn.AdaptiveAvgPool3d(1)
         self.mlp = nn.Sequential(
             nn.Linear(in_channels, 32),
             nn.ReLU(inplace=True),
-            nn.Linear(32, 8),
+            nn.Linear(32, 1),
         )
 
     def forward(self, bottleneck: torch.Tensor) -> torch.Tensor:
@@ -184,8 +197,17 @@ class OccupancyHead(nn.Module):
         Returns:
             ``[B, 8]`` occupancy logits (apply sigmoid/BCE at loss time).
         """
-        x = self.gap(bottleneck).flatten(1)  # [B, C₂]
-        return self.mlp(x)  # [B, 8]
+        B, C = bottleneck.shape[:2]
+        # Split each spatial axis into (half=2, local=4):
+        #   [B, C, Y=8, Z=8, X=8] → [B, C, Yh, Yl, Zh, Zl, Xh, Xl]
+        x = bottleneck.reshape(B, C, 2, 4, 2, 4, 2, 4)
+        # Pool over local dims (Yl=3, Zl=5, Xl=7) → [B, C, 2, 2, 2]
+        x = x.mean(dim=(3, 5, 7))
+        # Flatten octant grid → [B, C, 8]  (Y-major order matches
+        # bit0=X, bit1=Z, bit2=Y convention automatically)
+        x = x.reshape(B, C, 8).permute(0, 2, 1)  # [B, 8, C]
+        logits = self.mlp(x)  # [B, 8, 1]
+        return logits.squeeze(-1)  # [B, 8]
 
 
 # ── Parent context encoder ────────────────────────────────────────────

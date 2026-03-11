@@ -37,6 +37,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader, Subset
+from torchvision.ops import sigmoid_focal_loss
 from tqdm import tqdm
 
 # Ensure repo root is on sys.path
@@ -63,24 +64,36 @@ DEFAULT_VOCAB_PATH = Path("config/voxy_vocab.json")
 
 
 class OctreeLoss(nn.Module):
-    """Combined block-type cross-entropy + occupancy BCE loss.
+    """Combined block-type cross-entropy + occupancy loss.
 
     The occupancy loss is only applied to init (L4) and refine (L3-L1)
     models.  Leaf (L0) has no child octants to predict.
 
+    When ``focal_gamma > 0``, occupancy uses sigmoid focal loss (inspired
+    by OGN's emphasis on hard-to-classify mixed/occupied nodes).  When 0,
+    falls back to plain BCE.
+
     Args:
-        occ_weight: Weight for the occupancy BCE loss term.
+        occ_weight: Weight for the occupancy loss term.
         class_weights: Optional per-class weight tensor for CE loss,
             shape ``[block_vocab_size]``.
+        focal_gamma: Focal-loss focusing parameter for occupancy.  0 means
+            plain BCE, >0 down-weights easy examples.  OGN-inspired.
+        focal_alpha: Focal-loss alpha for the positive (occupied) class.
+            Higher values up-weight the occupied minority class.
     """
 
     def __init__(
         self,
         occ_weight: float = 1.0,
         class_weights: Optional[torch.Tensor] = None,
+        focal_gamma: float = 0.0,
+        focal_alpha: float = 0.75,
     ) -> None:
         super().__init__()
         self.occ_weight = occ_weight
+        self.focal_gamma = focal_gamma
+        self.focal_alpha = focal_alpha
         self.register_buffer("class_weights", class_weights)
 
     def forward(
@@ -121,7 +134,21 @@ class OctreeLoss(nn.Module):
         if model_type in ("init", "refine") and "occ_logits" in predictions:
             occ_logits = predictions["occ_logits"]  # [B, 8]
             occ_targets = targets["occ_targets"]  # [B, 8] float
-            occ_loss = nn.functional.binary_cross_entropy_with_logits(occ_logits, occ_targets)
+
+            if self.focal_gamma > 0:
+                # Focal loss: down-weights easy negatives (air-only octants),
+                # focuses on hard occupied/mixed predictions.
+                occ_loss = sigmoid_focal_loss(
+                    occ_logits,
+                    occ_targets,
+                    alpha=self.focal_alpha,
+                    gamma=self.focal_gamma,
+                    reduction="mean",
+                )
+            else:
+                occ_loss = nn.functional.binary_cross_entropy_with_logits(
+                    occ_logits, occ_targets
+                )
 
         total_loss = block_loss + self.occ_weight * occ_loss
 
@@ -518,7 +545,34 @@ def main() -> None:
         "--occ-weight",
         type=float,
         default=1.0,
-        help="Weight for occupancy BCE loss (default: 1.0)",
+        help="Weight for occupancy loss (default: 1.0)",
+    )
+    parser.add_argument(
+        "--focal-gamma",
+        type=float,
+        default=2.0,
+        help=(
+            "Focal-loss gamma for occupancy (default: 2.0). "
+            "0 = plain BCE.  >0 down-weights easy examples (OGN-inspired)."
+        ),
+    )
+    parser.add_argument(
+        "--focal-alpha",
+        type=float,
+        default=0.75,
+        help=(
+            "Focal-loss alpha for occupied class (default: 0.75). "
+            "Higher values up-weight the occupied minority class."
+        ),
+    )
+    parser.add_argument(
+        "--occ-warmup-epochs",
+        type=int,
+        default=0,
+        help=(
+            "Number of epochs to linearly ramp occupancy weight from 0 "
+            "to --occ-weight (default: 0, no warmup)."
+        ),
     )
     parser.add_argument("--device", type=str, default="auto", help="Device (auto/cpu/cuda)")
     parser.add_argument("--save-every", type=int, default=10, help="Save checkpoint every N epochs")
@@ -703,7 +757,13 @@ def main() -> None:
     loss_fn = OctreeLoss(
         occ_weight=args.occ_weight,
         class_weights=class_weights_tensor,
+        focal_gamma=args.focal_gamma,
+        focal_alpha=args.focal_alpha,
     ).to(device)
+
+    # Stash warmup configuration on the loss_fn for use in the training loop
+    _occ_warmup_epochs: int = args.occ_warmup_epochs
+    _occ_weight_full: float = args.occ_weight
 
     all_params = list(p for m in models.values() for p in m.parameters() if p.requires_grad)
     optimizer = optim.AdamW(all_params, lr=args.lr, weight_decay=1e-4)
@@ -768,6 +828,12 @@ def main() -> None:
         desc="Octree Training",
     ):
         epoch_start = time.time()
+
+        # Occupancy weight warmup: ramp from 0 → _occ_weight_full
+        if _occ_warmup_epochs > 0 and epoch <= _occ_warmup_epochs:
+            loss_fn.occ_weight = _occ_weight_full * (epoch / _occ_warmup_epochs)
+        else:
+            loss_fn.occ_weight = _occ_weight_full
 
         # Train
         train_metrics = train_octree_epoch(models, train_loader, loss_fn, optimizer, device)

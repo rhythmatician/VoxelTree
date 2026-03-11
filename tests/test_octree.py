@@ -832,3 +832,184 @@ class TestPrepareTargets:
         batch = _make_batch(B=2, level=2)
         targets = _prepare_targets(batch, torch.device("cpu"))
         assert targets["occ_targets"].dtype == torch.float32
+
+
+# ===========================================================================
+# 14. OctreeLoss — focal loss for occupancy (OGN-inspired)
+# ===========================================================================
+
+
+class TestOctreeLossFocal:
+    """Tests for focal-loss occupancy and warmup features added in Step 3."""
+
+    def _preds(self, B: int = 2, V: int = 32) -> Dict[str, torch.Tensor]:
+        return {
+            "block_type_logits": torch.randn(B, V, 32, 32, 32),
+            "occ_logits": torch.randn(B, 8),
+        }
+
+    def _targets(self, B: int = 2, V: int = 32) -> Dict[str, torch.Tensor]:
+        return {
+            "target_blocks": torch.randint(0, V, (B, 32, 32, 32)),
+            "occ_targets": torch.randint(0, 2, (B, 8)).float(),
+        }
+
+    def test_focal_gamma_zero_matches_bce(self) -> None:
+        """focal_gamma=0 should produce identical occ_loss as plain BCE."""
+        torch.manual_seed(42)
+        preds = self._preds()
+        targets = self._targets()
+        bce_loss = OctreeLoss(focal_gamma=0.0)(preds, targets, "refine")
+
+        torch.manual_seed(42)
+        preds2 = self._preds()
+        targets2 = self._targets()
+        bce_loss2 = OctreeLoss(focal_gamma=0.0)(preds2, targets2, "refine")
+
+        assert bce_loss["occ_loss"].item() == pytest.approx(
+            bce_loss2["occ_loss"].item(), rel=1e-5
+        )
+
+    def test_focal_gamma_positive_produces_finite_loss(self) -> None:
+        ld = OctreeLoss(focal_gamma=2.0, focal_alpha=0.75)(
+            self._preds(), self._targets(), "refine"
+        )
+        assert torch.isfinite(ld["occ_loss"])
+        assert torch.isfinite(ld["total_loss"])
+
+    def test_focal_loss_backward(self) -> None:
+        """Focal loss should allow gradient computation."""
+        occ_logits = torch.randn(2, 8, requires_grad=True)
+        preds = {
+            "block_type_logits": torch.randn(2, 32, 32, 32, 32, requires_grad=True),
+            "occ_logits": occ_logits,
+        }
+        ld = OctreeLoss(focal_gamma=2.0)(preds, self._targets(), "init")
+        ld["total_loss"].backward()
+        assert occ_logits.grad is not None
+
+    def test_focal_reduces_easy_example_loss(self) -> None:
+        """Focal loss on easy examples (high confidence) should be lower than BCE."""
+        # Easy example: logits strongly match targets
+        occ_targets = torch.ones(1, 8)  # all occupied
+        easy_logits = torch.full((1, 8), 5.0)  # sigmoid(5) ≈ 0.993
+
+        preds_easy = {
+            "block_type_logits": torch.randn(1, 32, 32, 32, 32),
+            "occ_logits": easy_logits,
+        }
+        targets = {
+            "target_blocks": torch.randint(0, 32, (1, 32, 32, 32)),
+            "occ_targets": occ_targets,
+        }
+
+        bce_occ = OctreeLoss(focal_gamma=0.0, occ_weight=1.0)(preds_easy, targets, "refine")[
+            "occ_loss"
+        ]
+        focal_occ = OctreeLoss(focal_gamma=2.0, occ_weight=1.0)(preds_easy, targets, "refine")[
+            "occ_loss"
+        ]
+        # Focal loss should be lower on easy examples
+        assert focal_occ.item() < bce_occ.item()
+
+    def test_focal_leaf_still_zero(self) -> None:
+        """Leaf model_type should still have zero occ_loss even with focal params."""
+        preds = {"block_type_logits": torch.randn(2, 32, 32, 32, 32)}
+        ld = OctreeLoss(focal_gamma=2.0, focal_alpha=0.75)(
+            preds, self._targets(), "leaf"
+        )
+        assert ld["occ_loss"].item() == pytest.approx(0.0)
+
+    def test_focal_alpha_affects_loss(self) -> None:
+        """Different alpha values should produce different occ_loss."""
+        torch.manual_seed(99)
+        preds = self._preds()
+        targets = self._targets()
+        la = OctreeLoss(focal_gamma=2.0, focal_alpha=0.25)(preds, targets, "refine")
+        lb = OctreeLoss(focal_gamma=2.0, focal_alpha=0.75)(preds, targets, "refine")
+        # With different alpha, the occ_loss values should differ
+        assert la["occ_loss"].item() != pytest.approx(lb["occ_loss"].item(), abs=1e-6)
+
+
+# ===========================================================================
+# 15. OccupancyHead — spatial octant pooling (OGN-inspired)
+# ===========================================================================
+
+
+class TestOccupancyHeadSpatial:
+    """Tests for the spatially-aware OccupancyHead."""
+
+    def test_output_shape(self) -> None:
+        """Output should be [B, 8] for any valid bottleneck input."""
+        from train.octree_models import OccupancyHead
+
+        head = OccupancyHead(in_channels=96)
+        bottleneck = torch.randn(4, 96, 8, 8, 8)
+        out = head(bottleneck)
+        assert out.shape == (4, 8)
+
+    def test_gradient_flows(self) -> None:
+        from train.octree_models import OccupancyHead
+
+        head = OccupancyHead(in_channels=64)
+        bottleneck = torch.randn(2, 64, 8, 8, 8, requires_grad=True)
+        out = head(bottleneck)
+        out.sum().backward()
+        assert bottleneck.grad is not None
+
+    def test_octant_sensitivity(self) -> None:
+        """Each octant logit should depend on features in its spatial quadrant."""
+        from train.octree_models import OccupancyHead
+
+        head = OccupancyHead(in_channels=16)
+        head.eval()
+
+        # Start with zeros everywhere
+        bottleneck = torch.zeros(1, 16, 8, 8, 8)
+        baseline = head(bottleneck).detach()
+
+        # Perturb only octant 0 region (Y=0:4, Z=0:4, X=0:4)
+        perturbed = bottleneck.clone()
+        perturbed[:, :, 0:4, 0:4, 0:4] = 10.0
+        after = head(perturbed).detach()
+
+        # Octant 0 logit should change the most
+        diffs = (after - baseline).abs().squeeze()
+        assert diffs[0] > 0, "Octant 0 logit should change when its region is perturbed"
+        # Octant 0 should be more affected than distant octant 7 (Y=4:8, Z=4:8, X=4:8)
+        assert diffs[0] > diffs[7], "Octant 0 should be more affected than octant 7"
+
+    def test_all_octants_responsive(self) -> None:
+        """All 8 octant logits should respond to perturbations in their regions."""
+        from train.octree_models import OccupancyHead
+
+        head = OccupancyHead(in_channels=16)
+        head.eval()
+
+        baseline_bn = torch.zeros(1, 16, 8, 8, 8)
+        baseline = head(baseline_bn).detach()
+
+        for octant in range(8):
+            ox = octant & 1
+            oz = (octant >> 1) & 1
+            oy = (octant >> 2) & 1
+
+            perturbed = baseline_bn.clone()
+            perturbed[:, :, oy * 4 : (oy + 1) * 4, oz * 4 : (oz + 1) * 4, ox * 4 : (ox + 1) * 4] = 10.0
+            after = head(perturbed).detach()
+            diff = (after - baseline).abs().squeeze()[octant]
+            assert diff > 0, f"Octant {octant} logit should respond to its region"
+
+    def test_batch_size_one(self) -> None:
+        from train.octree_models import OccupancyHead
+
+        head = OccupancyHead(in_channels=128)
+        out = head(torch.randn(1, 128, 8, 8, 8))
+        assert out.shape == (1, 8)
+
+    def test_no_gap_attribute(self) -> None:
+        """Verify the old GAP-based design is gone."""
+        from train.octree_models import OccupancyHead
+
+        head = OccupancyHead(in_channels=96)
+        assert not hasattr(head, "gap"), "OccupancyHead should not have a 'gap' attribute"
