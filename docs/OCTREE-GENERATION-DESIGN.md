@@ -1,6 +1,6 @@
 # Octree Generation Pipeline — Design Document
 
-## Status: DRAFT — awaiting review before implementation
+## Status: ACTIVE — contract `lodiffusion.v5.octree` v5.0.0
 
 ## 1. Problem Statement
 
@@ -102,7 +102,7 @@ Output:
 **Model B — `octree_refine` (shared across L3, L2, L1):**
 ```
 Input:
-  - parent_context: float[32, 32, 32]   Parent octant (16³ → upsampled 2× → 32³)
+  - parent_blocks:  int[32, 32, 32]    Parent octant (16³ → upsampled 2× → 32³) block IDs
   - heightmap:      float[5, 32, 32]    Height planes scaled to section footprint
   - biome:          int[32, 32]         Biome indices (embedded)
   - y_position:     int scalar          Section Y coordinate (embedded)
@@ -116,7 +116,7 @@ Output:
 **Model C — `octree_leaf` (L0 only):**
 ```
 Input:
-  - parent_context: float[32, 32, 32]   Parent octant (16³ → upsampled 2× → 32³)
+  - parent_blocks:  int[32, 32, 32]    Parent octant (16³ → upsampled 2× → 32³) block IDs
   - heightmap:      float[5, 32, 32]    Block-resolution heights
   - biome:          int[32, 32]         Biome indices (embedded)
   - y_position:     int scalar          Section Y coordinate (embedded)
@@ -172,8 +172,11 @@ The L0 model omits the occupancy head entirely, since individual blocks have no 
 Each model (except L4) receives the **parent section's 32³ block predictions** as context. Since a child section corresponds to one **octant** of the parent, the relevant parent data is a 16³ sub-cube of the parent's 32³ grid. This gets upsampled 2× to 32³ to match the child's spatial resolution.
 
 ```
-parent_32³[px, py, pz]  →  extract octant 16³  →  upsample ×2 → 32³  →  embed → input channels
+parent_32³[px, py, pz]  →  argmax → int[32³]  →  extract octant 16³  →  upsample ×2 → 32³  →  parent_blocks input
 ```
+
+The embedding lookup from block IDs to dense features is **baked into the ONNX graph**,
+so the Java runtime just passes raw integer block IDs.
 
 This provides the structural skeleton: "your parent predicted stone at this location — now predict the finer detail."
 
@@ -237,7 +240,7 @@ class OctreeTask {
     final int wsX, wsY, wsZ;   // WorldSection coordinates at this level
     final long wsKey;          // Packed Voxy WorldSection key
     final byte parentOccMask;  // Which octant of parent we are (0xFF for root)
-    volatile float[] parentContext;  // Parent's 32³ predictions (upsampled octant)
+    volatile long[] parentBlocks;  // Parent's 32³ predictions (upsampled octant, int64 block IDs)
     volatile State state;
     volatile int priority;
 }
@@ -270,8 +273,8 @@ void spawnChildren(OctreeTask parent, byte occMask, float[][][] preds) {
         int childY = (parent.wsY << 1) + ((octant >> 2) & 1);
         int childZ = (parent.wsZ << 1) + ((octant >> 1) & 1);
 
-        float[] parentContext = extractAndUpsampleOctant(preds, octant);
-        OctreeTask child = new OctreeTask(parent.level - 1, childX, childY, childZ, parentContext);
+        long[] parentBlocks = extractAndUpsampleOctant(preds, octant); // int64 block IDs
+        OctreeTask child = new OctreeTask(parent.level - 1, childX, childY, childZ, parentBlocks);
         levelQueues[child.level].add(child);
     }
 }
@@ -357,7 +360,7 @@ Outputs:
 **`octree_refine.onnx` (L3–L1):**
 ```
 Inputs:
-  parent_context: float32[N, C_parent, 32, 32, 32]
+  parent_blocks:  int64[N, 32, 32, 32]
   heightmap:      float32[N, 5, 32, 32]
   biome:          int64[N, 32, 32]
   y_position:     int64[N]
@@ -371,7 +374,7 @@ Outputs:
 **`octree_leaf.onnx` (L0):**
 ```
 Inputs:
-  parent_context: float32[N, C_parent, 32, 32, 32]
+  parent_blocks:  int64[N, 32, 32, 32]
   heightmap:      float32[N, 5, 32, 32]
   biome:          int64[N, 32, 32]
   y_position:     int64[N]

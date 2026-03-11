@@ -1,6 +1,8 @@
 """
-VoxelTree Training Module
+VoxelTree Training Module — Octree Pipeline
 
-Contains PyTorch dataset implementations and training utilities for LOD-aware
-voxel super-resolution model training.
+Contains PyTorch dataset and model implementations for the
+3-model octree training pipeline:
+  - octree_models.py   : OctreeInitModel, OctreeRefineModel, OctreeLeafModel
+  - octree_dataset.py  : OctreeDataset, collate_octree_batch
 """
