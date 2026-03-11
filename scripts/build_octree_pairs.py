@@ -225,7 +225,12 @@ def build_pairs_for_level(
             heightmap = _EMPTY_HEIGHTMAP.copy()
 
         biome = child_data["biome32"]  # (32, 32) int32
-        y_pos = int(child_data["section_y"])
+        raw_y = int(child_data["section_y"])
+        # Translate section_y into the model's embedding range [0,24).
+        # Raw values are often negative (e.g. -4…19).  Add +4 offset so
+        # -4→0, 19→23; clamp to avoid out-of-bounds.
+        y_pos = raw_y + 4
+        y_pos = max(0, min(y_pos, 24 - 1))
         # Stored NEC may be stale; we recompute below for robustness.
         nec_stored = np.uint8(child_data["non_empty_children"])
 
@@ -263,7 +268,7 @@ def build_pairs_for_level(
                 "parent_labels32": parent_labels,
                 "heightmap32": heightmap,
                 "biome32": biome,
-                "y_position": np.int64(y_pos),
+                "y_position": np.int64(y_pos),  # shifted +4 for embedding
                 "level": np.int64(child_level),
                 "non_empty_children": nec,
             }
