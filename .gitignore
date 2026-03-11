@@ -28,7 +28,6 @@ production/
 *.onnx
 
 # Experiment notebooks (keep main notebooks in repo)
-notebooks/experimental/*.ipynb
 notebooks/experimental/old/
 
 # Minecraft server files (not part of codebase)
