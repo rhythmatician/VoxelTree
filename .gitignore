@@ -48,3 +48,6 @@ production/
 # Experimental notebooks
 notebooks/experimental/*.ipynb
 notebooks/experimental/old/
+
+# training profiles
+profiles/
