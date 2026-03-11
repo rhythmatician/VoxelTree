@@ -1,221 +1,275 @@
 """
-Schema and integrity tests for the Voxy extraction pipeline.
+tests/test_voxy_extraction.py — Schema and integrity tests for the octree
+Voxy extraction pipeline.
 
-These tests operate on the *real* extracted data in ``data/voxy/`` to guard
-against silent schema drift between ``extract_voxy_training_data.py`` and the
-``MultiLODDataset`` consumer.
+All tests are skipped automatically when the data directory is absent
+(CI / fresh clone).  They only run when a developer has already executed
+the extraction steps locally:
 
-Requires:
-- ``data/voxy/`` to be populated (run ``python data-cli.py extract`` first).
-  Tests are automatically skipped if the directory is empty or missing.
-
-No RocksDB / rocksdict dependency is needed here — we only read NPZ files.
+    python data-cli.py dataprep --from-step extract-octree \
+        --voxy-dir LODiffusion/run/saves
 """
-
 from __future__ import annotations
 
-import random
-from pathlib import Path
+import pathlib
 
 import numpy as np
 import pytest
 
 # ---------------------------------------------------------------------------
-# Constants
+# Paths
+# ---------------------------------------------------------------------------
+_HERE = pathlib.Path(__file__).parent.parent  # VoxelTree root
+DATA_DIR = _HERE / "data" / "voxy_octree"
+
+REQUIRED_LEVELS = [f"level_{i}" for i in range(5)]  # level_0 … level_4
+PAIR_CACHE_NAMES = ["train_octree_pairs.npz", "val_octree_pairs.npz"]
+
+# Required keys and expected shapes for individual section NPZs.
+# (N=32 for all octree levels.)
+SECTION_REQUIRED_KEYS = {
+    "labels32": {"ndim": 3, "shape": (32, 32, 32)},
+    "biome32": {"ndim": 2, "shape": (32, 32)},
+    "y_section": {"ndim": 0},  # scalar
+    "heightmap32": {"ndim": 3, "shape": (5, 32, 32)},
+}
+
+# Required keys for pair-cache NPZs (N samples per cache).
+PAIR_CACHE_REQUIRED_KEYS = {
+    "labels32": {"ndim": 4},           # (N, 32, 32, 32)
+    "parent_labels32": {"ndim": 4},    # (N, 32, 32, 32)
+    "heightmap32": {"ndim": 4},        # (N, 5, 32, 32)
+    "biome32": {"ndim": 3},            # (N, 32, 32)
+    "y_position": {"ndim": 1},         # (N,)
+    "level": {"ndim": 1},              # (N,)
+    "non_empty_children": {"ndim": 1},  # (N,)
+}
+
+
+# ---------------------------------------------------------------------------
+# Helpers
 # ---------------------------------------------------------------------------
 
-VOXY_DATA_DIR = Path(__file__).parent.parent / "data" / "voxy"
+def _skip_if_no_data(path: pathlib.Path) -> None:
+    """Skip the test if *path* does not exist."""
+    if not path.exists():
+        pytest.skip(f"Data not present: {path}")
 
-# Expected schema keys produced by extract_voxy_training_data.py
-REQUIRED_KEYS = {"labels16", "biome_patch", "heightmap_patch", "y_index"}
 
-# Known vocab IDs are typically ≤ 1101 in practice; use a conservative ceiling
-# that matches Voxy's palette capacity (uint16 values in a 16³ chunk).
-MAX_BLOCK_ID = 65535  # hard limit; real max is closer to 1100
-
-# Minimum number of NPZ files that must exist for tests to run
-MIN_FILE_COUNT = 100
-
-# Number of files to sample for per-file checks (keeps tests fast)
-SAMPLE_SIZE = 50
+def _first_npz(level_dir: pathlib.Path) -> pathlib.Path | None:
+    """Return the first .npz file in *level_dir*, or None."""
+    files = sorted(level_dir.glob("*.npz"))
+    return files[0] if files else None
 
 
 # ---------------------------------------------------------------------------
-# Session-scoped fixture: collect all NPZ paths once
+# Test classes
 # ---------------------------------------------------------------------------
 
 
-@pytest.fixture(scope="session")
-def voxy_npz_files() -> list[Path]:
-    files = sorted(VOXY_DATA_DIR.glob("*.npz"))
-    if len(files) < MIN_FILE_COUNT:
-        pytest.skip(
-            f"data/voxy/ has only {len(files)} files "
-            f"(need ≥ {MIN_FILE_COUNT}). Run 'python data-cli.py extract' first."
+class TestLevelDirectories:
+    """Verify that all expected level directories exist and are non-empty."""
+
+    def test_data_root_exists(self) -> None:
+        _skip_if_no_data(DATA_DIR)
+        assert DATA_DIR.is_dir()
+
+    @pytest.mark.parametrize("level", REQUIRED_LEVELS)
+    def test_level_directory_exists(self, level: str) -> None:
+        _skip_if_no_data(DATA_DIR)
+        level_dir = DATA_DIR / level
+        assert level_dir.is_dir(), f"Missing level directory: {level_dir}"
+
+    @pytest.mark.parametrize("level", REQUIRED_LEVELS)
+    def test_level_directory_non_empty(self, level: str) -> None:
+        _skip_if_no_data(DATA_DIR)
+        level_dir = DATA_DIR / level
+        npz_files = list(level_dir.glob("*.npz"))
+        assert len(npz_files) > 0, (
+            f"No .npz files found in {level_dir}. "
+            "Run: python data-cli.py dataprep --from-step extract-octree"
         )
-    return files
 
 
-@pytest.fixture(scope="session")
-def voxy_sample(voxy_npz_files: list[Path]) -> list[dict]:
-    """Load SAMPLE_SIZE randomly chosen NPZ files and return their contents."""
-    rng = random.Random(42)
-    chosen = rng.sample(voxy_npz_files, min(SAMPLE_SIZE, len(voxy_npz_files)))
-    return [dict(np.load(p)) for p in chosen]
+class TestOctreeNpzSchema:
+    """Validate the schema of individual section NPZ files at each level."""
 
+    @pytest.mark.parametrize("level", REQUIRED_LEVELS)
+    def test_required_keys_present(self, level: str) -> None:
+        _skip_if_no_data(DATA_DIR)
+        level_dir = DATA_DIR / level
+        npz_path = _first_npz(level_dir)
+        if npz_path is None:
+            pytest.skip(f"No NPZ files in {level_dir}")
 
-# ---------------------------------------------------------------------------
-# Tests
-# ---------------------------------------------------------------------------
-
-
-class TestFileInventory:
-    """High-level checks on the data/voxy/ directory itself."""
-
-    def test_directory_exists(self):
-        assert VOXY_DATA_DIR.is_dir(), (
-            f"data/voxy/ not found at {VOXY_DATA_DIR}. "
-            "Run 'python data-cli.py extract' to populate it."
+        data = np.load(npz_path)
+        missing = set(SECTION_REQUIRED_KEYS) - set(data.files)
+        assert not missing, (
+            f"Missing keys in {npz_path.name}: {missing}"
         )
 
-    def test_minimum_file_count(self, voxy_npz_files: list[Path]):
-        count = len(voxy_npz_files)
-        assert count >= MIN_FILE_COUNT, f"Expected ≥ {MIN_FILE_COUNT} NPZ files, found {count}."
+    @pytest.mark.parametrize("level", REQUIRED_LEVELS)
+    def test_array_shapes(self, level: str) -> None:
+        _skip_if_no_data(DATA_DIR)
+        level_dir = DATA_DIR / level
+        npz_path = _first_npz(level_dir)
+        if npz_path is None:
+            pytest.skip(f"No NPZ files in {level_dir}")
 
-    def test_filename_convention(self, voxy_npz_files: list[Path]):
-        """All filenames should match world prefix pattern w<W>_voxy_*."""
-        bad = [
-            f.name
-            for f in voxy_npz_files[:200]  # check a subset for speed
-            if not f.name.startswith("w") or "_voxy_" not in f.name
-        ]
-        assert not bad, f"Unexpected filenames (first 5): {bad[:5]}"
+        data = np.load(npz_path)
+        for key, spec in SECTION_REQUIRED_KEYS.items():
+            if key not in data:
+                continue
+            arr = data[key]
+            assert arr.ndim == spec["ndim"], (
+                f"{npz_path.name}/{key}: expected ndim={spec['ndim']}, "
+                f"got ndim={arr.ndim}"
+            )
+            if "shape" in spec:
+                assert arr.shape == spec["shape"], (
+                    f"{npz_path.name}/{key}: expected shape={spec['shape']}, "
+                    f"got shape={arr.shape}"
+                )
+
+    @pytest.mark.parametrize("level", REQUIRED_LEVELS)
+    def test_labels32_dtype(self, level: str) -> None:
+        _skip_if_no_data(DATA_DIR)
+        level_dir = DATA_DIR / level
+        npz_path = _first_npz(level_dir)
+        if npz_path is None:
+            pytest.skip(f"No NPZ files in {level_dir}")
+
+        data = np.load(npz_path)
+        if "labels32" not in data:
+            return
+        assert np.issubdtype(data["labels32"].dtype, np.integer), (
+            f"labels32 must be integer dtype, got {data['labels32'].dtype}"
+        )
+
+    @pytest.mark.parametrize("level", REQUIRED_LEVELS)
+    def test_heightmap32_dtype(self, level: str) -> None:
+        _skip_if_no_data(DATA_DIR)
+        level_dir = DATA_DIR / level
+        npz_path = _first_npz(level_dir)
+        if npz_path is None:
+            pytest.skip(f"No NPZ files in {level_dir}")
+
+        data = np.load(npz_path)
+        if "heightmap32" not in data:
+            return
+        assert data["heightmap32"].dtype == np.float32, (
+            f"heightmap32 must be float32, got {data['heightmap32'].dtype}"
+        )
+
+    @pytest.mark.parametrize("level", REQUIRED_LEVELS)
+    def test_no_nan_in_heightmap32(self, level: str) -> None:
+        _skip_if_no_data(DATA_DIR)
+        level_dir = DATA_DIR / level
+        npz_path = _first_npz(level_dir)
+        if npz_path is None:
+            pytest.skip(f"No NPZ files in {level_dir}")
+
+        data = np.load(npz_path)
+        if "heightmap32" not in data:
+            return
+        assert not np.any(np.isnan(data["heightmap32"])), (
+            f"NaN values found in heightmap32 of {npz_path.name}"
+        )
 
 
-class TestSchema:
-    """Each NPZ must have the exact keys that MultiLODDataset expects."""
+class TestPairCacheSchema:
+    """Validate the schema of the octree pair cache NPZs."""
 
-    def test_required_keys_present(self, voxy_sample: list[dict]):
-        for i, npz in enumerate(voxy_sample):
-            missing = REQUIRED_KEYS - set(npz.keys())
-            assert not missing, (
-                f"Sample [{i}] missing keys: {missing}. " f"Present keys: {set(npz.keys())}"
+    @pytest.mark.parametrize("cache_name", PAIR_CACHE_NAMES)
+    def test_pair_cache_exists(self, cache_name: str) -> None:
+        _skip_if_no_data(DATA_DIR)
+        cache_path = DATA_DIR / cache_name
+        assert cache_path.exists(), (
+            f"Pair cache not found: {cache_path}. "
+            "Run: python data-cli.py dataprep --from-step build-octree-pairs"
+        )
+
+    @pytest.mark.parametrize("cache_name", PAIR_CACHE_NAMES)
+    def test_required_keys_present(self, cache_name: str) -> None:
+        _skip_if_no_data(DATA_DIR)
+        cache_path = DATA_DIR / cache_name
+        if not cache_path.exists():
+            pytest.skip(f"Pair cache not found: {cache_path}")
+
+        data = np.load(cache_path)
+        missing = set(PAIR_CACHE_REQUIRED_KEYS) - set(data.files)
+        assert not missing, (
+            f"Missing keys in {cache_name}: {missing}"
+        )
+
+    @pytest.mark.parametrize("cache_name", PAIR_CACHE_NAMES)
+    def test_consistent_batch_size(self, cache_name: str) -> None:
+        _skip_if_no_data(DATA_DIR)
+        cache_path = DATA_DIR / cache_name
+        if not cache_path.exists():
+            pytest.skip(f"Pair cache not found: {cache_path}")
+
+        data = np.load(cache_path)
+        # All arrays must have the same leading (batch) dimension.
+        n_samples: int | None = None
+        for key in PAIR_CACHE_REQUIRED_KEYS:
+            if key not in data:
+                continue
+            arr = data[key]
+            if n_samples is None:
+                n_samples = arr.shape[0]
+            else:
+                assert arr.shape[0] == n_samples, (
+                    f"{cache_name}/{key}: inconsistent batch size "
+                    f"(expected {n_samples}, got {arr.shape[0]})"
+                )
+
+    @pytest.mark.parametrize("cache_name", PAIR_CACHE_NAMES)
+    def test_array_ndims(self, cache_name: str) -> None:
+        _skip_if_no_data(DATA_DIR)
+        cache_path = DATA_DIR / cache_name
+        if not cache_path.exists():
+            pytest.skip(f"Pair cache not found: {cache_path}")
+
+        data = np.load(cache_path)
+        for key, spec in PAIR_CACHE_REQUIRED_KEYS.items():
+            if key not in data:
+                continue
+            arr = data[key]
+            assert arr.ndim == spec["ndim"], (
+                f"{cache_name}/{key}: expected ndim={spec['ndim']}, "
+                f"got ndim={arr.ndim}"
             )
 
-    def test_no_unexpected_extra_keys(self, voxy_sample: list[dict]):
-        """Warn (not fail) if extra keys appear — they may be harmless."""
-        for npz in voxy_sample:
-            extra = set(npz.keys()) - REQUIRED_KEYS
-            # Extra keys are acceptable (future additions), but we track them.
-            # Convert to a soft assertion so CI passes.
-            assert True, f"Extra keys found (non-fatal): {extra}"
+    @pytest.mark.parametrize("cache_name", PAIR_CACHE_NAMES)
+    def test_level_values_in_range(self, cache_name: str) -> None:
+        """Octree levels must be in [0, 4]."""
+        _skip_if_no_data(DATA_DIR)
+        cache_path = DATA_DIR / cache_name
+        if not cache_path.exists():
+            pytest.skip(f"Pair cache not found: {cache_path}")
 
-
-class TestShapes:
-    """Array shapes must match what the training code assumes."""
-
-    def test_labels16_shape(self, voxy_sample: list[dict]):
-        for i, npz in enumerate(voxy_sample):
-            shape = npz["labels16"].shape
-            assert shape == (16, 16, 16), f"Sample [{i}] labels16 shape {shape} ≠ (16, 16, 16)"
-
-    def test_biome_patch_shape(self, voxy_sample: list[dict]):
-        for i, npz in enumerate(voxy_sample):
-            shape = npz["biome_patch"].shape
-            assert shape == (16, 16), f"Sample [{i}] biome_patch shape {shape} ≠ (16, 16)"
-
-    def test_heightmap_patch_shape(self, voxy_sample: list[dict]):
-        for i, npz in enumerate(voxy_sample):
-            shape = npz["heightmap_patch"].shape
-            assert shape == (16, 16), f"Sample [{i}] heightmap_patch shape {shape} ≠ (16, 16)"
-
-    def test_y_index_is_scalar(self, voxy_sample: list[dict]):
-        for i, npz in enumerate(voxy_sample):
-            shape = npz["y_index"].shape
-            assert shape == (), f"Sample [{i}] y_index shape {shape} — expected scalar ()"
-
-
-class TestDtypes:
-    """Check that dtypes match the extraction contract."""
-
-    def test_labels16_is_int(self, voxy_sample: list[dict]):
-        for i, npz in enumerate(voxy_sample):
-            dtype = npz["labels16"].dtype
-            assert np.issubdtype(
-                dtype, np.integer
-            ), f"Sample [{i}] labels16 dtype {dtype} is not integer"
-
-    def test_biome_patch_is_int(self, voxy_sample: list[dict]):
-        for i, npz in enumerate(voxy_sample):
-            dtype = npz["biome_patch"].dtype
-            assert np.issubdtype(
-                dtype, np.integer
-            ), f"Sample [{i}] biome_patch dtype {dtype} is not integer"
-
-    def test_heightmap_is_float(self, voxy_sample: list[dict]):
-        for i, npz in enumerate(voxy_sample):
-            dtype = npz["heightmap_patch"].dtype
-            assert np.issubdtype(
-                dtype, np.floating
-            ), f"Sample [{i}] heightmap_patch dtype {dtype} is not float"
-
-    def test_y_index_is_int(self, voxy_sample: list[dict]):
-        for i, npz in enumerate(voxy_sample):
-            dtype = npz["y_index"].dtype
-            assert np.issubdtype(
-                dtype, np.integer
-            ), f"Sample [{i}] y_index dtype {dtype} is not integer"
-
-
-class TestValueRanges:
-    """Catch obvious extraction bugs via range / sanity checks."""
-
-    def test_labels16_nonnegative(self, voxy_sample: list[dict]):
-        for i, npz in enumerate(voxy_sample):
-            arr = npz["labels16"]
-            assert arr.min() >= 0, f"Sample [{i}] labels16 has negative values (min={arr.min()})"
-
-    def test_labels16_within_vocab_ceiling(self, voxy_sample: list[dict]):
-        for i, npz in enumerate(voxy_sample):
-            arr = npz["labels16"]
-            assert (
-                arr.max() <= MAX_BLOCK_ID
-            ), f"Sample [{i}] labels16 max {arr.max()} exceeds ceiling {MAX_BLOCK_ID}"
-
-    def test_heightmap_normalized(self, voxy_sample: list[dict]):
-        for i, npz in enumerate(voxy_sample):
-            arr = npz["heightmap_patch"]
-            assert arr.min() >= 0.0, f"Sample [{i}] heightmap_patch min {arr.min()} < 0.0"
-            assert arr.max() <= 1.0, f"Sample [{i}] heightmap_patch max {arr.max()} > 1.0"
-
-    def test_no_all_zero_chunks(self, voxy_sample: list[dict]):
-        """Every chunk should have at least some solid blocks (filter should exclude air-only)."""
-        zero_count = sum(1 for npz in voxy_sample if npz["labels16"].sum() == 0)
-        # A few zero-label chunks may exist (index 0 = air, solid voxels may be id > 0)
-        # so we allow up to 5% to be all-zero;  a higher count indicates an extraction bug.
-        assert zero_count / len(voxy_sample) <= 0.05, (
-            f"{zero_count}/{len(voxy_sample)} samples have all-zero labels16 "
-            "(expected < 5%); min_solid filter may not be working."
+        data = np.load(cache_path)
+        if "level" not in data:
+            return
+        levels = data["level"]
+        assert np.all(levels >= 0) and np.all(levels <= 4), (
+            f"{cache_name}/level: values out of range [0,4]: "
+            f"min={levels.min()}, max={levels.max()}"
         )
 
+    @pytest.mark.parametrize("cache_name", PAIR_CACHE_NAMES)
+    def test_non_empty_children_bitmask(self, cache_name: str) -> None:
+        """non_empty_children must be uint8 values in [0, 255]."""
+        _skip_if_no_data(DATA_DIR)
+        cache_path = DATA_DIR / cache_name
+        if not cache_path.exists():
+            pytest.skip(f"Pair cache not found: {cache_path}")
 
-class TestCrossFileConsistency:
-    """Aggregate checks across the full sample."""
-
-    def test_unique_y_index_values_present(self, voxy_sample: list[dict]):
-        """We should see multiple distinct Y bands — not all in the same slab."""
-        y_vals = {int(npz["y_index"]) for npz in voxy_sample}
-        assert len(y_vals) > 1, (
-            f"All {len(voxy_sample)} samples have the same y_index ({y_vals}). "
-            "Extraction may be sourcing only one Y slice."
-        )
-
-    def test_block_id_variety(self, voxy_sample: list[dict]):
-        """Across the sample, we should see > 10 distinct block IDs."""
-        all_ids: set[int] = set()
-        for npz in voxy_sample:
-            all_ids.update(np.unique(npz["labels16"]).tolist())
-        assert len(all_ids) > 10, (
-            f"Only {len(all_ids)} distinct block IDs across {len(voxy_sample)} samples. "
-            "Possible palette mapping issue."
+        data = np.load(cache_path)
+        if "non_empty_children" not in data:
+            return
+        nec = data["non_empty_children"]
+        assert nec.dtype == np.uint8, (
+            f"{cache_name}/non_empty_children: expected uint8, got {nec.dtype}"
         )

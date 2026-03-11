@@ -31,14 +31,15 @@ SaveLoadSystem3 decompressed layout:
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 import gzip
-import struct
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, Union
+import struct
+from typing import Any, Dict, Generator, List, Literal, Optional, Tuple, Union, overload
 
 import numpy as np
 
-import rocksdict  # type: ignore  # external package has no stub
+import rocksdict
 
 import zstandard
 
@@ -95,10 +96,10 @@ def encode_section_key(level: int, x: int, y: int, z: int) -> bytes:
 # ---------------------------------------------------------------------------
 
 
-def decode_section(data: bytes) -> Dict[str, Any]:
+def decode_section(data: bytes) -> WorldSection:
     """Decode a ZSTD-decompressed SaveLoadSystem3 section blob.
 
-    Returns a dict with keys:
+    Returns a WorldSection with fields:
       - level, x, y, z: section coordinates
       - palette_size: number of unique voxel entries
       - non_empty_children: 8-bit bitmask
@@ -142,19 +143,19 @@ def decode_section(data: bytes) -> Dict[str, Any]:
     biome_ids = biome_ids.reshape(32, 32, 32)
     light = light.reshape(32, 32, 32)
 
-    return {
-        "level": int(level),
-        "x": int(x),
-        "y": int(y),
-        "z": int(z),
-        "palette_size": palette_size,
-        "non_empty_children": non_empty_children,
-        "block_ids": block_ids,  # (32, 32, 32) — (y, z, x) ordering
-        "biome_ids": biome_ids,  # (32, 32, 32)
-        "light": light,  # (32, 32, 32)
-        "raw_voxels": raw_voxels,  # (32768,) flat
-        "palette": palette,  # (N,)
-    }
+    return WorldSection(
+        level=level,
+        x=x,
+        y=y,
+        z=z,
+        palette_size=palette_size,
+        non_empty_children=non_empty_children,
+        block_ids=block_ids,  # (32, 32, 32) — (y, z, x) ordering
+        biome_ids=biome_ids,  # (32, 32, 32)
+        light=light,  # (32, 32, 32)
+        raw_voxels=raw_voxels,  # (32768,) flat
+        palette=palette,  # (N,)
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -211,6 +212,35 @@ def _parse_nbt_properties(nbt_data: bytes) -> Dict[str, str]:
 # ---------------------------------------------------------------------------
 
 
+@dataclass
+class WorldSection:
+    """Represents a single 32×32×32 world section at a given LOD level.
+
+    Attributes:
+        level: LOD level (0 = finest)
+        x, y, z: section coordinates
+        palette_size: number of unique voxel entries
+        non_empty_children: 8-bit bitmask of which sub-blocks are non-empty
+        block_ids: np.ndarray shape (32, 32, 32) int32, index order (y, z, x)
+        biome_ids: np.ndarray shape (32, 32, 32) int32
+        light: np.ndarray shape (32, 32, 32) uint8
+        raw_voxels: np.ndarray shape (32768,) int64 — full packed longs
+        palette: np.ndarray shape (N,) int64 — the palette lookup table
+    """
+
+    level: int
+    x: int
+    y: int
+    z: int
+    palette_size: int
+    non_empty_children: int
+    block_ids: np.ndarray  # shape (32, 32, 32) int32, order (y, z, x)
+    biome_ids: np.ndarray  # shape (32, 32, 32) int32
+    light: np.ndarray  # shape (32, 32, 32) uint8
+    raw_voxels: np.ndarray  # shape (32768,) int64 — full packed longs
+    palette: np.ndarray  # shape (N,) int64 — the palette lookup table
+
+
 class VoxyReader:
     """Read-only interface to a Voxy RocksDB world database.
 
@@ -218,7 +248,7 @@ class VoxyReader:
 
         reader = VoxyReader("path/to/voxy/<hash>/storage")
         for section in reader.iter_sections(level=0):
-            print(section["x"], section["y"], section["z"], section["block_ids"].shape)
+            print(section.x, section.y, section.z, section.block_ids.shape)
         reader.close()
 
     Or as a context manager::
@@ -281,10 +311,10 @@ class VoxyReader:
     # Reading sections
     # ------------------------------------------------------------------
 
-    def get_section(self, level: int, x: int, y: int, z: int) -> Optional[dict]:
+    def get_section(self, level: int, x: int, y: int, z: int) -> WorldSection | None:
         """Read a single WorldSection by (level, x, y, z).
 
-        Returns decoded dict (see ``decode_section``) or None if not found.
+        Returns decoded WorldSection (see ``decode_section``) or None if not found.
         """
         key = encode_section_key(level, x, y, z)
         try:
@@ -294,6 +324,22 @@ class VoxyReader:
         data = self._dctx.decompress(compressed)
         return decode_section(data)
 
+    @overload
+    def iter_sections(  # noqa: E704
+        self,
+        level: Optional[int] = None,
+        *,
+        decode: Literal[True] = True,
+    ) -> Generator[WorldSection, None, None]: ...
+
+    @overload
+    def iter_sections(  # noqa: E704
+        self,
+        level: Optional[int] = None,
+        *,
+        decode: Literal[False],
+    ) -> Generator[Tuple[bytes, bytes], None, None]: ...
+
     def iter_sections(
         self,
         level: Optional[int] = None,
@@ -302,7 +348,7 @@ class VoxyReader:
     ):
         """Iterate over all world sections, optionally filtering by LOD level.
 
-        Yields decoded section dicts if ``decode=True``, else yields
+        Yields decoded WorldSection objects if ``decode=True``, else yields
         ``(key_bytes, compressed_bytes)`` tuples.
         """
         for key in self._ws_cf.keys():
@@ -354,7 +400,7 @@ class VoxyReader:
     # Section → 16³ sub-blocks (for training data extraction)
     # ------------------------------------------------------------------
 
-    def section_to_subblocks(self, section: dict) -> List[dict]:
+    def section_to_subblocks(self, section: WorldSection) -> List[Dict[str, Any]]:
         """Split a 32×32×32 WorldSection into eight 16×16×16 sub-blocks.
 
         Each sub-block corresponds to a VoxelizedSection at this LOD level.
@@ -368,10 +414,10 @@ class VoxyReader:
           - level: LOD level
           - non_air_count: number of non-air voxels
         """
-        block_ids = section["block_ids"]  # (32, 32, 32) — (y, z, x)
-        biome_ids = section["biome_ids"]
-        level = section["level"]
-        sx, sy, sz = section["x"], section["y"], section["z"]
+        block_ids = section.block_ids  # (32, 32, 32) — (y, z, x)
+        biome_ids = section.biome_ids
+        level = section.level
+        sx, sy, sz = section.x, section.y, section.z
 
         sub_blocks = []
         for dy in range(2):
@@ -559,17 +605,17 @@ def main() -> None:
             if count >= args.sample:
                 break
 
-            blk = section["block_ids"]
+            blk = section.block_ids
             non_air = int(np.sum(blk > 0))
             total = blk.size
             print(
                 "Section LOD=%d x=%d y=%d z=%d  palette=%d  solid=%d/%d (%.1f%%)"
                 % (
-                    section["level"],
-                    section["x"],
-                    section["y"],
-                    section["z"],
-                    section["palette_size"],
+                    section.level,
+                    section.x,
+                    section.y,
+                    section.z,
+                    section.palette_size,
                     non_air,
                     total,
                     100.0 * non_air / total,

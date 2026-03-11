@@ -1,5 +1,8 @@
 # 📦 Integration Instructions for VoxelTree
 
+**⚠️ LEGACY DOCUMENT** This describes the now‑deprecated four‑model progressive pipeline (contract `lodiffusion.v3.progressive`).
+For current octree architecture see `OCTREE-GENERATION-DESIGN.md` and `MODEL-CONTRACT.md` §A.
+
 ## 🎯 Purpose
 
 The `VoxelTree` training pipeline must produce **four ONNX models** forming a progressive LOD refinement pipeline suitable for **real-time, just-in-time terrain generation** inside the **LODiffusion** Minecraft mod. Models are queried at runtime to generate plausible terrain in unexplored distant chunks, working from coarse (LOD4) down to fine (LOD1). LOD0 is always vanilla-authoritative.

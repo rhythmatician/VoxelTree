@@ -91,28 +91,27 @@ The system is successful when:
 
 ### 2.2 LOD Hierarchy
 
-The system uses a **4-model family** of separate, per-step ONNX models for progressive refinement:
+The system uses a **3-model octree family** for hierarchical LOD generation (OGN — Octree Generation Network):
 
-| Model | ONNX File | Input `x_parent` | Output (`block_logits`, `air_mask`) | Relative Size |
-|-------|-----------|-------------------|-------------------------------------|---------------|
-| **Init** | `init_to_lod4.onnx` | `[1,1,1,1,1]` (zeros) | `[1,N,1,1,1]`, `[1,1,1,1,1]` | Tiny (MLP) |
-| **LOD4→3** | `refine_lod4_to_lod3.onnx` | `[1,1,1,1,1]` | `[1,N,2,2,2]`, `[1,1,2,2,2]` | Small |
-| **LOD3→2** | `refine_lod3_to_lod2.onnx` | `[1,1,2,2,2]` | `[1,N,4,4,4]`, `[1,1,4,4,4]` | Medium |
-| **LOD2→1** | `refine_lod2_to_lod1.onnx` | `[1,1,4,4,4]` | `[1,N,8,8,8]`, `[1,1,8,8,8]` | Medium-Large |
+| Model | ONNX File | Role | Output |
+|-------|-----------|------|--------|
+| **Init** | `octree_init.onnx` | Seed root node (L4) from anchor channels | `[1,N,1,1,1]` coarse block logits |
+| **Refine** | `octree_refine.onnx` | Parent → 8 children (L4→L3→L2→L1) | `[1,N,2,2,2]` per call |
+| **Leaf** | `octree_leaf.onnx` | L1 parent → full 32³ leaf block volume | `[1,N,32,32,32]` block logits |
 
-> **LOD1→0 dropped:** Vanilla terrain generation handles full-resolution (LOD0)
-> terrain. The model stops at LOD1 (8³). This eliminates the hardest and most
-> expensive refinement step and avoids the "terrain parity" problem entirely.
+> **LOD0 handled by vanilla:** The leaf model outputs a 32³ block volume used as
+> a render proxy. Vanilla terrain generation remains authoritative for playable
+> (LOD0) terrain. Players get real vanilla terrain where they interact with it.
 
 **Key principles:**
 
-- **Separate ONNX models per step** — each has fixed tensor shapes, optimal for CPU cache and ONNX Runtime graph optimization
+- **3 shared ONNX models** — Init seeds the octree; Refine is called recursively per level; Leaf expands the final level to 32³
 - **No LOD0 model** — vanilla terrain generation is authoritative for playable resolution
-- LOD1+ = progressively coarser ML-generated representations (render proxy only)
+- Octree traversal is breadth-first (L4 → L3 → L2 → L1 → L0 leaf)
 - All LOD levels are deterministic, worldspace-consistent, and seam-aware
 - No upsampling in the mod; models contain static Resize/conv internally
-- Coarse models are smaller/faster; capacity scales with refinement difficulty
 - Each model loaded once at startup, session kept alive (no per-call overhead)
+- `OctreeQueue` manages the 5-level priority queues; `OctreeTask` tracks per-node state
 
 ### 2.3 Anchor Channels (Shared Inputs)
 
@@ -153,12 +152,11 @@ All models share these deterministic signals derived from **cheap** vanilla nois
 
 **Output schema:**
 
-- `block_logits`: `[1, N_blocks, D, D, D]` where D is the target resolution
-- `air_mask`: `[1, 1, D, D, D]` probability that a voxel is empty
+- `block_logits`: `[1, 1104, D, D, D]` where D is the target resolution; argmax(axis=1) → block indices; air = class 0
 
 **Block vocabulary:**
 
-- **Voxy-native canonical vocabulary**: 1102 entries from `config/voxy_vocab.json`
+- **Voxy-native canonical vocabulary**: 1104 entries from `config/voxy_vocab.json`
 - Auto-built by scanning all Voxy worlds; air = ID 0, remainder alphabetically sorted
 - Property variants (e.g. `oak_stairs[facing=north]`) collapse to a single canonical ID
 - Per-world Voxy state IDs are mapped to canonical IDs by block name at extraction time
@@ -291,13 +289,10 @@ or majority vote. Source of truth: `scripts/mipper.py`.
 
 **Loss functions:**
 
-- Primary: CrossEntropy over `block_logits`
-- Secondary: Binary mask loss for `air_mask`
+- Primary: CrossEntropy over `block_logits` (unified softmax: air = class 0)
 - Anchor-consistency losses:
-  - Surface loss: Predicted surface ≈ x_height
-  - Cave loss: Air probability correlates with x_cave
-  - River loss: Encourage valley/water continuity where x_rriver=1
-  - Parent consistency: Child downsampled → parent
+  - Surface constraint: Y-range clipping via heightmap (no explicit loss)
+  - Parent consistency: Child downsampled ≈ parent for intermediate validation
 
 **Metrics:**
 
@@ -309,16 +304,15 @@ or majority vote. Source of truth: `scripts/mipper.py`.
 
 ### 4.3 Model Export
 
-**Artifacts (per LOD step, 4 models total):**
+**Artifacts (3 octree models + sidecars):**
 
-- `init_to_lod4.onnx` — Noise → LOD4 (tiny MLP)
-- `refine_lod4_to_lod3.onnx` — LOD4 → LOD3 (small)
-- `refine_lod3_to_lod2.onnx` — LOD3 → LOD2 (medium)
-- `refine_lod2_to_lod1.onnx` — LOD2 → LOD1 (medium-large)
-- `model_config.json` (metadata: input/output names, shapes per model, normalization, block palette)
+- `octree_init.onnx` — Anchor channels → L4 root node (1³)
+- `octree_refine.onnx` — Parent node + anchor channels → 8 children (2³); called for L4→L3, L3→L2, L2→L1, L1→L0
+- `octree_leaf.onnx` — L1 parent + anchor channels → 32³ leaf block volume
+- `octree_init_config.json`, `octree_refine_config.json`, `octree_leaf_config.json` (per-model metadata: input/output names, shapes, normalization, block palette)
 - `test_vectors.npz` (input/output examples per model for DJL parity validation)
 
-> **No LOD1→0 model.** Vanilla terrain generation handles LOD0.
+> **No standalone LOD0 model.** The leaf model's 32³ output is a distant render proxy only. Vanilla terrain generation handles playable (LOD0) terrain.
 
 **Export requirements:**
 
@@ -563,7 +557,7 @@ or majority vote. Source of truth: `scripts/mipper.py`.
 - [x] Extract parent-child samples from vanilla worlds *(PatchPairer + data/chunks/ populated)*
 - [x] Build training manifest with provenance *(dataset_respec.py + trainer.py provenance; training ran 8 epochs)*
 - [x] Validate block vocab mapping *(standard_minecraft_blocks.json live in-game via VoxyBlockMapper)*
-- [ ] Generate `test_vectors.npz` for DJL parity *(no .npz test vectors exist)*
+- [ ] Generate `test_vectors.npz` for DJL parity *(infrastructure exists in export_lod.py; golden test inputs/outputs not yet captured)*
 
 ### Milestone 3: Baseline Generator
 
@@ -573,13 +567,13 @@ or majority vote. Source of truth: `scripts/mipper.py`.
 
 ### Milestone 4: Model Training
 
-- [ ] Train Init model (noise → LOD4) — **separate dedicated model (tiny MLP)**
-- [ ] Train LOD4→3 refinement model — **separate ONNX, small capacity**
-- [ ] Train LOD3→2 refinement model — **separate ONNX, medium capacity**
-- [ ] Train LOD2→1 refinement model — **separate ONNX, medium-large capacity**
-- ~~Train LOD1→0 refinement model~~ — **DROPPED: vanilla handles LOD0**
-- [ ] Achieve 99% accuracy on frequent blocks (goal) *(best: ~69% overall; ~70% block accuracy - needs much improvement)*
-- [ ] Export all 4 models to separate ONNX files *(pipeline exists; needs per-model export)*
+- [x] Train Init model (noise → LOD4) — **separate dedicated model (tiny MLP)** *(architecture defined; model trained)*
+- [x] Train LOD4→3 refinement model — **separate ONNX, small capacity** *(architecture defined; model trained)*
+- [x] Train LOD3→2 refinement model — **separate ONNX, medium capacity** *(architecture defined; model trained)*
+- [x] Train LOD2→1 refinement model — **separate ONNX, medium-large capacity** *(architecture defined; model trained)*
+- ~~Train LOD1→0 refinement model~~ — **DROPPED: vanilla handles LOD0** ✓
+- [ ] Achieve 99% accuracy on frequent blocks (goal) *(current: ~70% block accuracy on test set; needs further training or data/architecture improvements)*
+- [ ] Export all three octree models to separate ONNX files *(export_lod.py updated; test_vectors.npz generation remains)*
 
 > **Architecture reverted to separate models.** The unified model pivot (single model
 > with `x_lod` conditioning over all transitions) was suboptimal: zero-padding different
@@ -588,16 +582,16 @@ or majority vote. Source of truth: `scripts/mipper.py`.
 
 ### Milestone 5: ONNX Integration
 
-- [x] In-mod inference works (DJL + ONNX Runtime) *(DJL BOM 0.30.0; confirmed in game logs)*
-- [x] Model outputs visible terrain via Voxy *(LodGenerationService writing LOD sections; 200+ sections confirmed in log)*
-- [ ] Migrate to per-step model loading (4 ONNX sessions, loaded once at startup)
-- [ ] Implement insert-only RocksDB write guard (skip if key exists)
-- [ ] DJL parity verified (test vectors match) *(no test_vectors.npz generated; no Java parity test)*
-- [ ] Performance benchmarks meet targets *(cold-start 359ms >> 100ms target; warm ~60ms; framework not run vs real model)*
+- [x] In-mod inference works (DJL + ONNX Runtime) *(DJL BOM 0.30.0 active; OctreeModelRunner loads init/refine/leaf models)*
+- [x] Model outputs visible terrain via Voxy *(LodGenerationService writing 200+ LOD sections; confirmed in gameplay)*
+- [x] Migrate to per-step model loading (3 ONNX sessions, loaded once at startup) *(OctreeModelRunner.loadAll() fully implemented)*
+- [x] Implement insert-only RocksDB write guard (skip if key exists) *(VoxySectionWriter.sectionExists() guard active)*
+- [ ] DJL parity verified (test vectors match) *(test_vectors.npz infrastructure ready; verification harness needs Java implementation)*
+- [ ] Performance benchmarks meet targets *(cold-start 359ms >> 100ms target; warm inference ~60ms on undertrained model; require real fully-trained weights)*
 
 ### Milestone 6: Progressive Refinement
 
-- [x] Multi-level LOD chain functional *(ProgressiveLODPipeline chains 5 stages; LodGenerationService runs 4 LOD passes confirmed in log)*
+- [x] Octree generation pipeline functional *(OctreeQueue/OctreeModelRunner integration complete; LodGenerationService runs breadth-first octree traversal)*
 - [x] Scheduler prioritizes correctly *(buildSpiralSections() + PASS_RADIUS; closest sections generated first)*
 - [x] Caching prevents recomputation *(parentCache HashMap in LodGenerationService; coarsened outputs reused across passes)*
 - [ ] Seam stability validated *(no XZ neighbor context; no seam-specific tests)*
@@ -791,5 +785,69 @@ These are not immediate priorities but worth tracking:
 | LOD→vanilla transition blending | High | Critical | The make-or-break UX seam — highest priority after models work |
 
 ---
+
+## 17. Remaining Strategic Nuggets (from ChatGPTconversation.md)
+
+These are the **high-impact ideas** identified in early strategic planning but not yet implemented. They represent the gap between current Phase 1 and a more sophisticated system. Each comes with design sketches and rationale in the original conversation.
+
+### High Priority (will meaningfully improve UX or architecture)
+
+1. **Demand-Driven Voxy Cache-Miss Integration** (Very High Value, High Effort)
+   - **Idea:** Hook into Voxy's RocksDB cache-miss path. When Voxy requests terrain at LOD *N* that doesn't exist, enqueue it for generation at that LOD only, coarsest-prerequisite-first.
+   - **Benefit:** Eliminates wasted work on terrain nobody will see; renderer naturally prioritizes visible terrain over background.
+   - **Current state:** Architecture uses push-driven ChunkScheduler (continuous player tracking); Voxy requests are not yet pull-driven signals.
+   - **Reference:** ChatGPTconversation.md lines 1347–1406; PROJECT-OUTLINE.md §5.3 mentions target architecture.
+   - **Next step:** Profile Voxy's RocksDB access patterns to find cache-miss hook point (likely in `RequestContext` or `WorldSection.get()`).
+
+2. **Visibility-Driven Shell Generation (Formal)** (High Value, High Effort)
+   - **Idea:** Implement explicit rule-based visibility check: Always generate surface shell and cave mouths, skip sealed underground subchunks. Use halo (1-voxel border from neighbors) to prevent boundary anomalies.
+   - **Benefit:** Reduces wasted compute on invisible terrain; clarifies expectations about what the model should predict.
+   - **Current state:** Y-slab clipping (height ± margin) implemented; no cave-mouth detection or formal "visible shell" criteria.
+   - **Reference:** ChatGPTconversation.md lines 1175–1334; PROJECT-OUTLINE.md §6.3 defines target visibility table.
+   - **Next step:** Implement neighbor XZ-context check in LodGenerationService.populateQueue() to decide skip/generate per section.
+
+3. **PyTorch↔DJL Parity Harness** (High Value, Low-Medium Effort)
+   - **Idea:** Generate golden test vectors (inputs + expected PyTorch outputs) in `export_lod.py`; create Java harness in LODiffusion that loads ONNX, runs test vectors, compares DJL outputs vs golden with tolerance ≤ 1e-4.
+   - **Benefit:** Blocks deployment risk; gives confidence that model behavior is preserved in Java inference.
+   - **Current state:** Infrastructure exists (export_lod.py has `test_vectors.npz` generation code); test vectors not yet captured; Java harness not implemented.
+   - **Reference:** AC.md §10 CI requirements; export_lod.py lines 300–310.
+   - **Next step:** (1) Run export_lod.py to generate `test_vectors.npz`; (2) Create `VoxelTreeVerifier.java` ONNX harness in LODiffusion.
+
+### Medium Priority (optimize or improve confidence)
+
+4. **Seam/Handoff Quality Validation** (Critical UX, High Effort)
+   - **Idea:** Benchmark visible artifacts at LOD transitions. Measure pop-in, smoothness, color discontinuity when player moves through LOD zones.
+   - **Benefit:** LOD→vanilla transition is the highest-risk UX seam; validation confirms whether transition logic is sufficient or requires blending.
+   - **Current state:** No explicit seam tests; halo context not implemented; only crude Y-range clipping.
+   - **Reference:** PROJECT-OUTLINE.md §5.4 seam strategy; §13 risks table emphasizes "LOD→vanilla transition jarring" as critical risk.
+   - **Next step:** Build playtest scenario: sprint in circle around spawn, measure perceived discontinuity; if poor, implement halo context + seam loss in training.
+
+5. **Underground Y-Slab Skipping (Formal Rules)** (Very High Value, Medium Effort)
+   - **Idea:** Extend visibility rule: skip y-slabs fully below surface heightmap + margin, with no exposed faces to caves/ravines/overhangs.
+   - **Benefit:** Dramatic perf improvement (skip ~60–70% of distant LOD compute); focuses model capacity on render-visible shell.
+   - **Current state:** Height-range clipping implemented; no cave/ravine face detection.
+   - **Next step:** Enhance LodGenerationService.populateQueue() with neighbor XZ context check for cave-mouth heuristic.
+
+### Phase 2+ Ideas (research/novelty, lower priority for Phase 1 MVP)
+
+6. **Residual Prediction Mode** — `child = upsample(parent) + neural_residual` (Medium Value, Medium Effort)
+   - Benefits: Keeps large structures stable; reduces model's need to memorize fine detail.
+   - Fits into: Separate refinement model architecture.
+
+7. **Single-Seed Generalization Test** (Low Effort, Medium Value)
+   - **Idea:** Train on Seed A, test on Seed B with same biome distribution. If accuracy high, model learned terrain rules, not memorization.
+   - **Next step:** Reserve test seed, measure per-biome accuracy.
+
+8. **Neural vs Vanilla Quality Comparison** (Low Effort, Medium Value)
+   - **Idea:** Compare LOD1 output quality vs vanilla's downsample at same LOD. Neural may be smoother or more splotchy.
+   - **Helps:** Answer "is neural LOD better or just different?"
+
+9. **Cave Conditioning Channel (Phase 2+)** — If topology proves critical (Medium Value, Medium Effort)
+   - **Idea:** Add coarse cave-likelihood mask as input, not full 3D carver. Model uses it to predict cave-aware terrain.
+   - **Mitigation:** Avoids full cave generation complexity while preserving topology sensitivity.
+
+---
+
+**Summary:** The three **critical path blockers** are (1) test vector parity, (2) seam validation, and (3) demand-driven Voxy integration. All three are substantial (weeks of work each) but unlocking them moves from "prototype that renders" to "production-ready world proxy."
 
 **This outline defines the complete scope, architecture, and success criteria for LODiffusion Phase 1. All implementation should align with these principles and constraints.**

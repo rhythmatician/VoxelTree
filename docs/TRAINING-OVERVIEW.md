@@ -2,7 +2,7 @@
 
 > The model learns to take **seed-derived inputs** + **existing coarse terrain** and output a **finer resolution** version of that terrain.
 
-Each step is a **progressive LOD refinement**, not full terrain generation from scratch.
+Each step is a **progressive octree LOD refinement**, not full terrain generation from scratch.
 
 ---
 
@@ -22,7 +22,7 @@ Each step is a **progressive LOD refinement**, not full terrain generation from 
 
 ---
 
-## 🔁 Training Loop: Progressive Diffusion-Like Refinement
+## 🔁 Training Loop: Progressive Octree Refinement
 
 | Step | Operation                                      |
 | ---- | ---------------------------------------------- |
@@ -69,5 +69,5 @@ That’s it — no need to learn worldgen, no need to understand cave carving lo
 ## Optional Later Features
 
 * Conditioning on nearby LODs (neighboring subchunks)
-* Using diffusion noise schedules to learn denoising steps
+* (legacy note) earlier experiments used diffusion noise schedules, now unused
 * Predicting uncertainty or diversity (e.g., with dropout)

@@ -3,15 +3,15 @@
 LODiffusion Data CLI — data preparation pipeline orchestrator.
 
 Unified tool for all data preparation: RCON world management, Voxy extraction,
-column-height enrichment, and LOD pair cache building.
+column-height enrichment, and octree pair cache building.
 
 Canonical pipeline steps (run all, or start from any step):
-  1) pregen          — RCON: freeze world + Chunky chunk generation
-  2) voxy-import     — RCON: /voxy import world <name>
-  3) dumpnoise       — RCON: /dumpnoise <radius> → noise_dumps/*.json
-  4) extract         — Voxy RocksDB → data/voxy/*.npz
-  5) column-heights  — Merge vanilla heightmaps from dumpnoise JSON into NPZs
-  6) build-pairs     — NPZ → LOD training pair caches (*_pairs_v2.npz)
+  1) pregen              — RCON: freeze world + Chunky chunk generation
+  2) voxy-import         — RCON: /voxy import world <name>
+  3) dumpnoise           — RCON: /dumpnoise <radius> → noise_dumps/*.json
+  4) extract-octree      — Voxy RocksDB → data/voxy_octree/level_N/*.npz
+  5) column-heights-octree — Merge vanilla heightmaps from dumpnoise JSON into NPZs
+  6) build-octree-pairs  — NPZ → octree training pair caches (*_octree_pairs.npz)
 
 Data Flow & Composition
 -----------------------
@@ -23,35 +23,35 @@ Steps logically group into three phases:
     └─ Only needed if regenerating data or switching world seeds
 
   DATA EXTRACTION (Step 4):
-    └─ Convert: Voxy RocksDB → raw training chunks (*.npz)
+    └─ Convert: Voxy RocksDB → raw octree sections (*.npz per LOD level)
     └─ Input: Voxy database(s) from LODiffusion/run/saves
-    └─ Output: data/voxy/*.npz (raw block grids)
+    └─ Output: data/voxy_octree/level_N/*.npz (32³ block grids)
     └─ Must run when: New world is generated
 
   TRAINING PREPARATION (Steps 5–6):
     └─ Steps 5–6 form a pair: ALWAYS run together
-    └─ Step 5: Add vanilla heightmaps to chunks
-    └─ Step 6: Build LOD pairs (input for train.py)
-    └─ Output: data/voxy/*_pairs_v2.npz (ready for training)
+    └─ Step 5: Add 5-plane 32×32 heightmaps to octree NPZs
+    └─ Step 6: Build octree parent/child pairs (input for train_octree.py)
+    └─ Output: data/voxy_octree/*_octree_pairs.npz (ready for training)
 
 Common workflows:
-  • Full pipeline (new world):  from-step pregen  (all steps 1–6)
-  • Existing Voxy DB:           from-step extract (only 4–6)
-  • Cached NPZs:                from-step column-heights (only 5–6, re-pair with new params)
+  • Full pipeline (new world):       from-step pregen         (all steps 1–6)
+  • Existing Voxy DB:                from-step extract-octree (only 4–6)
+  • Cached NPZs:                     from-step column-heights-octree (only 5–6)
 
 Usage examples
 --------------
-  # Full dataprep from pregen through build-pairs:
+  # Full dataprep from pregen through build-octree-pairs:
   python data-cli.py dataprep --from-step pregen \\
       --password secret --world-name "New World" \\
       --voxy-dir LODiffusion/run/saves
 
   # Start from extraction (skips RCON steps, checks Voxy DBs exist):
-  python data-cli.py dataprep --from-step extract \\
+  python data-cli.py dataprep --from-step extract-octree \\
       --voxy-dir LODiffusion/run/saves
 
   # Just column-heights + build-pairs (checks NPZ files exist):
-  python data-cli.py dataprep --from-step column-heights
+  python data-cli.py dataprep --from-step column-heights-octree
 
   # Individual RCON commands:
   python data-cli.py freeze --dry-run
@@ -88,11 +88,18 @@ _HERE = Path(__file__).resolve().parent
 # ---------------------------------------------------------------------------
 
 VOXY_VOCAB_PATH = _HERE / "config" / "voxy_vocab.json"
-DEFAULT_DATA_DIR = _HERE / "data" / "voxy"
+DEFAULT_DATA_DIR = _HERE / "data" / "voxy_octree"
 DEFAULT_VOXY_DIR = _HERE.parent / "LODiffusion" / "run" / "saves"
 
 #: Ordered list of dataprep steps.
-DATAPREP_STEPS = ["pregen", "voxy-import", "dumpnoise", "extract", "column-heights", "build-pairs"]
+DATAPREP_STEPS = [
+    "pregen",
+    "voxy-import",
+    "dumpnoise",
+    "extract-octree",
+    "column-heights-octree",
+    "build-octree-pairs",
+]
 
 #: Default noise-dump output directory (relative to LODiffusion game run dir).
 DEFAULT_NOISE_DUMP_DIR = _HERE / "tools" / "fabric-server" / "runtime" / "noise_dumps"
@@ -479,11 +486,11 @@ def _check_prerequisites(from_step: str, args: argparse.Namespace) -> bool:
     """
     data_dir: Path = getattr(args, "data_dir", DEFAULT_DATA_DIR)
 
-    # extract → evidence that voxy-import ran: Voxy databases exist
-    if from_step == "extract":
+    # extract-octree → evidence that voxy-import ran: Voxy databases exist
+    if from_step == "extract-octree":
         voxy_dir: Path | None = getattr(args, "voxy_dir", None)
         if voxy_dir is None:
-            print("ERROR: --voxy-dir is required when starting at 'extract'")
+            print("ERROR: --voxy-dir is required when starting at '%s'" % from_step)
             return False
         dbs = _find_voxy_databases(voxy_dir)
         if not dbs:
@@ -493,21 +500,31 @@ def _check_prerequisites(from_step: str, args: argparse.Namespace) -> bool:
             return False
         print(f"  ✓ Found {len(dbs)} Voxy database(s)")
 
-    # column-heights → evidence that extract ran AND noise dumps exist
-    if from_step == "column-heights":
-        n = _count_source_npz(data_dir)
-        if n == 0:
-            print(f"ERROR: No source NPZ files in {data_dir}")
-            print("  Run:  python data-cli.py dataprep --from-step extract ...")
+    # column-heights-octree → evidence that extract-octree ran AND noise dumps exist
+    if from_step == "column-heights-octree":
+        # Check for level_N subdirectories
+        has_levels = any((data_dir / f"level_{i}").is_dir() for i in range(5))
+        if not has_levels:
+            print(f"ERROR: No level_N/ directories found in {data_dir}")
+            print("  Run:  python data-cli.py dataprep --octree --from-step extract-octree ...")
             return False
-        print(f"  ✓ {n:,} source NPZ file(s) in {data_dir}")
-        noise_dump_dir: Path = getattr(args, "noise_dump_dir", DEFAULT_NOISE_DUMP_DIR)
+        total_npz = sum(
+            len(list((data_dir / f"level_{i}").glob("*.npz")))
+            for i in range(5)
+            if (data_dir / f"level_{i}").is_dir()
+        )
+        if total_npz == 0:
+            print(f"ERROR: No NPZ files in level_N/ directories under {data_dir}")
+            return False
+        print(f"  ✓ {total_npz:,} octree NPZ files across level_N/ directories")
+
+        noise_dump_dir = getattr(args, "noise_dump_dir", DEFAULT_NOISE_DUMP_DIR)
         jsons = list(noise_dump_dir.glob("chunk_*.json")) if noise_dump_dir.is_dir() else []
         if not jsons:
             print(f"ERROR: No noise dump JSON files in {noise_dump_dir}")
             print("  Run:  python data-cli.py dataprep --from-step dumpnoise ...")
             return False
-        print(f"  ✓ {len(jsons):,} noise dump JSON file(s) in {noise_dump_dir}")
+        print(f"  ✓ {len(jsons):,} noise dump JSON file(s)")
 
     # build-pairs → evidence that column-heights ran: heightmap_surface arrays
     if from_step == "build-pairs":
@@ -524,17 +541,44 @@ def _check_prerequisites(from_step: str, args: argparse.Namespace) -> bool:
             return False
         print("  ✓ NPZ files have heightmap_surface")
 
+    # build-octree-pairs → evidence that column-heights-octree ran: heightmap32 arrays
+    if from_step == "build-octree-pairs":
+        # Sample check a few files from any available level
+        sample_found = False
+        for lvl in range(5):
+            level_dir = data_dir / f"level_{lvl}"
+            if not level_dir.is_dir():
+                continue
+            samples = sorted(level_dir.glob("*.npz"))[:3]
+            if not samples:
+                continue
+            missing_hm = [f for f in samples if not _npz_has_key(f, "heightmap32")]
+            if missing_hm:
+                print("ERROR: Octree NPZ files missing heightmap32:")
+                for f in missing_hm:
+                    print(f"  - {f.name}")
+                print(
+                    "  Run: python data-cli.py dataprep --from-step column-heights-octree ..."
+                )
+                return False
+            sample_found = True
+            break
+        if not sample_found:
+            print(f"ERROR: No octree NPZ files found in {data_dir}")
+            return False
+        print("  ✓ Octree NPZ files have heightmap32")
+
     return True
 
 
-# --- individual step runners (local, subprocess-based) --------------------
+# --- step runners (local, subprocess-based) --------------------
 
 
-def _step_extract(args: argparse.Namespace) -> bool:
-    """Extract training data from Voxy RocksDB databases."""
+def _step_extract_octree(args: argparse.Namespace) -> bool:
+    """Extract multi-LOD octree data from Voxy RocksDB databases."""
     print()
     print("=" * 70)
-    print("  STEP 4/6: Extract training data from Voxy")
+    print("  STEP 4/6: Extract octree data (all LOD levels)")
     print("=" * 70)
     print()
 
@@ -549,7 +593,7 @@ def _step_extract(args: argparse.Namespace) -> bool:
 
     cmd = [
         sys.executable,
-        "scripts/extract_voxy_training_data.py",
+        "scripts/extract_octree_data.py",
         *[str(d) for d in dbs],
         "--output-dir",
         str(data_dir),
@@ -566,11 +610,11 @@ def _step_extract(args: argparse.Namespace) -> bool:
     return result.returncode == 0
 
 
-def _step_column_heights(args: argparse.Namespace) -> bool:
-    """Merge vanilla heightmaps from dumpnoise JSON into extracted NPZs."""
+def _step_column_heights_octree(args: argparse.Namespace) -> bool:
+    """Merge vanilla heightmaps into octree NPZ files (32×32, 5-plane)."""
     print()
     print("=" * 70)
-    print("  STEP 5/6: Merge vanilla heightmaps into NPZs")
+    print("  STEP 5/6: Merge 5-plane heightmaps into octree NPZs")
     print("=" * 70)
     print()
 
@@ -587,24 +631,22 @@ def _step_column_heights(args: argparse.Namespace) -> bool:
     return result.returncode == 0
 
 
-def _step_build_pairs(args: argparse.Namespace) -> bool:
-    """Build LOD training pair caches from enriched NPZ chunks."""
+def _step_build_octree_pairs(args: argparse.Namespace) -> bool:
+    """Build octree parent/child training pair caches."""
     print()
     print("=" * 70)
-    print("  STEP 6/6: Build LOD training pairs")
+    print("  STEP 6/6: Build octree training pairs")
     print("=" * 70)
     print()
 
     data_dir: Path = getattr(args, "data_dir", DEFAULT_DATA_DIR)
     cmd = [
         sys.executable,
-        "scripts/build_pairs.py",
+        "scripts/build_octree_pairs.py",
         "--data-dir",
         str(data_dir),
         "--val-split",
         str(getattr(args, "val_split", 0.1)),
-        "--min-solid",
-        str(getattr(args, "min_solid", 0.02)),
     ]
     if getattr(args, "clean", False):
         cmd.append("--clean")
@@ -617,14 +659,26 @@ def _step_build_pairs(args: argparse.Namespace) -> bool:
 
 
 def cmd_dataprep(args: argparse.Namespace) -> None:
-    """Run the dataprep pipeline from ``--from-step`` through ``build-pairs``.
+    """Run the dataprep pipeline from ``--from-step`` through the final step.
 
     Each step runs in order; if starting at an intermediate step the
     orchestrator first verifies that all earlier steps produced valid output.
     """
     from_step: str = args.from_step
-    idx = DATAPREP_STEPS.index(from_step)
-    steps_to_run = DATAPREP_STEPS[idx:]
+
+    # Default --data-dir
+    if args.data_dir is None:
+        args.data_dir = DEFAULT_DATA_DIR
+
+    step_list = DATAPREP_STEPS
+
+    if from_step not in step_list:
+        print(f"ERROR: '{from_step}' is not a valid step.")
+        print(f"  Valid steps: {', '.join(step_list)}")
+        sys.exit(1)
+
+    idx = step_list.index(from_step)
+    steps_to_run = step_list[idx:]
 
     print()
     print("=" * 70)
@@ -677,9 +731,9 @@ def cmd_dataprep(args: argparse.Namespace) -> None:
         "pregen": lambda: cmd_pregen(cfg),
         "voxy-import": lambda: cmd_voxy_import(cfg),
         "dumpnoise": lambda: cmd_dumpnoise(cfg),
-        "extract": lambda: _step_extract(args),
-        "column-heights": lambda: _step_column_heights(args),
-        "build-pairs": lambda: _step_build_pairs(args),
+        "extract-octree": lambda: _step_extract_octree(args),
+        "column-heights-octree": lambda: _step_column_heights_octree(args),
+        "build-octree-pairs": lambda: _step_build_octree_pairs(args),
     }
 
     for step in steps_to_run:
@@ -820,41 +874,41 @@ def build_parser() -> argparse.ArgumentParser:
     p_dp = sub.add_parser(
         "dataprep",
         parents=[shared, pregen_args],
-        help="Run the full data-preparation pipeline (pregen → build-pairs)",
+        help="Run the full data-preparation pipeline (pregen → build-octree-pairs)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=textwrap.dedent(
             """\
-            Steps (in order):
-              pregen          RCON — freeze world + Chunky pregeneration
-              voxy-import     RCON — /voxy import world <name>
-              dumpnoise       RCON — /dumpnoise <radius> → noise_dumps/*.json
-              extract         Voxy RocksDB → per-chunk NPZ files
-              column-heights  Merge vanilla heightmaps from dumpnoise into NPZs
-              build-pairs     NPZ → LOD transition pair caches
+            Pipeline steps:
+              pregen                 RCON — freeze world + Chunky pregeneration
+              voxy-import            RCON — /voxy import world <name>
+              dumpnoise              RCON — /dumpnoise <radius> → noise_dumps/*.json
+              extract-octree         Voxy RocksDB → data/voxy_octree/level_N/*.npz (all LOD levels)
+              column-heights-octree  Merge 5-plane heightmaps (32×32) into octree NPZs
+              build-octree-pairs     Build parent/child octree training pairs
 
             Examples:
-              # Local steps only (most common):
-              python data-cli.py dataprep --from-step extract \\
-                     --voxy-dir LODiffusion/run/saves --data-dir data/voxy
+              # Most common: local extraction steps only:
+              python data-cli.py dataprep --from-step extract-octree \\
+                     --voxy-dir LODiffusion/run/saves
 
               # Full pipeline including RCON:
               python data-cli.py dataprep --from-step pregen \\
                      --password secret --world-name "New World" \\
-                     --voxy-dir LODiffusion/run/saves --data-dir data/voxy
+                     --voxy-dir LODiffusion/run/saves
 
-              # Just rebuild pairs after patching column-heights:
-              python data-cli.py dataprep --from-step build-pairs \\
-                     --data-dir data/voxy_subset
+              # Just rebuild octree pairs:
+              python data-cli.py dataprep --from-step build-octree-pairs \\
+                     --data-dir data/voxy_octree
             """
         ),
     )
     p_dp.add_argument(
         "--from-step",
         choices=DATAPREP_STEPS,
-        default="extract",
+        default="extract-octree",
         metavar="STEP",
-        help="Start the pipeline from this step (default: extract).  "
-        "Choices: " + ", ".join(DATAPREP_STEPS),
+        help="Start the pipeline from this step (default: extract-octree).  "
+        "Steps: " + ", ".join(DATAPREP_STEPS),
     )
     # Voxy-import args
     p_dp.add_argument(
@@ -881,9 +935,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_dp.add_argument(
         "--data-dir",
         type=Path,
-        default=DEFAULT_DATA_DIR,
+        default=None,
         metavar="DIR",
-        help="Output / working directory for NPZ data (default: data/voxy)",
+        help="Output / working directory for NPZ data (default: data/voxy_octree)",
     )
     p_dp.add_argument(
         "--min-solid",
