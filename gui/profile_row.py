@@ -82,7 +82,12 @@ class ProfileRow(QWidget):
                 conn = _ConnectorWidget(stub=is_stub, parent=self._nodes_container)
                 nodes_layout.addWidget(conn)
 
-            node = StepNodeWidget(step.id, step.label, stub=is_stub, parent=self._nodes_container)
+            node = StepNodeWidget(
+                step.id, step.label,
+                stub=is_stub,
+                server_required=getattr(step, "server_required", False),
+                parent=self._nodes_container,
+            )
             node.clicked.connect(self._on_node_clicked)
             self._nodes[step.id] = node
             nodes_layout.addWidget(node)

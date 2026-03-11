@@ -6,7 +6,7 @@ from pathlib import Path
 
 import yaml  # noqa: F401  (reserved for future profile migrations)
 from PySide6.QtCore import Qt, QTimer, Slot
-from PySide6.QtWidgets import QMainWindow
+from PySide6.QtWidgets import QMainWindow, QMessageBox, QVBoxLayout, QWidget
 
 from gui.dashboard_table import DashboardTable
 from gui.detail_panel import DetailPanel
@@ -18,8 +18,14 @@ from gui.profile_editor import (
     load_profile,
 )
 from gui.run_registry import RunRegistry
+from gui.server_manager import ServerManager
+from gui.server_status_bar import ServerStatusBar
+from gui.step_definitions import STEP_BY_ID
 
 _PROFILES_DIR = Path(__file__).resolve().parent.parent / "profiles"
+
+# Server-required steps in the order they should be queued for a session
+_SERVER_SESSION_STEPS = ["pregen", "voxy_import", "dumpnoise"]
 
 
 class MainWindow(QMainWindow):
@@ -36,7 +42,7 @@ class MainWindow(QMainWindow):
         print("[MW.init.1] WindowTitle setting...", flush=True)
         self.setWindowTitle("VoxelTree Pipeline Manager")
         print("[MW.init.2] Resize...", flush=True)
-        self.resize(1100, 420)
+        self.resize(1100, 460)
         print("[MW.init.3] Stylesheet...", flush=True)
         self.setStyleSheet(
             "QMainWindow { background: #1a1a1a; }" "QMenuBar { background: #252525; color: #ccc; }"
@@ -47,17 +53,34 @@ class MainWindow(QMainWindow):
         self._registries: dict[str, RunRegistry] = {}
         # Profile dict cache: profile_name → loaded YAML dict
         self._profiles: dict[str, dict] = {}
+        # Step queue for server session: list of (profile_name, step_id)
+        self._step_queue: list[tuple[str, str]] = []
+
+        print("[MW.init.4b] Creating ServerManager...", flush=True)
+        self._server = ServerManager()
+        self._server.log_line.connect(self._on_server_log)
+        self._server.status_changed.connect(self._on_server_status_changed)
 
         print("[MW.init.5] Creating DashboardTable...", flush=True)
         # ── Widgets ──
+        self._server_bar = ServerStatusBar(self._server)
         self._dashboard = DashboardTable()
         print("[MW.init.6] Connecting dashboard signals...", flush=True)
         self._dashboard.details_clicked.connect(self._on_details_clicked)
         self._dashboard.delete_profile_requested.connect(self._on_delete_profile)
         self._dashboard.new_profile_requested.connect(self._on_new_profile)
         self._dashboard.node_clicked.connect(self._on_node_clicked)
+        self._server_bar.run_server_session_requested.connect(self._on_run_server_session)
+
         print("[MW.init.7] Setting central widget...", flush=True)
-        self.setCentralWidget(self._dashboard)
+        # Wrap server bar + dashboard in a single central widget
+        _central = QWidget()
+        _vbox = QVBoxLayout(_central)
+        _vbox.setContentsMargins(0, 0, 0, 0)
+        _vbox.setSpacing(0)
+        _vbox.addWidget(self._server_bar)
+        _vbox.addWidget(self._dashboard)
+        self.setCentralWidget(_central)
 
         print("[MW.init.8] Creating DetailPanel...", flush=True)
         self._detail = DetailPanel(self)
@@ -114,6 +137,7 @@ class MainWindow(QMainWindow):
             self._detail.load_profile(profile_name, registry)
             self._detail.show()
             self.resizeDocks([self._detail], [360], Qt.Orientation.Horizontal)
+        self._server_bar.set_active_profile(profile_name)
 
     @Slot()
     def _on_new_profile(self) -> None:
@@ -137,10 +161,94 @@ class MainWindow(QMainWindow):
     @Slot(str, str)
     def _on_node_clicked(self, profile_name: str, step_id: str) -> None:
         """Run a step when its node is clicked."""
+        self._server_bar.set_active_profile(profile_name)
         registry = self._registries.get(profile_name)
-        if registry and registry.can_run(step_id):
-            self._detail.load_profile(profile_name, registry)
-            self._detail.run_step(step_id)
+        if not registry or not registry.can_run(step_id):
+            return
+
+        # Check if the step requires a running server
+        step_def = STEP_BY_ID.get(step_id)
+        if step_def and step_def.server_required and not self._server.is_running():
+            reply = QMessageBox.question(
+                self,
+                "Server Required",
+                f"Step ‘{step_def.label}’ requires the Fabric server to be running.\n\n"
+                "Start the server now? You can click the step again once it’s ready.",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            )
+            if reply == QMessageBox.StandardButton.Yes:
+                self._configure_server_rcon(profile_name)
+                self._server.start()
+            return
+
+        self._detail.load_profile(profile_name, registry)
+        self._detail.run_step(step_id)
+
+    # ------------------------------------------------------------------
+    # Server session
+    # ------------------------------------------------------------------
+
+    @Slot(str)
+    def _on_run_server_session(self, profile_name: str) -> None:
+        """Queue all pending server steps for profile_name and run them."""
+        registry = self._registries.get(profile_name)
+        if not registry:
+            return
+
+        # Configure RCON from profile settings
+        self._configure_server_rcon(profile_name)
+
+        # Figure out which server steps still need to run
+        pending = [
+            step_id for step_id in _SERVER_SESSION_STEPS
+            if registry.get_status(step_id) != "success"
+        ]
+
+        if not pending:
+            QMessageBox.information(
+                self,
+                "Server Session",
+                f"All server steps are already complete for profile ‘{profile_name}’.\n\n"
+                "Nothing to do.",
+            )
+            return
+
+        self._step_queue = [(profile_name, step_id) for step_id in pending]
+        self._run_next_queued_step()
+
+    def _configure_server_rcon(self, profile_name: str) -> None:
+        """Update ServerManager’s RCON connection details from profile data."""
+        profile_data = self._profiles.get(profile_name, {})
+        rcon = profile_data.get("rcon", {})
+        self._server.configure_rcon(
+            host=str(rcon.get("host", "localhost")),
+            port=int(rcon.get("port", 25575)),
+            password=str(rcon.get("password", "")),
+        )
+
+    def _run_next_queued_step(self) -> None:
+        """Pop and execute the next step in _step_queue."""
+        if not self._step_queue:
+            return
+        profile_name, step_id = self._step_queue[0]  # peek, not pop — pop on success
+        registry = self._registries.get(profile_name)
+        if not registry:
+            self._step_queue.clear()
+            return
+        self._detail.load_profile(profile_name, registry)
+        self._detail.run_step(step_id)
+
+    @Slot(str)
+    def _on_server_log(self, line: str) -> None:
+        """Forward server log lines to the detail panel if it’s visible."""
+        if self._detail.isVisible():
+            self._detail.append_log(f"[Server] {line}")
+
+    @Slot(str)
+    def _on_server_status_changed(self, status: str) -> None:
+        """React to server state transitions."""
+        # Nothing extra needed here for now; server_bar handles its own display
+        pass
 
     @Slot(str)
     def _on_delete_profile(self, profile_name: str) -> None:
@@ -167,3 +275,22 @@ class MainWindow(QMainWindow):
     def on_step_finished(self, profile_name: str | None, step_id: str) -> None:
         if profile_name:
             self._dashboard.refresh_profile(profile_name)
+
+        # Advance step queue (server session)
+        if self._step_queue and profile_name:
+            queued_profile, queued_step = self._step_queue[0]
+            if queued_profile == profile_name and queued_step == step_id:
+                registry = self._registries.get(profile_name)
+                succeeded = registry and registry.get_status(step_id) == "success"
+                self._step_queue.pop(0)
+                if succeeded and self._step_queue:
+                    self._run_next_queued_step()
+                elif not succeeded:
+                    # Abort remaining queue on failure
+                    self._step_queue.clear()
+                    self._detail.append_log(
+                        f"[Session] Step ‘{step_id}’ failed — remaining session steps cancelled."
+                    )
+                else:
+                    # Queue complete
+                    self._detail.append_log("[Session] Server session complete.")

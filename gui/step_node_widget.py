@@ -38,12 +38,14 @@ class StepNodeWidget(QWidget):
         step_id: str,
         label: str,
         stub: bool = False,
+        server_required: bool = False,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         self.step_id = step_id
         self.label = label
         self.stub = stub
+        self.server_required = server_required
 
         self._status = "stub" if stub else "not_run"
         self._metadata: str | None = None  # optional text override (e.g., "5 epochs")
@@ -127,6 +129,15 @@ class StepNodeWidget(QWidget):
 
         icon = self._icon()
         painter.drawText(self.rect(), 0x84, icon)  # AlignHCenter | AlignVCenter
+
+        # Server-required indicator: small blue dot in top-right
+        if self.server_required and not self.stub:
+            dot_r = 5
+            dot_x = _DIAMETER - margin - dot_r - 1
+            dot_y = margin + dot_r + 1
+            painter.setBrush(QColor("#4a9fd4"))
+            painter.setPen(QPen(QColor("#1e1e1e"), 1))
+            painter.drawEllipse(dot_x - dot_r, dot_y - dot_r, dot_r * 2, dot_r * 2)
 
     def _icon(self) -> str:
         # If metadata is set (e.g., epoch count for Train), show it instead of status icon

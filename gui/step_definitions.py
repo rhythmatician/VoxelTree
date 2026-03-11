@@ -5,6 +5,7 @@ Each StepDef knows:
   - how to build the CLI command list given a loaded profile dict
   - whether it is currently enabled (loopback stubs start disabled)
 """
+
 from __future__ import annotations
 
 import sys
@@ -21,11 +22,14 @@ class StepDef:
     cmd_factory: Callable[[dict], list[str]]
     enabled: bool = True
     """False → rendered as a faded stub in the dashboard (future loopback steps)."""
+    server_required: bool = False
+    """True → step needs the Fabric server running (sends RCON commands)."""
 
 
 # ---------------------------------------------------------------------------
 # Helper — resolve the Python interpreter inside the current venv (if any)
 # ---------------------------------------------------------------------------
+
 
 def _python() -> str:
     return sys.executable
@@ -42,16 +46,24 @@ def _vt_root() -> Path:
 # subprocess.Popen.  Commands are run with cwd=VoxelTree root.
 # ---------------------------------------------------------------------------
 
+
 def _pregen_cmd(p: dict) -> list[str]:
     world = p.get("world", {})
     rcon = p.get("rcon", {})
     cmd = [
-        _python(), "data-cli.py", "dataprep",
-        "--from-step", "pregen",
-        "--radius", str(world.get("radius", 2048)),
-        "--password", str(rcon.get("password", "")),
-        "--host", str(rcon.get("host", "localhost")),
-        "--port", str(rcon.get("port", 25575)),
+        _python(),
+        "data-cli.py",
+        "dataprep",
+        "--from-step",
+        "pregen",
+        "--radius",
+        str(world.get("radius", 2048)),
+        "--password",
+        str(rcon.get("password", "")),
+        "--host",
+        str(rcon.get("host", "localhost")),
+        "--port",
+        str(rcon.get("port", 25575)),
     ]
     if world.get("seed"):
         # seed is used by the server config, not data-cli; included for reference
@@ -63,12 +75,19 @@ def _voxy_import_cmd(p: dict) -> list[str]:
     world = p.get("world", {})
     rcon = p.get("rcon", {})
     return [
-        _python(), "data-cli.py", "voxy-import",
-        "--world-name", str(world.get("save_name", "New World")),
-        "--password", str(rcon.get("password", "")),
-        "--host", str(rcon.get("host", "localhost")),
-        "--port", str(rcon.get("port", 25575)),
-        "--timeout", str(rcon.get("timeout", 300)),
+        _python(),
+        "data-cli.py",
+        "voxy-import",
+        "--world-name",
+        str(world.get("save_name", "New World")),
+        "--password",
+        str(rcon.get("password", "")),
+        "--host",
+        str(rcon.get("host", "localhost")),
+        "--port",
+        str(rcon.get("port", 25575)),
+        "--timeout",
+        str(rcon.get("timeout", 300)),
     ]
 
 
@@ -76,20 +95,30 @@ def _dumpnoise_cmd(p: dict) -> list[str]:
     world = p.get("world", {})
     rcon = p.get("rcon", {})
     return [
-        _python(), "data-cli.py", "dumpnoise",
-        "--radius", str(world.get("radius", 2048)),
-        "--password", str(rcon.get("password", "")),
-        "--host", str(rcon.get("host", "localhost")),
-        "--port", str(rcon.get("port", 25575)),
+        _python(),
+        "data-cli.py",
+        "dumpnoise",
+        "--radius",
+        str(world.get("radius", 2048)),
+        "--password",
+        str(rcon.get("password", "")),
+        "--host",
+        str(rcon.get("host", "localhost")),
+        "--port",
+        str(rcon.get("port", 25575)),
     ]
 
 
 def _extract_octree_cmd(p: dict) -> list[str]:
     data = p.get("data", {})
     cmd = [
-        _python(), "data-cli.py", "dataprep",
-        "--from-step", "extract-octree",
-        "--voxy-dir", str(data.get("voxy_dir", "../LODiffusion/run/saves")),
+        _python(),
+        "data-cli.py",
+        "dataprep",
+        "--from-step",
+        "extract-octree",
+        "--voxy-dir",
+        str(data.get("voxy_dir", "../LODiffusion/run/saves")),
     ]
     if data.get("data_dir"):
         cmd += ["--data-dir", str(data["data_dir"])]
@@ -105,8 +134,11 @@ def _extract_octree_cmd(p: dict) -> list[str]:
 def _column_heights_cmd(p: dict) -> list[str]:
     data = p.get("data", {})
     cmd = [
-        _python(), "data-cli.py", "dataprep",
-        "--from-step", "column-heights-octree",
+        _python(),
+        "data-cli.py",
+        "dataprep",
+        "--from-step",
+        "column-heights-octree",
     ]
     if data.get("data_dir"):
         cmd += ["--data-dir", str(data["data_dir"])]
@@ -118,8 +150,11 @@ def _column_heights_cmd(p: dict) -> list[str]:
 def _build_pairs_cmd(p: dict) -> list[str]:
     data = p.get("data", {})
     cmd = [
-        _python(), "data-cli.py", "dataprep",
-        "--from-step", "build-octree-pairs",
+        _python(),
+        "data-cli.py",
+        "dataprep",
+        "--from-step",
+        "build-octree-pairs",
     ]
     if data.get("data_dir"):
         cmd += ["--data-dir", str(data["data_dir"])]
@@ -131,11 +166,17 @@ def _train_cmd(p: dict) -> list[str]:
     data = p.get("data", {})
     train = p.get("train", {})
     cmd = [
-        _python(), "pipeline.py", "train",
-        "--epochs", str(train.get("epochs", 20)),
-        "--batch-size", str(train.get("batch_size", 4)),
-        "--lr", str(train.get("lr", 1e-4)),
-        "--device", str(train.get("device", "auto")),
+        _python(),
+        "pipeline.py",
+        "train",
+        "--epochs",
+        str(train.get("epochs", 20)),
+        "--batch-size",
+        str(train.get("batch_size", 4)),
+        "--lr",
+        str(train.get("lr", 1e-4)),
+        "--device",
+        str(train.get("device", "auto")),
     ]
     if data.get("data_dir"):
         cmd += ["--data-dir", str(data["data_dir"])]
@@ -150,8 +191,11 @@ def _export_cmd(p: dict) -> list[str]:
     model_dir = train.get("output_dir", "models/voxy_octree")
     checkpoint = str(Path(model_dir) / "best_model.pt")
     cmd = [
-        _python(), "pipeline.py", "export",
-        "--checkpoint", checkpoint,
+        _python(),
+        "pipeline.py",
+        "export",
+        "--checkpoint",
+        checkpoint,
     ]
     if export.get("output_dir"):
         cmd += ["--export-dir", str(export["output_dir"])]
@@ -187,18 +231,21 @@ PIPELINE_STEPS: list[StepDef] = [
         label="Pregen",
         prereqs=[],
         cmd_factory=_pregen_cmd,
+        server_required=True,
     ),
     StepDef(
         id="voxy_import",
         label="Voxy",
         prereqs=["pregen"],
         cmd_factory=_voxy_import_cmd,
+        server_required=True,
     ),
     StepDef(
         id="dumpnoise",
         label="Noise",
         prereqs=["pregen"],
         cmd_factory=_dumpnoise_cmd,
+        server_required=True,
     ),
     StepDef(
         id="extract_octree",
