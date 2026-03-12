@@ -37,9 +37,8 @@ However, LODiffusion diverges from this work in critical ways:
 **What vanilla noise provides (cheap anchor channels only):**
 
 - Macro height structure (continentalness, erosion, peaks/valleys)
-- Biome layout (climate parameters)
+- Biome layout (climate parameters, via biome index)
 - Surface height planes (surface, ocean floor, slopes, curvature)
-- Router6 climate parameters (temperature, vegetation, continents, erosion, depth, ridges)
 - Deterministic continuity (seed-stable, seamless)
 
 > **Dropped from scope:** Cave carver noise, aquifer masks, barrier masks, and other
@@ -121,11 +120,11 @@ All models share these deterministic signals derived from **cheap** vanilla nois
 |---------|-------|-------------|--------|
 | `x_parent` | varies per step | Parent voxels from previous LOD | **Active** |
 | `x_height_planes` | `[1,5,16,16]` | Surface, ocean_floor, slope_x, slope_z, curvature | **Active** |
-| `x_router6` | `[1,6,16,16]` | Temperature, vegetation, continents, erosion, depth, ridges | **Active** |
 | `x_biome` | `[1,16,16]` int64 | Biome index per column | **Active** |
 | `x_y_index` | `[1]` int64 | Y-slab position (0–23) | **Active** |
 
 > **Dropped channels** (too expensive for distant LOD or no longer needed):
+> - ~~`x_router6`~~ — Redundant: biome encodes the outcome of router6, heightmap encodes depth/erosion/ridges. See `docs/NOISE-DESIGN.md`.
 > - ~~`x_cave_prior4`~~ — Requires 3D noise evaluation; dropped with underground skipping
 > - ~~`x_aquifer3`~~ — Expensive to compute; minimal visual impact at distance
 > - ~~`x_barrier`~~ — Coastal barrier mask; minimal impact at coarse LODs
@@ -136,7 +135,6 @@ All models share these deterministic signals derived from **cheap** vanilla nois
 **Normalization:**
 
 - Heights: min-max by world limits (-64 to 320)
-- Router6: z-score
 - Biome: integer index → learned embedding
 - Y-index: integer → learned embedding
 
@@ -264,7 +262,7 @@ All models share these deterministic signals derived from **cheap** vanilla nois
 1. Extract LOD-0 data from Voxy RocksDB databases (`scripts/extract_voxy_training_data.py`)
 2. Build LOD pyramid targets using Voxy Mipper algorithm (`scripts/mipper.py`)
 3. Randomly sample coarsening factor per training example
-4. Compute anchor conditioning (height planes, router6) from extracted/cached data
+4. Compute anchor conditioning (height planes + biome) from extracted/cached data
 5. Nearest-upsample coarsened parent to canonical 8³ for model input
 
 **LOD coarsening:** Uses the **Voxy Mipper** (opacity-biased corner selection), not OR-pool
@@ -746,7 +744,7 @@ VoxelTree/
 ├── train/                   # Model architecture, dataset, losses, metrics
 │   ├── unet3d.py            # SimpleFlexibleUNet3D (8→16 super-resolution)
 │   ├── multi_lod_dataset.py # NPZ dataset with multi-LOD sampling
-│   ├── anchor_conditioning.py # Height planes + router6 conditioning
+    ├── anchor_conditioning.py # Height planes + biome conditioning
 │   ├── losses.py            # CE + air losses
 │   └── metrics.py           # Per-step and rollout metrics
 ├── scripts/                 # Extraction, export, benchmarking
