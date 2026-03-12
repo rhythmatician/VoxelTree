@@ -9,6 +9,7 @@ the extraction steps locally:
     python data-cli.py dataprep --from-step extract-octree \
         --voxy-dir LODiffusion/run/saves
 """
+
 from __future__ import annotations
 
 import pathlib
@@ -30,18 +31,18 @@ PAIR_CACHE_NAMES = ["train_octree_pairs.npz", "val_octree_pairs.npz"]
 SECTION_REQUIRED_KEYS = {
     "labels32": {"ndim": 3, "shape": (32, 32, 32)},
     "biome32": {"ndim": 2, "shape": (32, 32)},
-    "y_section": {"ndim": 0},  # scalar
+    "section_y": {"ndim": 0},  # scalar
     "heightmap32": {"ndim": 3, "shape": (5, 32, 32)},
 }
 
 # Required keys for pair-cache NPZs (N samples per cache).
 PAIR_CACHE_REQUIRED_KEYS = {
-    "labels32": {"ndim": 4},           # (N, 32, 32, 32)
-    "parent_labels32": {"ndim": 4},    # (N, 32, 32, 32)
-    "heightmap32": {"ndim": 4},        # (N, 5, 32, 32)
-    "biome32": {"ndim": 3},            # (N, 32, 32)
-    "y_position": {"ndim": 1},         # (N,)
-    "level": {"ndim": 1},              # (N,)
+    "labels32": {"ndim": 4},  # (N, 32, 32, 32)
+    "parent_labels32": {"ndim": 4},  # (N, 32, 32, 32)
+    "heightmap32": {"ndim": 4},  # (N, 5, 32, 32)
+    "biome32": {"ndim": 3},  # (N, 32, 32)
+    "y_position": {"ndim": 1},  # (N,)
+    "level": {"ndim": 1},  # (N,)
     "non_empty_children": {"ndim": 1},  # (N,)
 }
 
@@ -49,6 +50,7 @@ PAIR_CACHE_REQUIRED_KEYS = {
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _skip_if_no_data(path: pathlib.Path) -> None:
     """Skip the test if *path* does not exist."""
@@ -104,9 +106,7 @@ class TestOctreeNpzSchema:
 
         data = np.load(npz_path)
         missing = set(SECTION_REQUIRED_KEYS) - set(data.files)
-        assert not missing, (
-            f"Missing keys in {npz_path.name}: {missing}"
-        )
+        assert not missing, f"Missing keys in {npz_path.name}: {missing}"
 
     @pytest.mark.parametrize("level", REQUIRED_LEVELS)
     def test_array_shapes(self, level: str) -> None:
@@ -122,8 +122,7 @@ class TestOctreeNpzSchema:
                 continue
             arr = data[key]
             assert arr.ndim == spec["ndim"], (
-                f"{npz_path.name}/{key}: expected ndim={spec['ndim']}, "
-                f"got ndim={arr.ndim}"
+                f"{npz_path.name}/{key}: expected ndim={spec['ndim']}, " f"got ndim={arr.ndim}"
             )
             if "shape" in spec:
                 assert arr.shape == spec["shape"], (
@@ -142,9 +141,9 @@ class TestOctreeNpzSchema:
         data = np.load(npz_path)
         if "labels32" not in data:
             return
-        assert np.issubdtype(data["labels32"].dtype, np.integer), (
-            f"labels32 must be integer dtype, got {data['labels32'].dtype}"
-        )
+        assert np.issubdtype(
+            data["labels32"].dtype, np.integer
+        ), f"labels32 must be integer dtype, got {data['labels32'].dtype}"
 
     @pytest.mark.parametrize("level", REQUIRED_LEVELS)
     def test_heightmap32_dtype(self, level: str) -> None:
@@ -157,9 +156,9 @@ class TestOctreeNpzSchema:
         data = np.load(npz_path)
         if "heightmap32" not in data:
             return
-        assert data["heightmap32"].dtype == np.float32, (
-            f"heightmap32 must be float32, got {data['heightmap32'].dtype}"
-        )
+        assert (
+            data["heightmap32"].dtype == np.float32
+        ), f"heightmap32 must be float32, got {data['heightmap32'].dtype}"
 
     @pytest.mark.parametrize("level", REQUIRED_LEVELS)
     def test_no_nan_in_heightmap32(self, level: str) -> None:
@@ -172,9 +171,9 @@ class TestOctreeNpzSchema:
         data = np.load(npz_path)
         if "heightmap32" not in data:
             return
-        assert not np.any(np.isnan(data["heightmap32"])), (
-            f"NaN values found in heightmap32 of {npz_path.name}"
-        )
+        assert not np.any(
+            np.isnan(data["heightmap32"])
+        ), f"NaN values found in heightmap32 of {npz_path.name}"
 
 
 class TestPairCacheSchema:
@@ -198,9 +197,7 @@ class TestPairCacheSchema:
 
         data = np.load(cache_path)
         missing = set(PAIR_CACHE_REQUIRED_KEYS) - set(data.files)
-        assert not missing, (
-            f"Missing keys in {cache_name}: {missing}"
-        )
+        assert not missing, f"Missing keys in {cache_name}: {missing}"
 
     @pytest.mark.parametrize("cache_name", PAIR_CACHE_NAMES)
     def test_consistent_batch_size(self, cache_name: str) -> None:
@@ -237,8 +234,7 @@ class TestPairCacheSchema:
                 continue
             arr = data[key]
             assert arr.ndim == spec["ndim"], (
-                f"{cache_name}/{key}: expected ndim={spec['ndim']}, "
-                f"got ndim={arr.ndim}"
+                f"{cache_name}/{key}: expected ndim={spec['ndim']}, " f"got ndim={arr.ndim}"
             )
 
     @pytest.mark.parametrize("cache_name", PAIR_CACHE_NAMES)
@@ -270,6 +266,6 @@ class TestPairCacheSchema:
         if "non_empty_children" not in data:
             return
         nec = data["non_empty_children"]
-        assert nec.dtype == np.uint8, (
-            f"{cache_name}/non_empty_children: expected uint8, got {nec.dtype}"
-        )
+        assert (
+            nec.dtype == np.uint8
+        ), f"{cache_name}/non_empty_children: expected uint8, got {nec.dtype}"

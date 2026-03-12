@@ -1,17 +1,39 @@
+# IDE and local config
 .coverage
 .fabric/
-libraries/
-logs/
+
+# Python cache and artifacts
+*.pyc
+tests/__pycache__/*
 *.log
-tools/fabric-server/runtime/eula.txt
-data/test_world/region/*
+logs/
+artifacts/
+
+# Test and temporary files
+check_*.py
+test_metrics_report.json
 debug_*
 output.txt
-runs/*
-artifacts/
-*.npz
-check_*.py
-*.mca
+
+# External dependencies and reference code
+libraries/
+reference-code/
+
+# Model checkpoints, exports, and training artifacts
+models/
+multi_lod_test/
+onnx_export/
+production/
+*.pt
+*.onnx
+
+# Experiment notebooks (keep main notebooks in repo)
+notebooks/experimental/old/
+
+# Minecraft server files (not part of codebase)
+tools/fabric-server/runtime/world/
+tools/fabric-server/runtime/noise_dumps/*.json
+tools/fabric-server/runtime/eula.txt
 eula.txt
 usercache.json
 whitelist.json
@@ -21,30 +43,14 @@ banned-ips.json
 level.dat
 server.properties
 session.lock
-mc-wiki-strongholds.txt
-mc-wiki-strongholdgeneration.txt
+
+# Minecraft data files
+data/test_world/region/*
+*.mca
+
+# Training profiles and pipeline intermediates (generated, can be regenerated)
+profiles/
+runs/
+data/*
 training_run.txt
-test_metrics_report.json
-
-# Python cache files
-*.pyc
-tests/__pycache__/*
-
-# Model checkpoints and exports
-multi_lod_test/
-onnx_export/
-models/
-*.pt
-*.onnx
-
-# External repos for reference
-reference-code/
-
-# Noise dumps and generated world data (can be large and regenerated as needed)
-tools/fabric-server/runtime/world/
-tools/fabric-server/runtime/noise_dumps/*.json
-production/
-
-# Experimental notebooks
-notebooks/experimental/*.ipynb
-notebooks/experimental/old/
+*.npz

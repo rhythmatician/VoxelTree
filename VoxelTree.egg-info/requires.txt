@@ -1,0 +1,8 @@
+numpy
+torch>=2.0
+torchvision
+tqdm
+PyYAML
+scipy
+pyside6>=6.6
+onnx

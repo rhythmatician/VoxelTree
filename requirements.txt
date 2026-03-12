@@ -1,3 +1,6 @@
+# === GUI ===
+pyside6>=6.6
+
 # === Core ===
 numpy
 torch>=2.0

@@ -1,0 +1,13 @@
+Metadata-Version: 2.4
+Name: VoxelTree
+Version: 0.1.0
+Summary: 3-model octree pipeline for vanilla Minecraft terrain generation (LODiffusion)
+Requires-Python: >=3.11
+Requires-Dist: numpy
+Requires-Dist: torch>=2.0
+Requires-Dist: torchvision
+Requires-Dist: tqdm
+Requires-Dist: PyYAML
+Requires-Dist: scipy
+Requires-Dist: pyside6>=6.6
+Requires-Dist: onnx

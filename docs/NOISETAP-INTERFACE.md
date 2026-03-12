@@ -1,6 +1,11 @@
 # NoiseTap Interface Specification
 
-**Status:** Design Phase  
+> **SUPERSEDED (March 2026):** Router6 was dropped entirely. NoiseTap was the planned
+> mechanism for sampling router6 data — with that input gone, this interface is no longer
+> needed. Height planes and biome data are sampled directly via `WorldNoiseAccess`.
+> See `NOISE-DESIGN.md` for rationale. This document is retained as a historical reference.
+
+**Status:** Design Phase (ABANDONED)  
 **Target:** Minecraft 1.21.11 + Fabric  
 **Purpose:** One-call anchor capture per chunk for LODiffusion
 

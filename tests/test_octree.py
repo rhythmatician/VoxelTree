@@ -18,8 +18,6 @@ Covers:
 
 from __future__ import annotations
 
-import importlib.util
-import sys
 from pathlib import Path
 from typing import Any, Dict
 
@@ -27,31 +25,18 @@ import numpy as np
 import pytest
 import torch
 
-# ---------------------------------------------------------------------------
-# Import scripts/build_octree_pairs.py (not a package, import by file)
-# ---------------------------------------------------------------------------
-
-_SCRIPTS = Path(__file__).resolve().parent.parent / "scripts"
-if str(_SCRIPTS) not in sys.path:
-    sys.path.insert(0, str(_SCRIPTS))
-
-from build_octree_pairs import (  # noqa: E402
+from VoxelTree.scripts.build_octree_pairs import (
     build_section_index,
     child_coords_from_parent,
     extract_octant_and_upsample,
     parent_coords_and_octant,
 )
-
-# ---------------------------------------------------------------------------
-# Import from train/ package
-# ---------------------------------------------------------------------------
-
-from train.octree_dataset import (
+from VoxelTree.train.octree_dataset import (
     OctreeDataset,
     _model_type_for_level,
     collate_octree_batch,
 )
-from train.octree_models import (
+from VoxelTree.train.octree_models import (
     OccGateModule,
     OccupancyHead,
     OctreeConfig,
@@ -60,22 +45,12 @@ from train.octree_models import (
     create_leaf_model,
     create_refine_model,
 )
-
-# ---------------------------------------------------------------------------
-# Import from train_octree.py (root script — not a package member)
-# ---------------------------------------------------------------------------
-
-_TRAIN_OCTREE_PATH = Path(__file__).resolve().parent.parent / "train_octree.py"
-_spec = importlib.util.spec_from_file_location("train_octree_mod", _TRAIN_OCTREE_PATH)
-_train_octree_mod = importlib.util.module_from_spec(_spec)
-sys.modules["train_octree_mod"] = _train_octree_mod
-_spec.loader.exec_module(_train_octree_mod)
-
-OctreeLoss = _train_octree_mod.OctreeLoss
-_bitmask_to_binary = _train_octree_mod._bitmask_to_binary
-compute_octree_metrics = _train_octree_mod.compute_octree_metrics
-_prepare_targets = _train_octree_mod._prepare_targets
-
+from VoxelTree.train.train_octree import (
+    OctreeLoss,
+    _bitmask_to_binary,
+    _prepare_targets,
+    compute_octree_metrics,
+)
 
 # ===========================================================================
 # Shared helpers & fixtures
@@ -257,6 +232,94 @@ class TestBuildSectionIndex:
         assert (1, 0, 0) in idx
 
 
+class TestStackAndSave:
+    """Ensure the pair cache writer behaves as expected, including console output."""
+
+    def _make_fake_pair(self) -> dict[str, Any]:
+        return {
+            "labels32": np.zeros((32, 32, 32), dtype=np.int32),
+            "parent_labels32": np.zeros((32, 32, 32), dtype=np.int32),
+            "heightmap32": np.zeros((5, 32, 32), dtype=np.float32),
+            "biome32": np.zeros((32, 32), dtype=np.int32),
+            "y_position": 0,
+            "level": 4,
+            "non_empty_children": 0,
+        }
+
+    def test_empty_pairs_returns_zero_and_warns(self, tmp_path: Path, capsys: Any) -> None:
+        from VoxelTree.scripts.build_octree_pairs import stack_and_save
+
+        out_file = tmp_path / "out.npz"
+        count = stack_and_save([], out_file)
+        captured = capsys.readouterr()
+        assert count == 0
+        assert "WARNING" in captured.out
+
+    def test_ascii_arrow_in_output(self, tmp_path: Path, capsys: Any) -> None:
+        from VoxelTree.scripts.build_octree_pairs import stack_and_save
+
+        out_file = tmp_path / "out.npz"
+        pair = self._make_fake_pair()
+        count = stack_and_save([pair], out_file)
+        captured = capsys.readouterr()
+        assert count == 1
+        # should not contain the Unicode arrow character
+        assert "->" in captured.out
+        assert "\u2192" not in captured.out
+
+
+class TestBuildFunctionOutput:
+    """Verify the top-level build() routine prints ASCII arrows."""
+
+    def test_build_prints_ascii_arrows(self, tmp_path: Path, capsys: Any, monkeypatch: Any) -> None:
+        """Patch helpers so build() runs without touching disk."""
+        from VoxelTree.scripts.build_octree_pairs import build
+
+        # fake section indices always non-empty
+        monkeypatch.setattr(
+            "VoxelTree.scripts.build_octree_pairs.build_section_index",
+            lambda data_dir, level: {0: 1},
+        )
+
+        # fake pair builder returns one dummy pair dict with required keys
+        def fake_build_pairs_for_level(*, child_level, data_dir, child_index, parent_index):
+            return [
+                {
+                    "labels32": np.zeros((32, 32, 32), dtype=np.int32),
+                    "parent_labels32": np.zeros((32, 32, 32), dtype=np.int32),
+                    "heightmap32": np.zeros((5, 32, 32), dtype=np.float32),
+                    "biome32": np.zeros((32, 32), dtype=np.int32),
+                    "y_position": 0,
+                    "level": child_level,
+                    "non_empty_children": 0,
+                }
+            ]
+
+        monkeypatch.setattr(
+            "VoxelTree.scripts.build_octree_pairs.build_pairs_for_level",
+            fake_build_pairs_for_level,
+        )
+
+        # bypass actual NPZ writing
+        monkeypatch.setattr(
+            "VoxelTree.scripts.build_octree_pairs.stack_and_save",
+            lambda pairs, path: len(pairs),
+        )
+
+        # run build; model_type defaults to 'all'
+        n_train, n_val = build(tmp_path, tmp_path)
+        captured = capsys.readouterr()
+
+        # should have produced pairs and returned counts
+        assert n_train > 0
+        assert n_val >= 0
+
+        # output must use ASCII arrow notation and never the Unicode character
+        assert "<-" in captured.out
+        assert "\u2190" not in captured.out
+        assert "←" not in captured.out
+
+
 # ===========================================================================
 # 4. Level → Model-Type Routing
 # ===========================================================================
@@ -284,6 +347,11 @@ class TestModelTypeForLevel:
 
 
 class TestOctreeInitModel:
+    def test_default_uses_init_shootout_winner(self, tiny_config: OctreeConfig) -> None:
+        model = create_init_model(tiny_config)
+        assert model.init_architecture == "encoder2d_decoder3d"
+        assert hasattr(model, "backbone_2d3d")
+
     def test_output_keys(self, tiny_config: OctreeConfig) -> None:
         model = create_init_model(tiny_config)
         out = model(
@@ -333,6 +401,17 @@ class TestOctreeInitModel:
         sig = inspect.signature(model.forward)
         assert "parent_blocks" not in sig.parameters
         assert "parent_context" not in sig.parameters
+
+    def test_legacy_full3d_init_architecture_still_works(self, tiny_config: OctreeConfig) -> None:
+        tiny_config.init_architecture = "full_3d_unet"
+        model = create_init_model(tiny_config)
+        out = model(
+            heightmap=torch.randn(2, 5, 32, 32),
+            biome=torch.randint(0, 16, (2, 32, 32)),
+            y_position=torch.randint(0, 24, (2,)),
+        )
+        assert out["block_type_logits"].shape == (2, tiny_config.block_vocab_size, 32, 32, 32)
+        assert out["occ_logits"].shape == (2, 8)
 
 
 # ===========================================================================
@@ -470,6 +549,18 @@ class TestOctreeLeafModel:
         model = create_leaf_model(tiny_config)
         out = self._forward(model, B=1)
         assert out["block_type_logits"].shape[0] == 1
+
+    def test_default_leaf_extra_bottleneck_depth_is_enabled(
+        self, tiny_config: OctreeConfig
+    ) -> None:
+        model = create_leaf_model(tiny_config)
+        assert model.unet.bottleneck_extra is not None
+        assert len(model.unet.bottleneck_extra) == 1
+
+    def test_leaf_extra_bottleneck_depth_can_be_disabled(self, tiny_config: OctreeConfig) -> None:
+        tiny_config.leaf_bottleneck_extra_depth = 0
+        model = create_leaf_model(tiny_config)
+        assert model.unet.bottleneck_extra is None
 
 
 # ===========================================================================
@@ -952,16 +1043,12 @@ class TestOccupancyHeadSpatial:
 
     def test_output_shape(self) -> None:
         """Output should be [B, 8] for any valid bottleneck input."""
-        from train.octree_models import OccupancyHead
-
         head = OccupancyHead(in_channels=96)
         bottleneck = torch.randn(4, 96, 8, 8, 8)
         out = head(bottleneck)
         assert out.shape == (4, 8)
 
     def test_gradient_flows(self) -> None:
-        from train.octree_models import OccupancyHead
-
         head = OccupancyHead(in_channels=64)
         bottleneck = torch.randn(2, 64, 8, 8, 8, requires_grad=True)
         out = head(bottleneck)
@@ -970,8 +1057,6 @@ class TestOccupancyHeadSpatial:
 
     def test_octant_sensitivity(self) -> None:
         """Each octant logit should depend on features in its spatial quadrant."""
-        from train.octree_models import OccupancyHead
-
         head = OccupancyHead(in_channels=16)
         head.eval()
 
@@ -992,8 +1077,6 @@ class TestOccupancyHeadSpatial:
 
     def test_all_octants_responsive(self) -> None:
         """All 8 octant logits should respond to perturbations in their regions."""
-        from train.octree_models import OccupancyHead
-
         head = OccupancyHead(in_channels=16)
         head.eval()
 
@@ -1014,16 +1097,12 @@ class TestOccupancyHeadSpatial:
             assert diff > 0, f"Octant {octant} logit should respond to its region"
 
     def test_batch_size_one(self) -> None:
-        from train.octree_models import OccupancyHead
-
         head = OccupancyHead(in_channels=128)
         out = head(torch.randn(1, 128, 8, 8, 8))
         assert out.shape == (1, 8)
 
     def test_no_gap_attribute(self) -> None:
         """Verify the old GAP-based design is gone."""
-        from train.octree_models import OccupancyHead
-
         head = OccupancyHead(in_channels=96)
         assert not hasattr(head, "gap"), "OccupancyHead should not have a 'gap' attribute"
 
@@ -1035,7 +1114,7 @@ class TestParentContextAblation:
     """Test parent_context_mode='embed'/'zeros'/'disabled' on refine + leaf."""
 
     def _refine_fwd(self, mode: str) -> Dict[str, torch.Tensor]:
-        from train.octree_models import OctreeConfig, create_refine_model
+        from VoxelTree.train.octree_models import OctreeConfig, create_refine_model
 
         cfg = OctreeConfig(
             block_vocab_size=32,
@@ -1064,7 +1143,7 @@ class TestParentContextAblation:
             )
 
     def _leaf_fwd(self, mode: str) -> Dict[str, torch.Tensor]:
-        from train.octree_models import OctreeConfig, create_leaf_model
+        from VoxelTree.train.octree_models import OctreeConfig, create_leaf_model
 
         cfg = OctreeConfig(
             block_vocab_size=32,
@@ -1120,7 +1199,7 @@ class TestParentContextAblation:
 
     def test_disabled_has_fewer_params(self) -> None:
         """Disabled mode should have fewer parameters than embed mode."""
-        from train.octree_models import OctreeConfig, create_refine_model
+        from VoxelTree.train.octree_models import OctreeConfig, create_refine_model
 
         def _count(mode: str) -> int:
             cfg = OctreeConfig(
@@ -1143,7 +1222,7 @@ class TestParentContextAblation:
 
     def test_zeros_has_same_arch_as_embed(self) -> None:
         """Zeros mode uses same U-Net input channels as embed, just zero-filled."""
-        from train.octree_models import OctreeConfig, create_refine_model
+        from VoxelTree.train.octree_models import OctreeConfig, create_refine_model
 
         cfg_embed = OctreeConfig(
             block_vocab_size=32,
@@ -1172,7 +1251,7 @@ class TestParentContextAblation:
 
     def test_embed_raises_without_parent(self) -> None:
         """In embed mode, calling without parent should raise ValueError."""
-        from train.octree_models import OctreeConfig, create_refine_model
+        from VoxelTree.train.octree_models import OctreeConfig, create_refine_model
 
         cfg = OctreeConfig(
             block_vocab_size=32,
@@ -1254,20 +1333,20 @@ class TestParentEmbedDimCLI:
     """Test that parent_embed_dim is properly wired through config."""
 
     def test_config_stores_parent_embed_dim(self) -> None:
-        from train.octree_models import OctreeConfig
+        from VoxelTree.train.octree_models import OctreeConfig
 
         cfg = OctreeConfig(parent_embed_dim=64)
         assert cfg.parent_embed_dim == 64
 
     def test_config_stores_parent_context_mode(self) -> None:
-        from train.octree_models import OctreeConfig
+        from VoxelTree.train.octree_models import OctreeConfig
 
         cfg = OctreeConfig(parent_context_mode="zeros")
         assert cfg.parent_context_mode == "zeros"
 
     def test_refine_model_uses_config_dim(self) -> None:
         """Refine model U-Net input channels should reflect parent_embed_dim."""
-        from train.octree_models import OctreeConfig, create_refine_model
+        from VoxelTree.train.octree_models import OctreeConfig, create_refine_model
 
         for dim in [4, 8, 32]:
             cfg = OctreeConfig(
@@ -1573,11 +1652,13 @@ class TestStep8Combined:
         (out["block_type_logits"].sum() + out["occ_logits"].sum()).backward()
 
     def test_defaults_unchanged(self) -> None:
-        """Default OctreeConfig should have all Step 8 features off."""
+        """Default OctreeConfig should preserve legacy Step 8 defaults."""
         cfg = OctreeConfig()
         assert cfg.bottleneck_extra_depth == 0
         assert cfg.parent_refine_conv is False
         assert cfg.use_occ_gate is False
+        assert cfg.init_architecture == "encoder2d_decoder3d"
+        assert cfg.leaf_bottleneck_extra_depth == 1
 
     def test_param_count_increases(self, tiny_config: OctreeConfig) -> None:
         """Enabling Step 8 features should increase parameter count."""

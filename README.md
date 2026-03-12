@@ -2,26 +2,25 @@
 
 # 🌲 VoxelTree
 
-VoxelTree is an experimental terrain refinement model designed to **progressively upscale Minecraft terrain data** using a voxel-based super-resolution architecture inspired by diffusion models.
+VoxelTree trains a **3-model octree pipeline** for vanilla Minecraft terrain generation, aligned with Voxy's WorldSection hierarchy. Each model produces a complete **32³ block prediction** at a specific LOD level. Empty octants are pruned via learned occupancy prediction, and their subtrees never run inference.
 
-Rather than generating entire terrain blocks from scratch, VoxelTree learns to **refine coarse, LOD-based voxel grids** into more detailed terrain using information derived from the Minecraft world seed (biome, heightmap, y-level, etc.). This enables scalable, just-in-time terrain generation with the potential for seamless integration into Minecraft via LODiffusion.
+The model runs in the **LODiffusion** mod to render distant terrain just-in-time.
 
 ---
 
 ## 🧠 What It Does
 
-VoxelTree models take:
-- A coarse parent occupancy voxel (`x_parent`: 8×8×8, Mipper-derived)
-- Anchor conditioning signals (`x_height_planes`, `x_biome`)
-- Vertical position (`x_y_index`) and LOD coarseness token (`x_lod`)
+VoxelTree's octree pipeline consists of three models:
 
-And outputs:
-- Block type predictions (`block_logits`: 1102-class Voxy-native vocabulary over 16×16×16)
-- Air probability mask (`air_mask`: 16×16×16)
+| Model | Level(s) | Input | Output |
+|---|---|---|---|
+| `OctreeInitModel` | L4 (root) | heightmap + biome + y_position | block_logits + occ_logits |
+| `OctreeRefineModel` | L3, L2, L1 (shared) | parent_context + heightmap + biome + y_position + level | block_logits + occ_logits |
+| `OctreeLeafModel` | L0 (leaf) | parent_context + heightmap + biome + y_position | block_logits (no occ head) |
 
-Training data is extracted directly from **Voxy RocksDB** databases using a canonical
-1102-entry block vocabulary. LOD coarsening uses the **Voxy Mipper algorithm** (opacity-biased
-corner selection), ensuring exact parity with Voxy's own LOD pipeline.
+Training data is extracted from **Voxy RocksDB** databases using a canonical
+1104-entry block vocabulary. Parent→child context is passed via argmax block IDs
+from each parent's 32³ predictions, octant-extracted and upsampled 2×.
 
 ---
 
@@ -68,13 +67,15 @@ Each feature is implemented in a **micro-commit cycle**:
 
 | Script                                    | Purpose                                          |
 |-------------------------------------------|--------------------------------------------------|
-| `pipeline.py`                             | Two-phase orchestrator: extract → train → export → deploy |
-| `train_multi_lod.py`                      | Multi-LOD training CLI with Voxy vocab           |
-| `scripts/extract_voxy_training_data.py`   | Voxy RocksDB → NPZ training patches             |
+| `pipeline.py`                             | Train → export → deploy orchestrator             |
+| `data-cli.py`                             | Unified dataprep CLI                             |
+| `train_octree.py`                         | 3-model octree training                          |
+| `scripts/extract_octree_data.py`          | Voxy RocksDB → per-level NPZ                    |
 | `scripts/voxy_reader.py`                  | RocksDB reader (SaveLoadSystem3 decoder)         |
-| `scripts/mipper.py`                       | Voxy Mipper (canonical LOD coarsening)           |
-| `scripts/export_lod.py`                   | Static ONNX export (opset ≥ 17)                  |
-| `scripts/verify_onnx.py`                  | ONNX export + test vector verification           |
+| `scripts/add_column_heights.py`           | Merge vanilla heightmaps into NPZs               |
+| `scripts/build_octree_pairs.py`           | NPZ → octree parent/child training pairs         |
+| `scripts/export_octree.py`               | Checkpoint → 3 ONNX models                      |
+| `scripts/deploy_models.py`               | Copy ONNX models to LODiffusion config dir       |
 
 ---
 
@@ -92,12 +93,13 @@ Each feature is implemented in a **micro-commit cycle**:
 VoxelTree is **in active development** — contributors welcome, but please read the CI and TDD guidelines first.
 
 ### Recent Progress:
-- ✅ Voxy-native block vocabulary (1102 canonical entries)
-- ✅ Voxy RocksDB extraction pipeline (multi-world)
-- ✅ Voxy Mipper (100% parity with Voxy's own LOD coarsening)
-- ✅ V2 anchor-conditioned model (height planes + biome)
-- ✅ Two-phase pipeline orchestrator (`pipeline.py`)
-- ✅ Multi-LOD training with dynamic coarsening
+- ✅ Voxy-native block vocabulary (1104 canonical entries)
+- ✅ 3-model octree pipeline (init / refine / leaf)
+- ✅ Octree parent→child context with 32³ WorldSection grids
+- ✅ Occupancy prediction for octree pruning (learned child occupancy)
+- ✅ Shared OctreeRefineModel with level embedding (L3/L2/L1)
+- ✅ Pipeline orchestrator (dataprep → train → export → deploy)
+- ✅ ONNX export and LODiffusion integration
 - ✅ Static ONNX export with Voxy vocab embedding
 - ⏳ Full training run on Voxy-extracted data
 - ⏳ In-game deployment via LODiffusion mod
