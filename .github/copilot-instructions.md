@@ -143,7 +143,7 @@ Octree NPZ files in `data/voxy_octree/level_N/` contain per-section arrays:
 |---|---|---|---|
 | `labels32` | (32,32,32) | int32 | Block IDs at this LOD level |
 | `biome32` | (32,32) | int32 | Biome indices per (x,z) column |
-| `y_section` | scalar | int64 | Vertical section coordinate |
+| `section_y` | scalar | int64 | Vertical section coordinate |
 | `heightmap32` | (5,32,32) | float32 | surface, ocean_floor, slope_x, slope_z, curvature |
 
 Octree pair caches in `data/voxy_octree/` (train/val):

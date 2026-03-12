@@ -31,7 +31,7 @@ PAIR_CACHE_NAMES = ["train_octree_pairs.npz", "val_octree_pairs.npz"]
 SECTION_REQUIRED_KEYS = {
     "labels32": {"ndim": 3, "shape": (32, 32, 32)},
     "biome32": {"ndim": 2, "shape": (32, 32)},
-    "y_section": {"ndim": 0},  # scalar
+    "section_y": {"ndim": 0},  # scalar
     "heightmap32": {"ndim": 3, "shape": (5, 32, 32)},
 }
 

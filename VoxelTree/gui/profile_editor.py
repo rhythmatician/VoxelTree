@@ -25,7 +25,12 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+# Determine the project root as the directory two levels above this module.
+# During the big refactor the package directory (VoxelTree/VoxelTree) was added, so
+# ``parent.parent`` pointed inside the package instead of the workspace root.  By
+# using ``parents[2]`` we correctly locate the repo root regardless of whether the
+# code is executed from the source tree or an installed package.
+_PROJECT_ROOT = Path(__file__).resolve().parents[2]
 _PROFILES_DIR = _PROJECT_ROOT / "profiles"
 _RUNS_DIR = _PROJECT_ROOT / "runs"
 

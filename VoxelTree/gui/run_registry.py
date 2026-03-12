@@ -27,7 +27,17 @@ from VoxelTree.gui.step_definitions import ACTIVE_STEPS, PIPELINE_STEPS, STEP_BY
 
 StepStatus = Literal["not_run", "running", "success", "failed"]
 
-_RUNS_ROOT = Path(__file__).resolve().parent.parent / "runs"
+# During the previous refactor the package directory got a second nesting level
+# (``VoxelTree/VoxelTree``).  The old ``parent.parent`` expression therefore
+# pointed inside the installed package instead of the project root.  As a
+# result the GUI was reading/writing run_state.json files under
+# ``.../VoxelTree/VoxelTree/runs`` while the CLI and other tools used the
+# top-level ``.../VoxelTree/runs`` directory.  The mismatch caused the
+# dashboard to show every step as ``not_run``.
+#
+# We now mirror the logic used by ``profile_editor`` to locate the project
+# root reliably: climb two parent levels from this file.
+_RUNS_ROOT = Path(__file__).resolve().parents[2] / "runs"
 
 
 def _now_iso() -> str:
@@ -54,7 +64,10 @@ class RunRegistry:
                     self._state = json.load(f)
             except (json.JSONDecodeError, OSError):
                 self._state = {}
-        # Ensure every step has an entry
+        # Ensure every step has an entry (this will only add missing steps; existing
+        # statuses are preserved).  Fixing the runs root path may cause a new file to
+        # be created when the old one lived elsewhere, so we populate defaults here
+        # to avoid KeyError later.
         for step in PIPELINE_STEPS:
             if step.id not in self._state:
                 self._state[step.id] = {

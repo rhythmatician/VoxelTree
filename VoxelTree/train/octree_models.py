@@ -42,8 +42,8 @@ class OctreeConfig:
 
     # Per-model channel widths  (C₀, C₁, C₂)
     init_channels: Tuple[int, int, int] = (24, 48, 96)
-    refine_channels: Tuple[int, int, int] = (32, 64, 128)
-    leaf_channels: Tuple[int, int, int] = (48, 96, 192)
+    refine_channels: Tuple[int, int, int] = (48, 96, 192)
+    leaf_channels: Tuple[int, int, int] = (32, 64, 128)
 
     # Architecture selections from notebook shootouts.
     # Old checkpoints won't have these fields, so model code uses getattr()

@@ -657,17 +657,17 @@ def main(argv: list[str] | None = None) -> None:  # noqa: FA100
         "--refine-channels",
         type=int,
         nargs=3,
-        default=[32, 64, 128],
+        default=[48, 96, 192],
         metavar=("C0", "C1", "C2"),
-        help="Channel widths for refine model (default: 32 64 128)",
+        help="Channel widths for refine model (default: 48 96 192)",
     )
     parser.add_argument(
         "--leaf-channels",
         type=int,
         nargs=3,
-        default=[48, 96, 192],
+        default=[32, 64, 128],
         metavar=("C0", "C1", "C2"),
-        help="Channel widths for leaf model (default: 48 96 192)",
+        help="Channel widths for leaf model (default: 32 64 128)",
     )
     parser.add_argument(
         "--leaf-bottleneck-extra-depth",

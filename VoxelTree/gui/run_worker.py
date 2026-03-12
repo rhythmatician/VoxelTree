@@ -27,8 +27,17 @@ class RunWorker(QThread):
     step_started: Signal = Signal(str)
     step_finished: Signal = Signal(str, int)
 
-    #: Directory where all pipeline scripts live (VoxelTree root)
-    _VT_ROOT = Path(__file__).resolve().parent.parent
+    #: Directory where all pipeline scripts live (VoxelTree repo root).
+    #
+    # After the refactor the package tree gained an extra nesting level
+    # (``VoxelTree/VoxelTree``).  ``parent.parent`` would therefore still point
+    # inside the installed package, causing subprocesses to run with cwd
+    # ``.../VoxelTree/VoxelTree``.  Relative paths such as ``data/voxy_octree``
+    # ended up being resolved below the package instead of the workspace root,
+    # so steps like build-pairs saw empty directories and reported "No sections
+    # found".  Compute the repo root the same way `profile_editor` and
+    # `run_registry` do: two parents up from this file.
+    _VT_ROOT = Path(__file__).resolve().parents[2]
 
     def __init__(self, step_id: str, cmd: list[str]) -> None:
         super().__init__()
