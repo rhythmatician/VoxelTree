@@ -2,15 +2,11 @@
 
 from __future__ import annotations
 
+from graphlib import TopologicalSorter
+
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen
-from PySide6.QtWidgets import (
-    QHBoxLayout,
-    QLabel,
-    QPushButton,
-    QSizePolicy,
-    QWidget,
-)
+from PySide6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QSizePolicy, QWidget
 
 from gui.run_registry import RunRegistry
 from gui.step_definitions import ACTIVE_STEPS, PIPELINE_STEPS, StepDef
@@ -18,11 +14,11 @@ from gui.step_node_widget import StepNodeWidget
 
 _NODE_W = 52
 _NODE_H = 52
-_COL_GAP = 28   # horizontal gap between columns
-_ROW_GAP = 8    # vertical gap between rows
+_COL_GAP = 28  # horizontal gap between columns
+_ROW_GAP = 8  # vertical gap between rows
 _COL_W = _NODE_W + _COL_GAP
 _ROW_H = _NODE_H + _ROW_GAP
-_V_PAD = 6      # vertical padding inside the nodes container
+_V_PAD = 6  # vertical padding inside the nodes container
 
 
 def _compute_dag_layout(steps: list[StepDef]) -> dict[str, tuple[int, int]]:
@@ -31,13 +27,19 @@ def _compute_dag_layout(steps: list[StepDef]) -> dict[str, tuple[int, int]]:
     Column = max depth from any root (longest prereq chain).
     Row = order within that column (preserving PIPELINE_STEPS ordering).
     """
-    depth: dict[str, int] = {}
-    for step in steps:  # steps is already in topological order
-        if not step.prereqs:
-            depth[step.id] = 0
-        else:
-            depth[step.id] = max(depth.get(p, 0) for p in step.prereqs) + 1
+    # Build dependency graph: step_id → set of prerequisites
+    graph = {s.id: set(s.prereqs) for s in steps}
+    sorter = TopologicalSorter(graph)
 
+    # Compute depth: longest chain from any root
+    depth: dict[str, int] = {}
+    for node in sorter.static_order():
+        if not graph[node]:  # root node (no prerequisites)
+            depth[node] = 0
+        else:
+            depth[node] = max(depth[p] for p in graph[node]) + 1
+
+    # Assign rows within each column
     col_count: dict[int, int] = {}
     positions: dict[str, tuple[int, int]] = {}
     for step in steps:
@@ -94,15 +96,14 @@ class ProfileRow(QWidget):
         # DAG nodes container
         all_steps = list(PIPELINE_STEPS)  # includes stubs
         self._nodes_container = _NodesWidget(self)
-        self._nodes_container.setSizePolicy(
-            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
-        )
+        self._nodes_container.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
 
         # Create node widgets (not yet parented — _NodesWidget will own them)
         for step in all_steps:
             is_stub = not step.enabled
             node = StepNodeWidget(
-                step.id, step.label,
+                step.id,
+                step.label,
                 stub=is_stub,
                 server_required=getattr(step, "server_required", False),
             )
@@ -234,10 +235,7 @@ class _NodesWidget(QWidget):
                 sy = src_row * _ROW_H + _V_PAD + _NODE_H // 2
 
                 # Determine edge colour from node statuses
-                is_stub = (
-                    step.id not in self._active_ids
-                    or prereq_id not in self._active_ids
-                )
+                is_stub = step.id not in self._active_ids or prereq_id not in self._active_ids
                 if is_stub:
                     pen = QPen(QColor("#404040"), 1.5, Qt.PenStyle.DashLine)
                 else:

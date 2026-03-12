@@ -879,9 +879,7 @@ def main() -> None:
         active_types = set(args.models.split(","))
         invalid = active_types - _VALID_MODEL_TYPES
         if invalid:
-            raise ValueError(
-                f"Unknown model types: {invalid}. Valid: init, refine, leaf or 'all'"
-            )
+            raise ValueError(f"Unknown model types: {invalid}. Valid: init, refine, leaf or 'all'")
         # Checkpoint filename prefix: e.g. 'init_' or 'init_leaf_'
         _ckpt_prefix = "_".join(sorted(active_types)) + "_"
     print(f"Active model types: {sorted(active_types) if active_types else 'all'}")

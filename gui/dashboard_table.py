@@ -1,4 +1,5 @@
 """dashboard_table.py — Scrollable table of profile rows with column headers."""
+
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
@@ -12,7 +13,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from gui.profile_row import ProfileRow, _COL_W, _NODE_W, _compute_dag_layout
+from gui.profile_row import _COL_W, _NODE_W, ProfileRow, _compute_dag_layout
 from gui.run_registry import RunRegistry
 from gui.step_definitions import PIPELINE_STEPS
 
@@ -49,7 +50,7 @@ class DashboardTable(QWidget):
         max_row = max(r for _, r in positions.values())
         _LABEL_H = 14
         _LABEL_ROW_STEP = 18
-        _LEFT = 8 + 90 + 8   # layout-margin + name-label + spacing
+        _LEFT = 8 + 90 + 8  # layout-margin + name-label + spacing
         header_h = (max_row + 1) * _LABEL_ROW_STEP + 8
 
         header = QWidget()
@@ -79,7 +80,7 @@ class DashboardTable(QWidget):
         self._rows_layout = QVBoxLayout(self._rows_container)
         self._rows_layout.setContentsMargins(0, 4, 0, 4)
         self._rows_layout.setSpacing(2)
-        self._rows_layout.addStretch()   # pushes rows to the top
+        self._rows_layout.addStretch()  # pushes rows to the top
 
         scroll.setWidget(self._rows_container)
         root.addWidget(scroll, stretch=1)
@@ -116,9 +117,7 @@ class DashboardTable(QWidget):
         row.delete_clicked.connect(self.delete_profile_requested)
         row.node_clicked.connect(self.node_clicked)
         row.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        row.setStyleSheet(
-            "ProfileRow { background: #232323; border-bottom: 1px solid #2e2e2e; }"
-        )
+        row.setStyleSheet("ProfileRow { background: #232323; border-bottom: 1px solid #2e2e2e; }")
 
         # Insert before the stretch item at the end
         count = self._rows_layout.count()

@@ -722,9 +722,7 @@ def load_octree_checkpoints_from_dir(
         elif len(state_dicts) == 1:
             # Single-model checkpoint: take whatever key is present
             only_key = next(iter(state_dicts))
-            LOGGER.info(
-                "Single-key checkpoint for '%s': using key '%s'", mt, only_key
-            )
+            LOGGER.info("Single-key checkpoint for '%s': using key '%s'", mt, only_key)
             state_dict = state_dicts[only_key]
         else:
             LOGGER.warning("No state dict for '%s' in %s — random weights", mt, ckpt_path)
