@@ -1,7 +1,8 @@
 {
     "modelName": "lodiffusion_lod3_to_lod2",
     "version": "1.0.0",
-    "description": "LOD3 → LOD2 refinement (2×2×2 → 4×4×4)",
+    "status": "DEPRECATED",
+    "description": "[Pre-octree v2 contract, superseded by octree_refine.onnx] LOD3 → LOD2 refinement (2×2×2 → 4×4×4)",
     "inputs": {
         "x_parent_prev": [
             1,
@@ -23,13 +24,6 @@
             4,
             4,
             4
-        ],
-        "x_router6": [
-            1,
-            6,
-            1,
-            16,
-            16
         ],
         "x_chunk_pos": [
             1,
@@ -85,25 +79,7 @@
             "bottomY": -64,
             "height": 384
         },
-        "router6": {
-            "type": "zscore",
-            "mean": [
-                0.0,
-                0.0,
-                0.0,
-                0.0,
-                0.0,
-                0.0
-            ],
-            "std": [
-                1.0,
-                1.0,
-                1.0,
-                1.0,
-                1.0,
-                1.0
-            ]
-        },
+        "router6_removed": "dropped — redundant with biome+heightmap, see NOISE-DESIGN.md",
         "biome": {
             "type": "mixed"
         },
