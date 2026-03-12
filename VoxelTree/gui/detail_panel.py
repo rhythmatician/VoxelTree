@@ -6,17 +6,9 @@ from datetime import datetime
 
 from PySide6.QtCore import Qt, QTimer, Signal, Slot
 from PySide6.QtGui import QFont, QTextCursor
-from PySide6.QtWidgets import (
-    QDockWidget,
-    QHBoxLayout,
-    QLabel,
-    QPushButton,
-    QScrollArea,
-    QSizePolicy,
-    QTextEdit,
-    QVBoxLayout,
-    QWidget,
-)
+from PySide6.QtWidgets import (QDockWidget, QHBoxLayout, QLabel, QPushButton,
+                               QScrollArea, QSizePolicy, QTextEdit,
+                               QVBoxLayout, QWidget)
 
 from VoxelTree.gui.run_registry import RunRegistry
 from VoxelTree.gui.run_worker import RunWorker
@@ -173,6 +165,22 @@ class DetailPanel(QDockWidget):
     # Internals
     # ------------------------------------------------------------------
 
+    @Slot(str, float)
+    def _on_progress(self, step_id: str, fraction: float) -> None:
+        """Handle a progress update from a RunWorker.
+
+        We store the fractional value in the registry and notify the parent window
+        so that the dashboard row can refresh immediately.
+        """
+        if self._registry:
+            self._registry.set_progress(step_id, fraction)
+        parent = self.parent()
+        if hasattr(parent, "on_step_progress"):
+            parent.on_step_progress(self._profile_name, step_id)  # type: ignore[arg-type]
+        elif hasattr(parent, "_dashboard"):
+            # fallback to directly refreshing the table row
+            parent._dashboard.refresh_profile(self._profile_name)  # type: ignore[arg-type]
+
     def _on_edit(self) -> None:
         if self._edit_callback and self._profile_name:
             self._edit_callback(self._profile_name)
@@ -258,6 +266,7 @@ class DetailPanel(QDockWidget):
         worker = RunWorker(step_id, cmd)
         worker.log_line.connect(self._on_log_line)
         worker.step_finished.connect(self._on_step_finished)
+        worker.progress.connect(self._on_progress)
         self._workers[step_id] = worker
         worker.start()
         self._poll_timer.start()
@@ -281,6 +290,9 @@ class DetailPanel(QDockWidget):
             self.append_log(f"\n[{ts}] ✗  {step_id} failed (exit {exit_code}).")
 
         # Remove completed worker; stop poll timer only when all workers done
+        # also clear any stored progress metadata for this step
+        if self._registry:
+            self._registry.set_metadata(step_id, "progress", None)
         self._workers.pop(step_id, None)
         if not self._workers:
             self._poll_timer.stop()
@@ -343,6 +355,7 @@ class _StepControlRow(QWidget):
         "running": "#e8a800",
         "success": "#28a745",
         "failed": "#dc3545",
+        "stale": "#ffc107",  # warn when the step is outdated
     }
 
     def __init__(self, step_id: str, label: str, parent=None) -> None:

@@ -1,4 +1,11 @@
-"""step_node_widget.py — Circular node widget showing a step's run status."""
+"""step_node_widget.py — Circular node widget showing a step's run status.
+
+This widget now also supports a fractional ``progress`` value (0‑1) for the
+"running" state; when set a coloured ring is drawn around the node and a
+numeric percentage appears at the centre.  Progress updates are normally
+pumped from the GUI via ``RunWorker`` signals and stored in the
+``RunRegistry`` metadata.
+"""
 
 from __future__ import annotations
 
@@ -12,6 +19,7 @@ _COLORS: dict[str, tuple[str, str]] = {
     "running": ("#b87a00", "#e8a800"),
     "success": ("#1e6e2e", "#28a745"),
     "failed": ("#6e1e1e", "#dc3545"),
+    "stale": ("#8a7a00", "#c0a000"),  # warning yellow for outdated success
     "stub": ("#2a2a2a", "#404040"),
 }
 
@@ -49,6 +57,7 @@ class StepNodeWidget(QWidget):
 
         self._status = "stub" if stub else "not_run"
         self._metadata: str | None = None  # optional text override (e.g., "5 epochs")
+        self._progress: float | None = None  # 0.0–1.0 running progress, None if unknown
         self._pulse = False  # amber blink state
         self._pulse_on = False
         self._runnable = False  # highlight as next runnable step
@@ -65,22 +74,48 @@ class StepNodeWidget(QWidget):
     # ------------------------------------------------------------------
 
     def set_status(self, status: str) -> None:
-        """Update visual state.  status must be one of the _COLORS keys."""
+        """Update visual state.  status must be one of the _COLORS keys.
+
+        Transitioning away from ``running`` clears any progress value so that
+        an old percentage cannot linger on a completed/failed node.
+        """
         if self.stub:
             return
         self._status = status
         if status == "running":
-            self._pulse_on = True
-            self._pulse = True
-            self._timer.start()
+            # visible pulse only if we have no concrete progress yet
+            if self._progress is None:
+                self._pulse_on = True
+                self._pulse = True
+                self._timer.start()
         else:
             self._timer.stop()
             self._pulse = False
+            self._progress = None
         self.update()
 
     def set_metadata(self, text: str | None) -> None:
         """Set optional text override (e.g., 'N epochs' for train step)."""
         self._metadata = text
+        self.update()
+
+    def set_progress(self, fraction: float | None) -> None:
+        """Indicate that the node is *running* and currently at the given
+        fractional progress (0.0–1.0).  ``None`` removes the indicator.
+
+        The widget will continue to show any ``_metadata`` text at its centre
+        (epochs, etc.); the progress ring is drawn around the perimeter.  If
+        a non-``None`` progress value is specified the amber pulse is
+        suppressed.
+        """
+        # clamp the value for safety
+        if fraction is not None:
+            fraction = max(0.0, min(1.0, fraction))
+        self._progress = fraction
+        # when progress is set we don't blink; pause timer if running
+        if self._progress is not None:
+            self._timer.stop()
+            self._pulse = False
         self.update()
 
     def set_runnable(self, runnable: bool) -> None:
@@ -130,6 +165,28 @@ class StepNodeWidget(QWidget):
         icon = self._icon()
         painter.drawText(self.rect(), 0x84, icon)  # AlignHCenter | AlignVCenter
 
+        # Progress ring (drawn after icon so it appears on top of fill but
+        # underneath text). Only show when we have a valid progress value and
+        # the step is running.
+        if self._progress is not None and self._status == "running":
+            # determine arc colour; using a blue accent for visibility
+            pen = QPen(QColor("#4a90e2"), 4)
+            painter.setPen(pen)
+            # arc rect inside border margin
+            arc_margin = 4
+            arc_d = d - arc_margin * 2
+            # start at 12 o'clock (90 degrees) and proceed clockwise
+            start_angle = 90 * 16
+            span_angle = -int(self._progress * 360 * 16)
+            painter.drawArc(
+                margin + arc_margin,
+                margin + arc_margin,
+                arc_d,
+                arc_d,
+                start_angle,
+                span_angle,
+            )
+
         # Server-required indicator: small blue dot in top-right
         if self.server_required and not self.stub:
             dot_r = 5
@@ -140,9 +197,12 @@ class StepNodeWidget(QWidget):
             painter.drawEllipse(dot_x - dot_r, dot_y - dot_r, dot_r * 2, dot_r * 2)
 
     def _icon(self) -> str:
-        # If metadata is set (e.g., epoch count for Train), show it instead of status icon
+        # If metadata is set (e.g., epoch count for Train), show it first
         if self._metadata is not None:
             return self._metadata
+        # Next, if we know a progress fraction show a percentage
+        if self._progress is not None:
+            return f"{int(self._progress * 100)}%"
         if self.stub:
             return "-"
         icons = {
@@ -150,6 +210,7 @@ class StepNodeWidget(QWidget):
             "running": "⟳",
             "success": "✓",
             "failed": "✗",
+            "stale": "!",
         }
         return icons.get(self._status, self.label)
 

@@ -10,13 +10,9 @@ from PySide6.QtWidgets import QMainWindow, QMessageBox, QVBoxLayout, QWidget
 
 from gui.dashboard_table import DashboardTable
 from gui.detail_panel import DetailPanel
-from gui.profile_editor import (
-    ProfileDeleteDialog,
-    ProfileEditorDialog,
-    delete_profile_data,
-    list_profiles,
-    load_profile,
-)
+from gui.profile_editor import (ProfileDeleteDialog, ProfileEditorDialog,
+                                delete_profile_data, list_profiles,
+                                load_profile)
 from gui.run_registry import RunRegistry
 from gui.server_manager import ServerManager
 from gui.server_status_bar import ServerStatusBar
@@ -201,11 +197,13 @@ class MainWindow(QMainWindow):
         # Configure RCON from profile settings
         self._configure_server_rcon(profile_name)
 
-        # Figure out which server steps still need to run
+        # Figure out which server steps still need to run.  A step that has
+        # already succeeded but is now stale should also be treated as pending
+        # because the user explicitly requested a fresh server session.
         pending = [
             step_id
             for step_id in _SERVER_SESSION_STEPS
-            if registry.get_status(step_id) != "success"
+            if registry.get_status(step_id) != "success" or registry.is_stale(step_id)
         ]
 
         if not pending:

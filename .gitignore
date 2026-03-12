@@ -51,6 +51,6 @@ data/test_world/region/*
 # Training profiles and pipeline intermediates (generated, can be regenerated)
 profiles/
 runs/
-data/*/.build_octree_pairs_done
+data/*
 training_run.txt
 *.npz

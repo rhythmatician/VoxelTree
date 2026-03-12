@@ -6,10 +6,12 @@ from graphlib import TopologicalSorter
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen
-from PySide6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QSizePolicy, QWidget
+from PySide6.QtWidgets import (QHBoxLayout, QLabel, QPushButton, QSizePolicy,
+                               QWidget)
 
 from VoxelTree.gui.run_registry import RunRegistry
-from VoxelTree.gui.step_definitions import ACTIVE_STEPS, PIPELINE_STEPS, StepDef
+from VoxelTree.gui.step_definitions import (ACTIVE_STEPS, PIPELINE_STEPS,
+                                            StepDef)
 from VoxelTree.gui.step_node_widget import StepNodeWidget
 
 _NODE_W = 52
@@ -157,6 +159,12 @@ class ProfileRow(QWidget):
 
         for step_id, node in self._nodes.items():
             status = self.registry.get_status(step_id)
+            # explicit check for staleness: a succesful step whose prereqs
+            # are no longer successful should be shown in a warning state.
+            if status == "success" and self.registry.is_stale(step_id):
+                # ``status`` is typed as the four normal literals; ``stale`` is
+                # a GUI-only augmentation.  Ignore the type mismatch here.
+                status = "stale"  # type: ignore[assignment]
             node.set_status(status)
             node.set_runnable(step_id in self._runnable_steps)
 
@@ -166,6 +174,13 @@ class ProfileRow(QWidget):
                 node.set_metadata(f"{epochs}e" if epochs is not None else None)
             else:
                 node.set_metadata(None)
+
+            # Progress updates stored separately in metadata under "progress".
+            prog = self.registry.get_metadata(step_id, "progress")
+            if isinstance(prog, (int, float)):
+                node.set_progress(float(prog))
+            else:
+                node.set_progress(None)
 
         # Repaint edges to reflect new statuses
         self._nodes_container.update()
@@ -243,14 +258,21 @@ class _NodesWidget(QWidget):
                     dst_node = self._node_widgets.get(step.id)
                     ss = src_node._status if src_node else "not_run"
                     ds = dst_node._status if dst_node else "not_run"
+                    # running always takes precedence
                     if ss == "running" or ds == "running":
                         color = QColor("#e8a800")
-                    elif ss == "success" and ds == "success":
-                        color = QColor("#28a745")
-                    elif ss == "success":
-                        color = QColor("#5a8abf")
+                    # any failure overrides
                     elif ss == "failed" or ds == "failed":
                         color = QColor("#dc3545")
+                    # stale nodes get a warning colour (yellow)
+                    elif ss == "stale" or ds == "stale":
+                        color = QColor("#ffc107")
+                    # both success → green
+                    elif ss == "success" and ds == "success":
+                        color = QColor("#28a745")
+                    # prerequisite succeeded but dst not yet
+                    elif ss == "success":
+                        color = QColor("#5a8abf")
                     else:
                         color = QColor("#404040")
                     pen = QPen(color, 1.5)

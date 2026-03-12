@@ -42,5 +42,8 @@ VoxelTree/train/octree_dataset.py
 VoxelTree/train/octree_models.py
 VoxelTree/train/prior_init.py
 VoxelTree/train/train_octree.py
+tests/test_gui_progress.py
 tests/test_octree.py
+tests/test_run_registry.py
+tests/test_run_worker.py
 tests/test_voxy_extraction.py

@@ -211,7 +211,7 @@ def build_pairs_for_level(
     skipped_no_parent = 0
 
     items = sorted(child_index.items())
-    desc = f"L{child_level}" + (f"←L{parent_level}" if not is_init else " (init)")
+    desc = f"L{child_level}" + (f"<-L{parent_level}" if not is_init else " (init)")
 
     for (cx, cy, cz), child_path in tqdm(items, desc=f"  Pairs {desc}", unit="sect"):
         # Load child data
@@ -345,7 +345,8 @@ def stack_and_save(pairs: list[dict[str, Any]], cache_path: Path) -> int:
     )
 
     size_mb = cache_path.stat().st_size / (1024 * 1024)
-    print(f"  Saved {n:,} pairs → {cache_path}  ({size_mb:.1f} MB)")
+    # Use ASCII arrow to avoid UnicodeEncodeError on Windows consoles.
+    print(f"  Saved {n:,} pairs -> {cache_path}  ({size_mb:.1f} MB)")
     return n
 
 
@@ -450,7 +451,8 @@ def build(
             print(f"Skipping L{child_level} — no parent sections at L{parent_level}")
             continue
 
-        print(f"Building L{child_level}←L{parent_level} pairs...")
+        # Use ASCII arrow to avoid encoding issues on Windows consoles
+        print(f"Building L{child_level}<-L{parent_level} pairs...")
         level_pairs = build_pairs_for_level(
             child_level=child_level,
             data_dir=data_dir,

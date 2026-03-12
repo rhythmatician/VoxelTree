@@ -232,6 +232,94 @@ class TestBuildSectionIndex:
         assert (1, 0, 0) in idx
 
 
+class TestStackAndSave:
+    """Ensure the pair cache writer behaves as expected, including console output."""
+
+    def _make_fake_pair(self) -> dict[str, Any]:
+        return {
+            "labels32": np.zeros((32, 32, 32), dtype=np.int32),
+            "parent_labels32": np.zeros((32, 32, 32), dtype=np.int32),
+            "heightmap32": np.zeros((5, 32, 32), dtype=np.float32),
+            "biome32": np.zeros((32, 32), dtype=np.int32),
+            "y_position": 0,
+            "level": 4,
+            "non_empty_children": 0,
+        }
+
+    def test_empty_pairs_returns_zero_and_warns(self, tmp_path: Path, capsys: Any) -> None:
+        from VoxelTree.scripts.build_octree_pairs import stack_and_save
+
+        out_file = tmp_path / "out.npz"
+        count = stack_and_save([], out_file)
+        captured = capsys.readouterr()
+        assert count == 0
+        assert "WARNING" in captured.out
+
+    def test_ascii_arrow_in_output(self, tmp_path: Path, capsys: Any) -> None:
+        from VoxelTree.scripts.build_octree_pairs import stack_and_save
+
+        out_file = tmp_path / "out.npz"
+        pair = self._make_fake_pair()
+        count = stack_and_save([pair], out_file)
+        captured = capsys.readouterr()
+        assert count == 1
+        # should not contain the Unicode arrow character
+        assert "->" in captured.out
+        assert "\u2192" not in captured.out
+
+
+class TestBuildFunctionOutput:
+    """Verify the top-level build() routine prints ASCII arrows."""
+
+    def test_build_prints_ascii_arrows(self, tmp_path: Path, capsys: Any, monkeypatch: Any) -> None:
+        """Patch helpers so build() runs without touching disk."""
+        from VoxelTree.scripts.build_octree_pairs import build
+
+        # fake section indices always non-empty
+        monkeypatch.setattr(
+            "VoxelTree.scripts.build_octree_pairs.build_section_index",
+            lambda data_dir, level: {0: 1},
+        )
+
+        # fake pair builder returns one dummy pair dict with required keys
+        def fake_build_pairs_for_level(*, child_level, data_dir, child_index, parent_index):
+            return [
+                {
+                    "labels32": np.zeros((32, 32, 32), dtype=np.int32),
+                    "parent_labels32": np.zeros((32, 32, 32), dtype=np.int32),
+                    "heightmap32": np.zeros((5, 32, 32), dtype=np.float32),
+                    "biome32": np.zeros((32, 32), dtype=np.int32),
+                    "y_position": 0,
+                    "level": child_level,
+                    "non_empty_children": 0,
+                }
+            ]
+
+        monkeypatch.setattr(
+            "VoxelTree.scripts.build_octree_pairs.build_pairs_for_level",
+            fake_build_pairs_for_level,
+        )
+
+        # bypass actual NPZ writing
+        monkeypatch.setattr(
+            "VoxelTree.scripts.build_octree_pairs.stack_and_save",
+            lambda pairs, path: len(pairs),
+        )
+
+        # run build; model_type defaults to 'all'
+        n_train, n_val = build(tmp_path, tmp_path)
+        captured = capsys.readouterr()
+
+        # should have produced pairs and returned counts
+        assert n_train > 0
+        assert n_val >= 0
+
+        # output must use ASCII arrow notation and never the Unicode character
+        assert "<-" in captured.out
+        assert "\u2190" not in captured.out
+        assert "←" not in captured.out
+
+
 # ===========================================================================
 # 4. Level → Model-Type Routing
 # ===========================================================================

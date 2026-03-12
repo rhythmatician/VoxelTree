@@ -10,13 +10,10 @@ from PySide6.QtWidgets import QMainWindow, QMessageBox, QVBoxLayout, QWidget
 
 from VoxelTree.gui.dashboard_table import DashboardTable
 from VoxelTree.gui.detail_panel import DetailPanel
-from VoxelTree.gui.profile_editor import (
-    ProfileDeleteDialog,
-    ProfileEditorDialog,
-    delete_profile_data,
-    list_profiles,
-    load_profile,
-)
+from VoxelTree.gui.profile_editor import (ProfileDeleteDialog,
+                                          ProfileEditorDialog,
+                                          delete_profile_data, list_profiles,
+                                          load_profile)
 from VoxelTree.gui.run_registry import RunRegistry
 from VoxelTree.gui.server_manager import ServerManager
 from VoxelTree.gui.server_status_bar import ServerStatusBar
@@ -120,6 +117,12 @@ class MainWindow(QMainWindow):
         self._profiles[name] = data
         if name not in self._registries:
             self._registries[name] = RunRegistry(name)
+        # reconcile state against on-disk data to clean up any stale failures
+        try:
+            self._registries[name].reconcile_with_profile(data)
+        except Exception:
+            # reconciliation should never crash the GUI; log and continue silently
+            print(f"[MW] warning: failed to reconcile registry for profile {name}")
         self._dashboard.add_profile(name, self._registries[name])
 
     def get_profile_dict(self, profile_name: str) -> dict | None:
@@ -198,11 +201,13 @@ class MainWindow(QMainWindow):
         # Configure RCON from profile settings
         self._configure_server_rcon(profile_name)
 
-        # Figure out which server steps still need to run
+        # Figure out which server steps still need to run.  A step that has
+        # already succeeded but is now stale should also be treated as pending
+        # because the user explicitly requested a fresh server session.
         pending = [
             step_id
             for step_id in _SERVER_SESSION_STEPS
-            if registry.get_status(step_id) != "success"
+            if registry.get_status(step_id) != "success" or registry.is_stale(step_id)
         ]
 
         if not pending:
@@ -274,6 +279,15 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
 
     def on_step_finished(self, profile_name: str | None, step_id: str) -> None:
+        if profile_name:
+            self._dashboard.refresh_profile(profile_name)
+
+    def on_step_progress(self, profile_name: str | None, step_id: str) -> None:
+        """Called by DetailPanel when a running step emits a progress update.
+
+        The default behaviour is simply to refresh the corresponding dashboard
+        row so that the progress ring updates in near‑real time.
+        """
         if profile_name:
             self._dashboard.refresh_profile(profile_name)
 

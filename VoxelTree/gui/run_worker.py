@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import subprocess
 from pathlib import Path
 
@@ -26,6 +27,9 @@ class RunWorker(QThread):
     log_line: Signal = Signal(str)
     step_started: Signal = Signal(str)
     step_finished: Signal = Signal(str, int)
+    # progress fraction (0.0–1.0) updated during a run; emitted when a recognisable
+    # percentage is seen in the child process output.
+    progress: Signal = Signal(str, float)
 
     #: Directory where all pipeline scripts live (VoxelTree repo root).
     #
@@ -48,6 +52,11 @@ class RunWorker(QThread):
 
     # ------------------------------------------------------------------
 
+    # regex matching any percent value in the line; we take the first match.
+    # tqdm bars typically look like "Train:  12%|####..." so anchoring at the
+    # start is too strict.
+    _PROGRESS_RE = re.compile(r"([0-9]{1,3})%")
+
     def run(self) -> None:  # called by QThread.start()
         self.step_started.emit(self.step_id)
         try:
@@ -61,7 +70,19 @@ class RunWorker(QThread):
             )
             assert self._proc.stdout is not None
             for line in self._proc.stdout:
-                self.log_line.emit(line.rstrip("\n"))
+                # strip both newline and carriage return so regex works on
+                # lines that use '\r' for in-place updates
+                stripped = line.rstrip("\r\n")
+                self.log_line.emit(stripped)
+                # scan for a percentage anywhere in the line
+                m = self._PROGRESS_RE.search(stripped)
+                if m:
+                    try:
+                        pct = float(m.group(1)) / 100.0
+                        pct = max(0.0, min(1.0, pct))
+                        self.progress.emit(self.step_id, pct)
+                    except ValueError:
+                        pass
             self._proc.wait()
             exit_code = -2 if self._cancelled else self._proc.returncode
         except Exception as exc:  # noqa: BLE001
