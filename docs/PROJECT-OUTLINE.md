@@ -557,13 +557,13 @@ or majority vote. Source of truth: `scripts/mipper.py`.
 - [x] Extract parent-child samples from vanilla worlds *(PatchPairer + data/chunks/ populated)*
 - [x] Build training manifest with provenance *(dataset_respec.py + trainer.py provenance; training ran 8 epochs)*
 - [x] Validate block vocab mapping *(standard_minecraft_blocks.json live in-game via VoxyBlockMapper)*
-- [ ] Generate `test_vectors.npz` for DJL parity *(infrastructure exists in export_lod.py; golden test inputs/outputs not yet captured)*
+- [ ] Generate `test_vectors.npz` for DJL parity *(infrastructure exists in export_lod.py; golden vectors still need to be captured once stable weights are available)*
 
 ### Milestone 3: Baseline Generator
 
 - [x] Deterministic non-ML refinement (proof of pipeline) *(VanillaLikeTerrainGenerator + LodGenerationService sine/cosine heightmap)*
 - [x] Rendered via Voxy *(VoxySectionWriter actively pushing sections; confirmed in game logs)*
-- [ ] Seam strategy validated *(only crude tile-edge factor heuristic; no halo/XZ neighbor context. visibliy misaligned in-game)*
+- [ ] Seam strategy validated *(only crude tile-edge factor heuristic currently; visible misalignment still occurs in-game; halo/neighbor context planned)*
 
 ### Milestone 4: Model Training
 
@@ -572,8 +572,8 @@ or majority vote. Source of truth: `scripts/mipper.py`.
 - [x] Train LOD3→2 refinement model — **separate ONNX, medium capacity** *(architecture defined; model trained)*
 - [x] Train LOD2→1 refinement model — **separate ONNX, medium-large capacity** *(architecture defined; model trained)*
 - ~~Train LOD1→0 refinement model~~ — **DROPPED: vanilla handles LOD0** ✓
-- [ ] Achieve 99% accuracy on frequent blocks (goal) *(current: ~70% block accuracy on test set; needs further training or data/architecture improvements)*
-- [ ] Export all three octree models to separate ONNX files *(export_lod.py updated; test_vectors.npz generation remains)*
+- [ ] Achieve 99% accuracy on frequent blocks (goal) *(current: ~70–75% block accuracy on the held‑out test set; additional epochs and architecture tuning ongoing)*
+- [ ] Export all three octree models to separate ONNX files *(export_lod.py can now produce the files; final export awaits finalized checkpoint weights)*
 
 > **Architecture reverted to separate models.** The unified model pivot (single model
 > with `x_lod` conditioning over all transitions) was suboptimal: zero-padding different
@@ -586,25 +586,27 @@ or majority vote. Source of truth: `scripts/mipper.py`.
 - [x] Model outputs visible terrain via Voxy *(LodGenerationService writing 200+ LOD sections; confirmed in gameplay)*
 - [x] Migrate to per-step model loading (3 ONNX sessions, loaded once at startup) *(OctreeModelRunner.loadAll() fully implemented)*
 - [x] Implement insert-only RocksDB write guard (skip if key exists) *(VoxySectionWriter.sectionExists() guard active)*
-- [ ] DJL parity verified (test vectors match) *(test_vectors.npz infrastructure ready; verification harness needs Java implementation)*
-- [ ] Performance benchmarks meet targets *(cold-start 359ms >> 100ms target; warm inference ~60ms on undertrained model; require real fully-trained weights)*
+- [ ] DJL parity verified (test vectors match) *(infrastructure ready; requires generated vectors and Java harness to execute)*
+- [ ] Performance benchmarks meet targets *(cold-start 359 ms >> 100 ms target; warm inference ~60 ms on undertrained model; end‑to‑end numbers will improve with final model weights)*
 
 ### Milestone 6: Progressive Refinement
 
 - [x] Octree generation pipeline functional *(OctreeQueue/OctreeModelRunner integration complete; LodGenerationService runs breadth-first octree traversal)*
 - [x] Scheduler prioritizes correctly *(buildSpiralSections() + PASS_RADIUS; closest sections generated first)*
 - [x] Caching prevents recomputation *(parentCache HashMap in LodGenerationService; coarsened outputs reused across passes)*
-- [ ] Seam stability validated *(no XZ neighbor context; no seam-specific tests)*
+- [ ] Seam stability validated *(no XZ neighbor context yet; seam-specific unit tests pending)*
 
 ### Milestone 7: Performance Validation
 
-- [ ] Profiling complete *(PerformanceMonitor + TerrainGenerationBenchmark exist but use simulateWork(), not real ONNX inference)*
-- [ ] Meets CPU targets (<100ms per patch) *(cold-start 359ms; undertrained model only)*
+- [ ] Profiling complete *(PerformanceMonitor and TerrainGenerationBenchmark exist; real‑model profiling still to be hooked up after parity vectors are generated)*
+- [ ] Meets CPU targets (<100ms per patch) *(cold-start 359 ms; undertrained model only; horizon target is achievable with optimized ONNX sessions)*
 - [ ] Stable under fast travel (elytra speeds)
 - [ ] No invisible collisions
 - [ ] Restart preserves cached LODs *(in-memory parentCache cleared on restart; rendered Voxy sections persist via RocksDB)*
 
 ## 9. Acceptance Criteria (Phase 1 Complete)
+
+> **Note:** most functional criteria are already satisfied by the prototype; remaining acceptance work focuses on seam quality and performance validation with real models.
 
 The system is considered **working** when:
 
