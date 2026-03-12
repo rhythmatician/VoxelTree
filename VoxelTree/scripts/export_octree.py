@@ -54,15 +54,11 @@ from typing import Any, Dict, Tuple
 import numpy as np
 import torch
 
-from VoxelTree.train.octree_models import (
-    OctreeConfig,
-    OctreeInitModel,
-    OctreeLeafModel,
-    OctreeRefineModel,
-    create_init_model,
-    create_leaf_model,
-    create_refine_model,
-)
+from VoxelTree.train.octree_models import (OctreeConfig, OctreeInitModel,
+                                           OctreeLeafModel, OctreeRefineModel,
+                                           create_init_model,
+                                           create_leaf_model,
+                                           create_refine_model)
 
 LOGGER = logging.getLogger("export_octree")
 
@@ -764,6 +760,12 @@ def main(argv: list[str] | None = None) -> None:
         help="Output directory for ONNX files (default: production/)",
     )
     parser.add_argument(
+        "--models",
+        nargs="+",
+        choices=["init", "refine", "leaf"],
+        help="Only export the specified submodels (default: all)",
+    )
+    parser.add_argument(
         "--validate",
         action="store_true",
         default=True,
@@ -788,19 +790,25 @@ def main(argv: list[str] | None = None) -> None:
     else:
         config, models = load_octree_checkpoint(args.checkpoint)
 
-    LOGGER.info("Exporting 3 octree models to %s", out_dir)
+    LOGGER.info("Exporting octree models to %s", out_dir)
 
-    # Export each model
-    exported = []
+    # Determine which models to export
+    to_export: list[str]
+    if args.models:
+        to_export = args.models
+    else:
+        to_export = ["init", "refine", "leaf"]
 
-    init_path = _export_init(models["init"], config, out_dir)  # type: ignore[arg-type]
-    exported.append(init_path)
-
-    refine_path = _export_refine(models["refine"], config, out_dir)  # type: ignore[arg-type]
-    exported.append(refine_path)
-
-    leaf_path = _export_leaf(models["leaf"], config, out_dir)  # type: ignore[arg-type]
-    exported.append(leaf_path)
+    exported: list[Path] = []
+    if "init" in to_export:
+        init_path = _export_init(models["init"], config, out_dir)  # type: ignore[arg-type]
+        exported.append(init_path)
+    if "refine" in to_export:
+        refine_path = _export_refine(models["refine"], config, out_dir)  # type: ignore[arg-type]
+        exported.append(refine_path)
+    if "leaf" in to_export:
+        leaf_path = _export_leaf(models["leaf"], config, out_dir)  # type: ignore[arg-type]
+        exported.append(leaf_path)
 
     # Validate ONNX round-trip
     if args.validate and not args.no_validate:
@@ -810,21 +818,11 @@ def main(argv: list[str] | None = None) -> None:
                 _validate_onnx(onnx_path, vectors_path)
 
     # Pipeline manifest
-    required_files = [
-        "pipeline_manifest.json",
-        "octree_init.onnx",
-        "octree_init_config.json",
-        "octree_refine.onnx",
-        "octree_refine_config.json",
-        "octree_leaf.onnx",
-        "octree_leaf_config.json",
-    ]
-
-    manifest: Dict[str, Any] = {
-        "version": "5.0.0",
-        "contract": "lodiffusion.v5.octree",
-        "required_files": required_files,
-        "pipeline": [
+    required_files: list[str] = ["pipeline_manifest.json"]
+    pipeline_entries: list[Dict[str, Any]] = []
+    if "init" in to_export:
+        required_files += ["octree_init.onnx", "octree_init_config.json"]
+        pipeline_entries.append(
             {
                 "model": "octree_init",
                 "onnx": "octree_init.onnx",
@@ -832,7 +830,11 @@ def main(argv: list[str] | None = None) -> None:
                 "has_parent": False,
                 "has_occ_head": True,
                 "output_resolution": 32,
-            },
+            }
+        )
+    if "refine" in to_export:
+        required_files += ["octree_refine.onnx", "octree_refine_config.json"]
+        pipeline_entries.append(
             {
                 "model": "octree_refine",
                 "onnx": "octree_refine.onnx",
@@ -840,7 +842,11 @@ def main(argv: list[str] | None = None) -> None:
                 "has_parent": True,
                 "has_occ_head": True,
                 "output_resolution": 32,
-            },
+            }
+        )
+    if "leaf" in to_export:
+        required_files += ["octree_leaf.onnx", "octree_leaf_config.json"]
+        pipeline_entries.append(
             {
                 "model": "octree_leaf",
                 "onnx": "octree_leaf.onnx",
@@ -848,8 +854,14 @@ def main(argv: list[str] | None = None) -> None:
                 "has_parent": True,
                 "has_occ_head": False,
                 "output_resolution": 32,
-            },
-        ],
+            }
+        )
+
+    manifest: Dict[str, Any] = {
+        "version": "5.0.0",
+        "contract": "lodiffusion.v5.octree",
+        "required_files": required_files,
+        "pipeline": pipeline_entries,
         "block_vocab_size": config.block_vocab_size,
         "biome_vocab_size": config.biome_vocab_size,
         "y_vocab_size": config.y_vocab_size,

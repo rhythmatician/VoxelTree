@@ -32,9 +32,16 @@ def test_run_registry_persistence(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
     assert not (tmp_path / profile / "run_state.json").exists()
 
     reg = RunRegistry(profile)
-    # default status for every step must be not_run
-    assert reg.get_status("pregen") == "not_run"
-    assert reg.get_status("export") == "not_run"
+    # default status for every active step must be not_run
+    for step in run_registry.PIPELINE_STEPS:
+        assert reg.get_status(step.id) == "not_run"
+    # sanity: ensure the split export/deploy steps are present
+    assert "export_init" in run_registry.STEP_BY_ID
+    assert "export_refine" in run_registry.STEP_BY_ID
+    assert "export_leaf" in run_registry.STEP_BY_ID
+    assert "deploy_init" in run_registry.STEP_BY_ID
+    assert "deploy_refine" in run_registry.STEP_BY_ID
+    assert "deploy_leaf" in run_registry.STEP_BY_ID
 
     # mark a couple of steps and check persistence
     reg.mark_success("pregen")
@@ -51,6 +58,67 @@ def test_run_registry_persistence(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
     reg2 = RunRegistry(profile)
     assert reg2.get_status("pregen") == "success"
     assert reg2.get_status("dumpnoise") == "failed"
+
+
+def test_command_factories_include_models_flag() -> None:
+    """Per-model export/deploy factories should emit the --models argument."""
+    from VoxelTree.gui.step_definitions import (_deploy_init_cmd,
+                                                _deploy_leaf_cmd,
+                                                _deploy_refine_cmd,
+                                                _export_init_cmd,
+                                                _export_leaf_cmd,
+                                                _export_refine_cmd)
+
+    # simple check that the generated command strings include the right model
+    assert "--models" in _export_init_cmd({})
+    assert "init" in _export_init_cmd({})
+    assert "--models" in _export_refine_cmd({})
+    assert "refine" in _export_refine_cmd({})
+    assert "--models" in _export_leaf_cmd({})
+    assert "leaf" in _export_leaf_cmd({})
+
+    assert "--models" in _deploy_init_cmd({})
+    assert "init" in _deploy_init_cmd({})
+    assert "--models" in _deploy_refine_cmd({})
+    assert "refine" in _deploy_refine_cmd({})
+    assert "--models" in _deploy_leaf_cmd({})
+    assert "leaf" in _deploy_leaf_cmd({})
+
+
+def test_phase_export_and_deploy_args(monkeypatch, tmp_path):
+    """phase3_export/phase4_deploy should forward the models argument.
+    """
+    called = {}
+
+    def fake_export_main(arglist):
+        called['export'] = arglist
+
+    def fake_deploy_main(arglist):
+        called['deploy'] = arglist
+
+    # patch the underlying script entrypoints that phase3_export/phase4_deploy
+    # import dynamically
+    monkeypatch.setattr(
+        "VoxelTree.scripts.export_octree.main", fake_export_main
+    )
+    monkeypatch.setattr(
+        "VoxelTree.scripts.deploy_models.main", fake_deploy_main
+    )
+
+    phase3 = __import__("VoxelTree.preprocessing.pipeline", fromlist=["phase3_export"]).phase3_export
+    phase4 = __import__("VoxelTree.preprocessing.pipeline", fromlist=["phase4_deploy"]).phase4_deploy
+
+    # call export with filtering
+    chk = tmp_path / "best.pt"
+    chk.write_text("x")
+    phase3(chk, tmp_path, models=["init", "leaf"])
+    assert "--models" in called['export']
+    assert "init" in called['export'] and "leaf" in called['export']
+
+    # call deploy with filtering
+    phase4(tmp_path, tmp_path / "dest", models=["refine"])
+    assert "--models" in called['deploy']
+    assert "refine" in called['deploy']
 
 
 def test_reconcile_marks_early_steps(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
@@ -195,5 +263,6 @@ def test_server_session_queues_stale(tmp_path: Path, monkeypatch: pytest.MonkeyP
         for s in _SERVER_SESSION_STEPS
         if reg.get_status(s) != "success" or reg.is_stale(s)
     ]
+    assert server_step in pending
     assert server_step in pending
     assert server_step in pending

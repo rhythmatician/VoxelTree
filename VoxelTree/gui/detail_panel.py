@@ -209,6 +209,18 @@ class DetailPanel(QDockWidget):
         """Public method to run a single step (if prerequisites are met)."""
         self._run_step(step_id)
 
+    def run_from_step(self, step_id: str) -> None:
+        """Public wrapper for the internal _run_from method.
+
+        This mirrors the behaviour of the "Run From Here" button in the UI
+        and allows other widgets (e.g. context menus) to invoke it.
+        """
+        self._run_from(step_id)
+
+    def cancel(self) -> None:
+        """Public method to cancel any running steps for the current profile."""
+        self._cancel()
+
     def _run_step(self, step_id: str) -> None:
         if not self._registry:
             return

@@ -30,6 +30,8 @@ class DashboardTable(QWidget):
 
     details_clicked: Signal = Signal(str)
     node_clicked: Signal = Signal(str, str)
+    node_run_from: Signal = Signal(str, str)
+    node_cancel: Signal = Signal(str, str)
     new_profile_requested: Signal = Signal()
     delete_profile_requested: Signal = Signal(str)
 
@@ -116,6 +118,8 @@ class DashboardTable(QWidget):
         row.details_clicked.connect(self.details_clicked)
         row.delete_clicked.connect(self.delete_profile_requested)
         row.node_clicked.connect(self.node_clicked)
+        row.run_from_requested.connect(self.node_run_from)
+        row.cancel_requested.connect(self.node_cancel)
         row.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         row.setStyleSheet("ProfileRow { background: #232323; border-bottom: 1px solid #2e2e2e; }")
 

@@ -256,6 +256,7 @@ def _train_leaf_cmd(p: dict) -> list[str]:
 
 
 def _export_cmd(p: dict) -> list[str]:
+    """Generic export command (all models)."""
     train = p.get("train", {})
     export = p.get("export", {})
     model_dir = train.get("output_dir", "models/voxy_octree")
@@ -270,17 +271,53 @@ def _export_cmd(p: dict) -> list[str]:
     ]
     if export.get("output_dir"):
         cmd += ["--export-dir", str(export["output_dir"])]
+    # the CLI now supports --models to restrict which submodels are exported
+    models = export.get("models")
+    if models:
+        # expect a list of strings like ["init","refine"]
+        cmd += ["--models"] + list(models)
     return cmd
 
 
 def _deploy_cmd(p: dict) -> list[str]:
+    """Generic deploy command (all models)."""
     export = p.get("export", {})
     deploy = p.get("deploy", {})
     export_dir = export.get("output_dir", "production")
     cmd = [_python(), "-m", "VoxelTree", "pipeline", "deploy", str(export_dir)]
     if deploy.get("target_dir"):
         cmd += ["--dest", str(deploy["target_dir"])]
+    # optional filtering of models
+    models = deploy.get("models")
+    if models:
+        cmd += ["--models"] + list(models)
     return cmd
+
+
+# convenience wrappers for tests and step definitions
+
+def _export_init_cmd(p: dict) -> list[str]:
+    return _export_cmd({**p, "export": {**p.get("export", {}), "models": ["init"]}})
+
+
+def _export_refine_cmd(p: dict) -> list[str]:
+    return _export_cmd({**p, "export": {**p.get("export", {}), "models": ["refine"]}})
+
+
+def _export_leaf_cmd(p: dict) -> list[str]:
+    return _export_cmd({**p, "export": {**p.get("export", {}), "models": ["leaf"]}})
+
+
+def _deploy_init_cmd(p: dict) -> list[str]:
+    return _deploy_cmd({**p, "deploy": {**p.get("deploy", {}), "models": ["init"]}})
+
+
+def _deploy_refine_cmd(p: dict) -> list[str]:
+    return _deploy_cmd({**p, "deploy": {**p.get("deploy", {}), "models": ["refine"]}})
+
+
+def _deploy_leaf_cmd(p: dict) -> list[str]:
+    return _deploy_cmd({**p, "deploy": {**p.get("deploy", {}), "models": ["leaf"]}})
 
 
 # Future loopback stubs (enabled=False → rendered faded, not clickable)
@@ -368,23 +405,49 @@ PIPELINE_STEPS: list[StepDef] = [
         prereqs=["build_pairs_leaf"],
         cmd_factory=_train_leaf_cmd,
     ),
+    # ── Export per-model, parallelised
     StepDef(
-        id="export",
-        label="Export",
-        prereqs=["train_init", "train_refine", "train_leaf"],
-        cmd_factory=_export_cmd,
+        id="export_init",
+        label="E·Init",
+        prereqs=["train_init"],
+        cmd_factory=_export_init_cmd,
     ),
     StepDef(
-        id="deploy",
-        label="Deploy",
-        prereqs=["export"],
-        cmd_factory=_deploy_cmd,
+        id="export_refine",
+        label="E·Refine",
+        prereqs=["train_refine"],
+        cmd_factory=_export_refine_cmd,
+    ),
+    StepDef(
+        id="export_leaf",
+        label="E·Leaf",
+        prereqs=["train_leaf"],
+        cmd_factory=_export_leaf_cmd,
+    ),
+    # ── Deploy per-model, each depends only on its export
+    StepDef(
+        id="deploy_init",
+        label="D·Init",
+        prereqs=["export_init"],
+        cmd_factory=_deploy_init_cmd,
+    ),
+    StepDef(
+        id="deploy_refine",
+        label="D·Refine",
+        prereqs=["export_refine"],
+        cmd_factory=_deploy_refine_cmd,
+    ),
+    StepDef(
+        id="deploy_leaf",
+        label="D·Leaf",
+        prereqs=["export_leaf"],
+        cmd_factory=_deploy_leaf_cmd,
     ),
     # ──── Future loopback stubs (leave door open) ────
     StepDef(
         id="reset_data",
         label="Reset",
-        prereqs=["deploy"],
+        prereqs=["deploy_leaf"],
         cmd_factory=_reset_data_cmd,
         enabled=False,
     ),

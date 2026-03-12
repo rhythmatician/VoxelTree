@@ -40,6 +40,9 @@ class StepNodeWidget(QWidget):
     """
 
     clicked: Signal = Signal(str)  # step_id
+    # Emitted when the user requests a context menu (right-click) on the node.
+    # Carries (step_id, global_position: QPoint).
+    context_menu_requested: Signal = Signal(str, object)
 
     def __init__(
         self,
@@ -200,9 +203,16 @@ class StepNodeWidget(QWidget):
         # If metadata is set (e.g., epoch count for Train), show it first
         if self._metadata is not None:
             return self._metadata
-        # Next, if we know a progress fraction show a percentage
+        # Next, if we know a progress fraction show a percentage.
+        # We display two significant figures: use one decimal place for
+        # values <10, otherwise show an integer.  This matches the desired
+        # behaviour (e.g. "2.3%" but "82%", "2.0%" at low values).
         if self._progress is not None:
-            return f"{int(self._progress * 100)}%"
+            pct = self._progress * 100.0
+            if pct < 10:
+                return f"{pct:.1f}%"
+            else:
+                return f"{int(pct)}%"
         if self.stub:
             return "-"
         icons = {
@@ -218,6 +228,20 @@ class StepNodeWidget(QWidget):
         return QSize(_DIAMETER, _DIAMETER)
 
     def mousePressEvent(self, event) -> None:  # noqa: N802
-        if not self.stub:
+        if not self.stub and event.button() == event.Button.LeftButton:
             self.clicked.emit(self.step_id)
         super().mousePressEvent(event)
+
+    def contextMenuEvent(self, event) -> None:  # noqa: N802
+        """Show a context menu for the node.
+
+        The widget itself merely notifies its parent that a menu was requested;
+        the parent (``ProfileRow``) builds the actual ``QMenu`` so that it can
+        make use of the profile name/registry data when enabling or disabling
+        actions.
+        """
+        if self.stub:
+            return
+        # forward the step id and the global position to whoever cares
+        self.context_menu_requested.emit(self.step_id, event.globalPos())
+        # do not call super() because we have handled the event

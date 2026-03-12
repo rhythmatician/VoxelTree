@@ -30,6 +30,12 @@ def main(argv: list[str] | None = None) -> None:
         default=None,
         help="Destination directory (default: ../LODiffusion/run/config/lodiffusion)",
     )
+    parser.add_argument(
+        "--models",
+        nargs="+",
+        choices=["init", "refine", "leaf"],
+        help="Only deploy the specified submodels; others will be left untouched",
+    )
     args = parser.parse_args(argv)
 
     source: Path = args.source.resolve()
@@ -54,6 +60,22 @@ def main(argv: list[str] | None = None) -> None:
         print("ERROR: Manifest has no 'required_files' list", file=sys.stderr)
         sys.exit(1)
 
+    # filter if models argument provided
+    if args.models:
+        # keep only filenames that mention the requested submodels
+        filtered: list[str] = []
+        for m in args.models:
+            if m == "init":
+                filtered += [n for n in required if "init" in n]
+            elif m == "refine":
+                filtered += [n for n in required if "refine" in n]
+            elif m == "leaf":
+                filtered += [n for n in required if "leaf" in n]
+        # always keep manifest itself so we can read later if needed
+        if "pipeline_manifest.json" in required and "pipeline_manifest.json" not in filtered:
+            filtered.insert(0, "pipeline_manifest.json")
+        required = filtered
+
     # ── Validate all files exist in source ───────────────────────────
     missing = [name for name in required if not (source / name).exists()]
     if missing:
@@ -65,10 +87,11 @@ def main(argv: list[str] | None = None) -> None:
     # ── Deploy ───────────────────────────────────────────────────────
     dest.mkdir(parents=True, exist_ok=True)
 
-    # Clear old files
-    for old in dest.iterdir():
-        if old.is_file():
-            old.unlink()
+    # Clear old files only if we're deploying everything
+    if not args.models:
+        for old in dest.iterdir():
+            if old.is_file():
+                old.unlink()
 
     copied = []
     for name in required:

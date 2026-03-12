@@ -149,6 +149,7 @@ def phase2_train(
 def phase3_export(
     checkpoint: Path,
     export_dir: Path,
+    models: list[str] | None = None,
 ) -> bool:
     """Phase 3: Export 3 ONNX models (init, refine, leaf) for LODiffusion.
 
@@ -167,7 +168,10 @@ def phase3_export(
     from VoxelTree.scripts.export_octree import main as _export_main
 
     try:
-        _export_main(["--checkpoint", str(checkpoint), "--out-dir", str(export_dir)])
+        args_list = ["--checkpoint", str(checkpoint), "--out-dir", str(export_dir)]
+        if models:
+            args_list += ["--models"] + list(models)
+        _export_main(args_list)
     except Exception as exc:  # noqa: BLE001
         print("ERROR: ONNX export raised exception: %s" % exc)
         return False
@@ -189,11 +193,13 @@ def phase3_export(
 # ==================================================================
 
 
-def phase4_deploy(export_dir: Path, dest: Path | None = None) -> bool:
+def phase4_deploy(export_dir: Path, dest: Path | None = None, models: list[str] | None = None) -> bool:
     """Phase 4: Deploy ONNX models to LODiffusion using deploy_models.py.
 
     Reads pipeline_manifest.json from export_dir to know which files to copy.
-    Returns True on success.
+    If ``models`` is provided, the deploy script will be invoked with
+    ``--models`` to limit which submodels are copied.  Returns True on
+    success.
     """
     print()
     print("=" * 70)
@@ -207,6 +213,8 @@ def phase4_deploy(export_dir: Path, dest: Path | None = None) -> bool:
     if dest is not None:
         deploy_args.extend(["--dest", str(dest)])
 
+    if models:
+        deploy_args += ["--models"] + list(models)
     try:
         _deploy_main(deploy_args)
         return True
@@ -288,6 +296,12 @@ def main(argv: list[str] | None = None) -> None:
     p_exp = sub.add_parser("export", help="Export 3 ONNX models (init, refine, leaf)")
     p_exp.add_argument("--checkpoint", type=Path, required=True)
     p_exp.add_argument("--export-dir", type=Path, default=DEFAULT_EXPORT_DIR)
+    p_exp.add_argument(
+        "--models",
+        nargs="+",
+        choices=["init", "refine", "leaf"],
+        help="Only export the specified submodels (default: all)",
+    )
 
     # -- deploy ---
     p_dep = sub.add_parser("deploy", help="Copy ONNX to LODiffusion config (via deploy_models.py)")
@@ -299,6 +313,12 @@ def main(argv: list[str] | None = None) -> None:
         type=Path,
         default=None,
         help="Destination (default: ../LODiffusion/run/config/lodiffusion)",
+    )
+    p_dep.add_argument(
+        "--models",
+        nargs="+",
+        choices=["init", "refine", "leaf"],
+        help="Only deploy the specified submodels (default: all)",
     )
 
     # -- run (full pipeline: dataprep + train [+ export + deploy]) ---
@@ -322,6 +342,12 @@ def main(argv: list[str] | None = None) -> None:
     p_run.add_argument("--export", action="store_true", help="Also export ONNX after training")
     p_run.add_argument(
         "--deploy", action="store_true", help="Also deploy to LODiffusion after export"
+    )
+    p_run.add_argument(
+        "--models",
+        nargs="+",
+        choices=["init", "refine", "leaf"],
+        help="Restrict export/deploy to the specified submodels when used with --export or --deploy",
     )
     p_run.add_argument(
         "--lodiffusion-config",
@@ -354,10 +380,10 @@ def main(argv: list[str] | None = None) -> None:
         )
 
     elif args.command == "export":
-        phase3_export(args.checkpoint, args.export_dir)
+        phase3_export(args.checkpoint, args.export_dir, models=args.models)
 
     elif args.command == "deploy":
-        phase4_deploy(args.export_dir, args.dest)
+        phase4_deploy(args.export_dir, args.dest, models=args.models)
 
     elif args.command == "run":
         # Data preparation → data-cli.py dataprep
@@ -377,9 +403,9 @@ def main(argv: list[str] | None = None) -> None:
             sys.exit(1)
 
         if args.export:
-            ok = phase3_export(best, args.export_dir)
+            ok = phase3_export(best, args.export_dir, models=args.models)
             if ok and args.deploy:
-                phase4_deploy(args.export_dir, args.lodiffusion_config)
+                phase4_deploy(args.export_dir, args.lodiffusion_config, models=args.models)
 
     print()
     print("Pipeline finished.")

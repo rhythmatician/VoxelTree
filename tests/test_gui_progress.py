@@ -36,6 +36,7 @@ def test_stepnode_progress_and_icon():
     widget.set_progress(0.4)
     assert widget._progress == 0.4
     assert not widget._pulse
+    # 40% should be shown as integer
     assert widget._icon() == "40%"
 
     # metadata overrides percentage
@@ -45,6 +46,12 @@ def test_stepnode_progress_and_icon():
     # clear metadata but keep progress
     widget.set_metadata(None)
     assert widget._icon() == "40%"
+
+    # low percentage should show one decimal
+    widget.set_progress(0.023)
+    assert widget._icon() == "2.3%"
+    widget.set_progress(0.02)
+    assert widget._icon() == "2.0%"
 
     # update progress beyond bounds
     widget.set_progress(1.5)
@@ -108,6 +115,92 @@ def test_profilerow_refresh_shows_progress():
     assert node is not None
     assert node._progress == 0.33
     assert node._icon() == "33%"
+
+
+def test_profilerow_contains_new_export_deploy_nodes():
+    # registry with no state still builds all nodes from PIPELINE_STEPS
+    reg = RunRegistry("y")
+    from VoxelTree.gui.profile_row import ProfileRow
+
+    row = ProfileRow("y", reg)
+    row.refresh()
+    for step in ("export_init", "export_refine", "export_leaf", "deploy_init", "deploy_refine", "deploy_leaf"):
+        assert step in row._nodes, f"missing node {step}"
+
+
+def test_stepnode_rightclick_emits_signal():
+    widget = StepNodeWidget("s2", "S2")
+    events: list = []
+
+    def handler(sid, pos):
+        events.append((sid, pos))
+
+    widget.context_menu_requested.connect(handler)
+    # create a dummy QContextMenuEvent (position values irrelevant)
+    from PySide6.QtCore import QPoint
+    from PySide6.QtGui import QContextMenuEvent
+    ev = QContextMenuEvent(QContextMenuEvent.Mouse, QPoint(10, 10), QPoint(20, 20))  # type: ignore[attr-defined]
+    widget.contextMenuEvent(ev)
+
+    assert events == [("s2", ev.globalPos())]
+
+
+def test_profilerow_context_menu_actions(monkeypatch):
+    # Use a registry with one running step to test enablement
+    reg = RunRegistry("p")
+    step = "train_init"
+    reg.mark_started(step)
+
+    from VoxelTree.gui.profile_row import ProfileRow
+    row = ProfileRow("p", reg)
+    # connect to capture emitted events
+    events: list = []
+    row.node_clicked.connect(lambda prof, sid: events.append(("run", prof, sid)))
+    row.run_from_requested.connect(lambda prof, sid: events.append(("from", prof, sid)))
+    row.cancel_requested.connect(lambda prof, sid: events.append(("cancel", prof, sid)))
+
+    # monkeypatch QMenu.exec_ to simulate selecting each action in turn
+    from PySide6.QtWidgets import QMenu
+
+    def fake_exec_run(self, pos):
+        # return the Run action (first one)
+        return self.actions()[0]
+
+    def fake_exec_from(self, pos):
+        return self.actions()[1]
+
+    def fake_exec_cancel(self, pos):
+        return self.actions()[2]
+
+    # run should be disabled because registry.can_run returns False while running
+    monkeypatch.setattr(QMenu, "exec_", fake_exec_run)
+    row._on_node_contextmenu(step, row.mapToGlobal(row.pos()))
+    assert events == []
+
+    # simulate run-from; still disabled in this state
+    monkeypatch.setattr(QMenu, "exec_", fake_exec_from)
+    row._on_node_contextmenu(step, row.mapToGlobal(row.pos()))
+    assert events == []
+
+    # cancel should be enabled because step is running
+    monkeypatch.setattr(QMenu, "exec_", fake_exec_cancel)
+    row._on_node_contextmenu(step, row.mapToGlobal(row.pos()))
+    assert events == [("cancel", "p", step)]
+
+
+def test_dashboard_table_forwards_row_signals():
+    from VoxelTree.gui.dashboard_table import DashboardTable
+    reg = RunRegistry("p")
+    table = DashboardTable()
+    table.add_profile("p", reg)
+    events: list = []
+    table.node_run_from.connect(lambda prof, sid: events.append((prof, sid)))
+    table.node_cancel.connect(lambda prof, sid: events.append((prof, sid)))
+    # manually emit from the underlying row and ensure table propagates
+    row = table._rows["p"]
+    row.run_from_requested.emit("p", "foo")
+    row.cancel_requested.emit("p", "bar")
+    assert events == [("p", "foo"), ("p", "bar")]
 
 
 def test_progress_helper_prints(capsys):

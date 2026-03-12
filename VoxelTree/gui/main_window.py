@@ -67,6 +67,8 @@ class MainWindow(QMainWindow):
         self._dashboard.delete_profile_requested.connect(self._on_delete_profile)
         self._dashboard.new_profile_requested.connect(self._on_new_profile)
         self._dashboard.node_clicked.connect(self._on_node_clicked)
+        self._dashboard.node_run_from.connect(self._on_node_run_from)
+        self._dashboard.node_cancel.connect(self._on_node_cancel)
         self._server_bar.run_server_session_requested.connect(self._on_run_server_session)
 
         print("[MW.init.7] Setting central widget...", flush=True)
@@ -186,6 +188,39 @@ class MainWindow(QMainWindow):
 
         self._detail.load_profile(profile_name, registry)
         self._detail.run_step(step_id)
+
+    @Slot(str, str)
+    def _on_node_run_from(self, profile_name: str, step_id: str) -> None:
+        """User requested **Run From Here** via context menu or detail panel."""
+        self._server_bar.set_active_profile(profile_name)
+        registry = self._registries.get(profile_name)
+        if not registry:
+            return
+        # server requirement check is same as for single step
+        step_def = STEP_BY_ID.get(step_id)
+        if step_def and step_def.server_required and not self._server.is_running():
+            reply = QMessageBox.question(
+                self,
+                "Server Required",
+                f"Step ‘{step_def.label}’ requires the Fabric server to be running.\n\n"
+                "Start the server now? You can click the step again once it’s ready.",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            )
+            if reply == QMessageBox.StandardButton.Yes:
+                self._configure_server_rcon(profile_name)
+                self._server.start()
+            return
+
+        self._detail.load_profile(profile_name, registry)
+        self._detail.run_from_step(step_id)
+
+    @Slot(str, str)
+    def _on_node_cancel(self, profile_name: str, step_id: str) -> None:
+        """Cancel running step(s) for the profile if the detail panel is focused."""
+        self._server_bar.set_active_profile(profile_name)
+        # only cancel if the detail panel is currently showing this profile
+        if self._detail._profile_name == profile_name:
+            self._detail.cancel()
 
     # ------------------------------------------------------------------
     # Server session

@@ -7,7 +7,7 @@ from graphlib import TopologicalSorter
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import (QHBoxLayout, QLabel, QPushButton, QSizePolicy,
-                               QWidget)
+                               QWidget, QMenu)
 
 from VoxelTree.gui.run_registry import RunRegistry
 from VoxelTree.gui.step_definitions import (ACTIVE_STEPS, PIPELINE_STEPS,
@@ -68,6 +68,9 @@ class ProfileRow(QWidget):
     details_clicked: Signal = Signal(str)
     delete_clicked: Signal = Signal(str)
     node_clicked: Signal = Signal(str, str)
+    # Context menu actions
+    run_from_requested: Signal = Signal(str, str)
+    cancel_requested: Signal = Signal(str, str)
 
     def __init__(
         self, profile_name: str, registry: RunRegistry, parent: QWidget | None = None
@@ -110,6 +113,7 @@ class ProfileRow(QWidget):
                 server_required=getattr(step, "server_required", False),
             )
             node.clicked.connect(self._on_node_clicked)
+            node.context_menu_requested.connect(self._on_node_contextmenu)
             self._nodes[step.id] = node
 
         # Hand nodes + steps to the DAG container (it positions them)
@@ -145,6 +149,35 @@ class ProfileRow(QWidget):
     def _on_node_clicked(self, step_id: str) -> None:
         if step_id in self._runnable_steps:
             self.node_clicked.emit(self.profile_name, step_id)
+
+    def _on_node_contextmenu(self, step_id: str, global_pos) -> None:
+        """Build and display the per-step context menu when a node is right-clicked."""
+        # Refresh state so that menu enablement matches current registry info.
+        self.refresh()
+
+        menu = QMenu(self)
+        run_act = menu.addAction("Run")
+        from_act = menu.addAction("Run From Here")
+        cancel_act = menu.addAction("Cancel")
+
+        # compute enablement
+        can_run = False
+        is_running = False
+        if self.registry:
+            can_run = self.registry.can_run(step_id)
+            status = self.registry.get_status(step_id)
+            is_running = status == "running"
+        run_act.setEnabled(can_run)
+        from_act.setEnabled(can_run)
+        cancel_act.setEnabled(is_running)
+
+        chosen = menu.exec_(global_pos)
+        if chosen is run_act and run_act.isEnabled():
+            self.node_clicked.emit(self.profile_name, step_id)
+        elif chosen is from_act and from_act.isEnabled():
+            self.run_from_requested.emit(self.profile_name, step_id)
+        elif chosen is cancel_act and cancel_act.isEnabled():
+            self.cancel_requested.emit(self.profile_name, step_id)
 
     # ------------------------------------------------------------------
     # Public
