@@ -124,7 +124,14 @@ def test_profilerow_contains_new_export_deploy_nodes():
 
     row = ProfileRow("y", reg)
     row.refresh()
-    for step in ("export_init", "export_refine", "export_leaf", "deploy_init", "deploy_refine", "deploy_leaf"):
+    for step in (
+        "export_init",
+        "export_refine",
+        "export_leaf",
+        "deploy_init",
+        "deploy_refine",
+        "deploy_leaf",
+    ):
         assert step in row._nodes, f"missing node {step}"
 
 
@@ -139,6 +146,7 @@ def test_stepnode_rightclick_emits_signal():
     # create a dummy QContextMenuEvent (position values irrelevant)
     from PySide6.QtCore import QPoint
     from PySide6.QtGui import QContextMenuEvent
+
     ev = QContextMenuEvent(QContextMenuEvent.Mouse, QPoint(10, 10), QPoint(20, 20))  # type: ignore[attr-defined]
     widget.contextMenuEvent(ev)
 
@@ -152,6 +160,7 @@ def test_profilerow_context_menu_actions(monkeypatch):
     reg.mark_started(step)
 
     from VoxelTree.gui.profile_row import ProfileRow
+
     row = ProfileRow("p", reg)
     # connect to capture emitted events
     events: list = []
@@ -190,6 +199,7 @@ def test_profilerow_context_menu_actions(monkeypatch):
 
 def test_dashboard_table_forwards_row_signals():
     from VoxelTree.gui.dashboard_table import DashboardTable
+
     reg = RunRegistry("p")
     table = DashboardTable()
     table.add_profile("p", reg)
@@ -213,4 +223,10 @@ def test_progress_helper_prints(capsys):
     report(-1, 10)  # below zero
     report(11, 10)  # above total
     captured = capsys.readouterr().out.strip().splitlines()
-    assert captured == ["[PROGRESS] 0%", "[PROGRESS] 50%", "[PROGRESS] 100%", "[PROGRESS] 0%", "[PROGRESS] 100%"]
+    assert captured == [
+        "[PROGRESS] 0.0%",
+        "[PROGRESS] 50%",
+        "[PROGRESS] 100%",
+        "[PROGRESS] 0.0%",
+        "[PROGRESS] 100%",
+    ]

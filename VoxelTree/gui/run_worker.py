@@ -52,10 +52,9 @@ class RunWorker(QThread):
 
     # ------------------------------------------------------------------
 
-    # regex matching any percent value in the line; we take the first match.
-    # tqdm bars typically look like "Train:  12%|####..." so anchoring at the
-    # start is too strict.
-    _PROGRESS_RE = re.compile(r"([0-9]{1,3})%")
+    # regex matching any percent value in the line (integer or decimal).
+    # e.g. "2.3%", "12%".  We grab the first match and convert to float.
+    _PROGRESS_RE = re.compile(r"([0-9]+(?:\.[0-9]+)?)%")
 
     def run(self) -> None:  # called by QThread.start()
         self.step_started.emit(self.step_id)

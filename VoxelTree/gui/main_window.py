@@ -10,10 +10,13 @@ from PySide6.QtWidgets import QMainWindow, QMessageBox, QVBoxLayout, QWidget
 
 from VoxelTree.gui.dashboard_table import DashboardTable
 from VoxelTree.gui.detail_panel import DetailPanel
-from VoxelTree.gui.profile_editor import (ProfileDeleteDialog,
-                                          ProfileEditorDialog,
-                                          delete_profile_data, list_profiles,
-                                          load_profile)
+from VoxelTree.gui.profile_editor import (
+    ProfileDeleteDialog,
+    ProfileEditorDialog,
+    delete_profile_data,
+    list_profiles,
+    load_profile,
+)
 from VoxelTree.gui.run_registry import RunRegistry
 from VoxelTree.gui.server_manager import ServerManager
 from VoxelTree.gui.server_status_bar import ServerStatusBar

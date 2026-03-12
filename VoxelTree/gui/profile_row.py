@@ -6,12 +6,10 @@ from graphlib import TopologicalSorter
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen
-from PySide6.QtWidgets import (QHBoxLayout, QLabel, QPushButton, QSizePolicy,
-                               QWidget, QMenu)
+from PySide6.QtWidgets import QHBoxLayout, QLabel, QMenu, QPushButton, QSizePolicy, QWidget
 
 from VoxelTree.gui.run_registry import RunRegistry
-from VoxelTree.gui.step_definitions import (ACTIVE_STEPS, PIPELINE_STEPS,
-                                            StepDef)
+from VoxelTree.gui.step_definitions import ACTIVE_STEPS, PIPELINE_STEPS, StepDef
 from VoxelTree.gui.step_node_widget import StepNodeWidget
 
 _NODE_W = 52
@@ -313,6 +311,11 @@ class _NodesWidget(QWidget):
                 painter.setPen(pen)
 
                 # Cubic Bezier: control points offset horizontally
+                offset = (dx - sx) * 0.45
+                path = QPainterPath()
+                path.moveTo(sx, sy)
+                path.cubicTo(sx + offset, sy, dx - offset, dy, dx, dy)
+                painter.drawPath(path)
                 offset = (dx - sx) * 0.45
                 path = QPainterPath()
                 path.moveTo(sx, sy)

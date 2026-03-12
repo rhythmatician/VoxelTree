@@ -228,7 +228,11 @@ class StepNodeWidget(QWidget):
         return QSize(_DIAMETER, _DIAMETER)
 
     def mousePressEvent(self, event) -> None:  # noqa: N802
-        if not self.stub and event.button() == event.Button.LeftButton:
+        # Only treat left-clicks as normal clicks.  ``event.Button`` was a
+        # typo; ``button()`` returns a Qt.MouseButton enum value.
+        from PySide6.QtCore import Qt
+
+        if not self.stub and event.button() == Qt.MouseButton.LeftButton:
             self.clicked.emit(self.step_id)
         super().mousePressEvent(event)
 

@@ -36,9 +36,14 @@ def report(current: int, total: int) -> None:
     """
     if total <= 0:
         return
-    pct = int((current / total) * 100)
-    pct = max(0, min(100, pct))
-    print(f"[PROGRESS] {pct}%")
+    # compute a float percent
+    pct = (current / total) * 100.0
+    pct = max(0.0, min(100.0, pct))
+    # two significant figures: one decimal for <10, integer otherwise
+    if pct < 10:
+        print(f"[PROGRESS] {pct:.1f}%")
+    else:
+        print(f"[PROGRESS] {int(pct)}%")
 
 
 def wrap(iterable: Iterable[T], *, desc: str | None = None) -> Iterator[T]:

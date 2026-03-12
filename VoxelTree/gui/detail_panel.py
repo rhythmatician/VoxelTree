@@ -6,9 +6,17 @@ from datetime import datetime
 
 from PySide6.QtCore import Qt, QTimer, Signal, Slot
 from PySide6.QtGui import QFont, QTextCursor
-from PySide6.QtWidgets import (QDockWidget, QHBoxLayout, QLabel, QPushButton,
-                               QScrollArea, QSizePolicy, QTextEdit,
-                               QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (
+    QDockWidget,
+    QHBoxLayout,
+    QLabel,
+    QPushButton,
+    QScrollArea,
+    QSizePolicy,
+    QTextEdit,
+    QVBoxLayout,
+    QWidget,
+)
 
 from VoxelTree.gui.run_registry import RunRegistry
 from VoxelTree.gui.run_worker import RunWorker

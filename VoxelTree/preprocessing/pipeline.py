@@ -147,8 +147,9 @@ def phase2_train(
 
 
 def phase3_export(
-    checkpoint: Path,
+    checkpoint: Path | None,
     export_dir: Path,
+    checkpoint_dir: Path | None = None,
     models: list[str] | None = None,
 ) -> bool:
     """Phase 3: Export 3 ONNX models (init, refine, leaf) for LODiffusion.
@@ -161,14 +162,24 @@ def phase3_export(
     print("=" * 70)
     print()
 
-    if not checkpoint.exists():
+    if checkpoint is None and checkpoint_dir is None:
+        print("ERROR: either --checkpoint or --checkpoint-dir must be provided")
+        return False
+    if checkpoint is not None and not checkpoint.exists():
         print("ERROR: Checkpoint not found: %s" % checkpoint)
+        return False
+    if checkpoint_dir is not None and not checkpoint_dir.exists():
+        print("ERROR: Checkpoint directory not found: %s" % checkpoint_dir)
         return False
 
     from VoxelTree.scripts.export_octree import main as _export_main
 
     try:
-        args_list = ["--checkpoint", str(checkpoint), "--out-dir", str(export_dir)]
+        args_list: list[str] = ["--out-dir", str(export_dir)]
+        if checkpoint is not None:
+            args_list += ["--checkpoint", str(checkpoint)]
+        if checkpoint_dir is not None:
+            args_list += ["--checkpoint-dir", str(checkpoint_dir)]
         if models:
             args_list += ["--models"] + list(models)
         _export_main(args_list)
@@ -193,7 +204,9 @@ def phase3_export(
 # ==================================================================
 
 
-def phase4_deploy(export_dir: Path, dest: Path | None = None, models: list[str] | None = None) -> bool:
+def phase4_deploy(
+    export_dir: Path, dest: Path | None = None, models: list[str] | None = None
+) -> bool:
     """Phase 4: Deploy ONNX models to LODiffusion using deploy_models.py.
 
     Reads pipeline_manifest.json from export_dir to know which files to copy.
@@ -294,7 +307,13 @@ def main(argv: list[str] | None = None) -> None:
 
     # -- export ---
     p_exp = sub.add_parser("export", help="Export 3 ONNX models (init, refine, leaf)")
-    p_exp.add_argument("--checkpoint", type=Path, required=True)
+    ckpt_group = p_exp.add_mutually_exclusive_group(required=True)
+    ckpt_group.add_argument("--checkpoint", type=Path, help="Unified checkpoint file (.pt)")
+    ckpt_group.add_argument(
+        "--checkpoint-dir",
+        type=Path,
+        help="Directory containing per-model checkpoints (init_/refine_/leaf_*.pt)",
+    )
     p_exp.add_argument("--export-dir", type=Path, default=DEFAULT_EXPORT_DIR)
     p_exp.add_argument(
         "--models",
@@ -380,7 +399,12 @@ def main(argv: list[str] | None = None) -> None:
         )
 
     elif args.command == "export":
-        phase3_export(args.checkpoint, args.export_dir, models=args.models)
+        phase3_export(
+            args.checkpoint,
+            args.export_dir,
+            checkpoint_dir=getattr(args, "checkpoint_dir", None),
+            models=args.models,
+        )
 
     elif args.command == "deploy":
         phase4_deploy(args.export_dir, args.dest, models=args.models)

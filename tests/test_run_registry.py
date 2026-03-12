@@ -70,12 +70,19 @@ def test_command_factories_include_models_flag() -> None:
                                                 _export_refine_cmd)
 
     # simple check that the generated command strings include the right model
-    assert "--models" in _export_init_cmd({})
-    assert "init" in _export_init_cmd({})
+    cmd_init = _export_init_cmd({})
+    assert "--models" in cmd_init
+    assert "init" in cmd_init
     assert "--models" in _export_refine_cmd({})
     assert "refine" in _export_refine_cmd({})
     assert "--models" in _export_leaf_cmd({})
     assert "leaf" in _export_leaf_cmd({})
+
+    # pass a profile to ensure checkpoint-dir derived from train.output_dir
+    profile = {"train": {"output_dir": "models/mycheck"}}
+    cmd_init2 = _export_init_cmd(profile)
+    assert "--checkpoint-dir" in cmd_init2
+    assert "models/mycheck" in cmd_init2
 
     assert "--models" in _deploy_init_cmd({})
     assert "init" in _deploy_init_cmd({})
@@ -114,6 +121,15 @@ def test_phase_export_and_deploy_args(monkeypatch, tmp_path):
     phase3(chk, tmp_path, models=["init", "leaf"])
     assert "--models" in called['export']
     assert "init" in called['export'] and "leaf" in called['export']
+
+    # ensure checkpoint-dir is passed when provided
+    called.clear()
+    dirpath = tmp_path / "ckdir"
+    dirpath.mkdir()
+    phase3(None, tmp_path, checkpoint_dir=dirpath, models=["refine"])
+    assert "--checkpoint-dir" in called['export']
+    assert str(dirpath) in called['export']
+    assert "refine" in called['export']
 
     # call deploy with filtering
     phase4(tmp_path, tmp_path / "dest", models=["refine"])

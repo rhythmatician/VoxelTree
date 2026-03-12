@@ -86,3 +86,50 @@ def test_export_all_by_default(tmp_path: Path):
         "octree_refine.onnx",
         "octree_leaf.onnx",
     }
+
+
+def test_load_checkpoint_with_old_module(tmp_path: Path):
+    """Ensure our compatibility shim allows loading pickles referencing
+    ``train.unet3d``.
+
+    We create a dummy object whose ``__module__`` is set to the old path and
+    include it in the checkpoint.  ``torch.load`` will then attempt to import
+    that module; the shim in ``export_octree`` should provide it.
+    """
+    import importlib
+
+    import torch
+
+    import VoxelTree.scripts.export_octree as expmod
+
+    # reload module to undo the fake_exporters monkeypatch
+    expmod = importlib.reload(expmod)
+    load_octree_checkpoint = expmod.load_octree_checkpoint
+
+    # define a fake class and instance that pretends to live in train.unet3d
+    FakeLegacy = type("FakeLegacy", (object,), {})
+    FakeLegacy.__module__ = "train.unet3d"
+    # ensure the fake module exists in sys.modules and expose the class there
+    import sys
+    import types
+    if "train.unet3d" not in sys.modules:
+        sys.modules["train.unet3d"] = types.ModuleType("train.unet3d")
+    setattr(sys.modules["train.unet3d"], "FakeLegacy", FakeLegacy)
+    legacy_obj = FakeLegacy()
+
+    # build a minimal checkpoint containing the fake object
+    cfg = object()
+    ckpt = {
+        "config": cfg,
+        "model_state_dicts": {"init": {}},
+        "legacy": legacy_obj,
+    }
+    path = tmp_path / "old.ckpt"
+    torch.save(ckpt, path)
+
+    # loading should not raise ImportError
+    loaded_cfg, models = load_octree_checkpoint(path)
+    assert loaded_cfg is cfg
+    # loading should not raise ImportError
+    loaded_cfg, models = load_octree_checkpoint(path)
+    assert loaded_cfg is cfg

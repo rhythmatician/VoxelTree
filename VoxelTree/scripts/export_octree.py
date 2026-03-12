@@ -48,17 +48,36 @@ import argparse
 import json
 import logging
 import subprocess
+
+# Compatibility shim for old checkpoints that reference the now-removed
+# ``train.unet3d`` module.  Unpickling such files triggers a
+# ModuleNotFoundError; we inject a dummy module with the expected names.
+import sys
+import types
 from pathlib import Path
 from typing import Any, Dict, Tuple
 
 import numpy as np
 import torch
 
-from VoxelTree.train.octree_models import (OctreeConfig, OctreeInitModel,
-                                           OctreeLeafModel, OctreeRefineModel,
-                                           create_init_model,
-                                           create_leaf_model,
-                                           create_refine_model)
+if "train.unet3d" not in sys.modules:
+    mod = types.ModuleType("train.unet3d")
+    from VoxelTree.train.octree_models import OctreeConfig as UNet3DConfig
+    from VoxelTree.train.octree_models import UNet3D32 as UNet3D
+
+    mod.UNet3D = UNet3D
+    mod.UNet3DConfig = UNet3DConfig
+    sys.modules["train.unet3d"] = mod
+
+from VoxelTree.train.octree_models import (
+    OctreeConfig,
+    OctreeInitModel,
+    OctreeLeafModel,
+    OctreeRefineModel,
+    create_init_model,
+    create_leaf_model,
+    create_refine_model,
+)
 
 LOGGER = logging.getLogger("export_octree")
 
@@ -875,6 +894,12 @@ def main(argv: list[str] | None = None) -> None:
 
     LOGGER.info("Pipeline manifest: %s", manifest_path)
     LOGGER.info("Export complete.")
+    for p in exported:
+        LOGGER.info("  %s", p)
+
+
+if __name__ == "__main__":
+    main()
     for p in exported:
         LOGGER.info("  %s", p)
 

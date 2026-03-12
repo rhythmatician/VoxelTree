@@ -35,7 +35,7 @@ def test_progress_signal_parsed(monkeypatch):
     lines = [
         "10% doing stuff\n",
         "irrelevant line\n",
-        "Train:  50%|#####\r\n",  # prefix + carriage return typical of tqdm
+        "Train:  2.3%|~\r\n",  # decimal percentage
         "100% complete\n",
     ]
 
@@ -62,4 +62,4 @@ def test_progress_signal_parsed(monkeypatch):
 
     worker.run()  # call directly instead of start() to stay in same thread
 
-    assert received == [("step1", 0.1), ("step1", 0.5), ("step1", 1.0)]
+    assert received == [("step1", 0.1), ("step1", 0.023), ("step1", 1.0)]
