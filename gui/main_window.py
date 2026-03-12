@@ -200,7 +200,8 @@ class MainWindow(QMainWindow):
 
         # Figure out which server steps still need to run
         pending = [
-            step_id for step_id in _SERVER_SESSION_STEPS
+            step_id
+            for step_id in _SERVER_SESSION_STEPS
             if registry.get_status(step_id) != "success"
         ]
 

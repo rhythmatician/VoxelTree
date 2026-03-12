@@ -354,21 +354,54 @@ def stack_and_save(pairs: list[dict[str, Any]], cache_path: Path) -> int:
 # ---------------------------------------------------------------------------
 
 
+# Map model_type → (child_levels, include_l4_init)
+_MODEL_TYPE_LEVELS: dict[str, list[int]] = {
+    "all": [4, 3, 2, 1, 0],
+    "init": [4],
+    "refine": [3, 2, 1],
+    "leaf": [0],
+}
+
+
 def build(
     data_dir: Path,
     output_dir: Path,
     *,
     val_split: float = 0.1,
     clean: bool = False,
+    model_type: str = "all",
 ) -> tuple[int, int]:
     """Build octree training pair caches.
 
+    Args:
+        data_dir: Directory containing level_N/ subdirectories.
+        output_dir: Directory to save pair caches.
+        val_split: Fraction of pairs for validation.
+        clean: Delete existing caches before rebuilding.
+        model_type: Which model's pairs to build: ``"all"``, ``"init"``,
+            ``"refine"``, or ``"leaf"``.  Non-``"all"`` values produce
+            ``{model_type}_train_octree_pairs.npz`` output files.
+
     Returns (n_train_pairs, n_val_pairs).
     """
+    if model_type not in _MODEL_TYPE_LEVELS:
+        raise ValueError(f"Unknown model_type {model_type!r}. Valid: {sorted(_MODEL_TYPE_LEVELS)}")
+    active_levels = _MODEL_TYPE_LEVELS[model_type]
+
+    # Output filename prefix: empty for legacy "all", else "{model_type}_"
+    prefix = "" if model_type == "all" else f"{model_type}_"
+
     if clean:
-        for cache_file in output_dir.glob("*_octree_pairs.npz"):
-            print(f"  Removing stale cache: {cache_file.name}")
-            cache_file.unlink()
+        if model_type == "all":
+            for cache_file in output_dir.glob("*_octree_pairs.npz"):
+                print(f"  Removing stale cache: {cache_file.name}")
+                cache_file.unlink()
+        else:
+            for split_name in ("train", "val"):
+                cache_file = output_dir / f"{prefix}{split_name}_octree_pairs.npz"
+                if cache_file.exists():
+                    print(f"  Removing stale cache: {cache_file.name}")
+                    cache_file.unlink()
 
     # Build indices for all levels
     print("Building section indices...")
@@ -385,11 +418,15 @@ def build(
         print("ERROR: No sections found. Run extract-octree first.")
         sys.exit(1)
 
-    # Build pairs for each child level (L0 through L4)
+    if model_type != "all":
+        print(f"Building pairs for model_type={model_type!r} (levels: {active_levels})")
+        print()
+
+    # Build pairs for each child level (filtered by active_levels)
     all_pairs: list[dict[str, Any]] = []
 
     # L4 sections → init model (no parent)
-    if indices[4]:
+    if 4 in active_levels and indices[4]:
         print(f"Building L4 init pairs ({len(indices[4]):,} sections)...")
         l4_pairs = build_pairs_for_level(
             child_level=4,
@@ -403,6 +440,8 @@ def build(
 
     # L3 through L0: refine/leaf models (have parent at level+1)
     for child_level in range(3, -1, -1):
+        if child_level not in active_levels:
+            continue
         parent_level = child_level + 1
         if not indices[child_level]:
             print(f"Skipping L{child_level} — no sections")
@@ -449,13 +488,15 @@ def build(
     print("=" * 62)
     print("  Saving pair caches...")
     print("=" * 62)
-    n_train = stack_and_save(train_pairs, output_dir / "train_octree_pairs.npz")
-    n_val = stack_and_save(val_pairs, output_dir / "val_octree_pairs.npz")
+    n_train = stack_and_save(train_pairs, output_dir / f"{prefix}train_octree_pairs.npz")
+    n_val = stack_and_save(val_pairs, output_dir / f"{prefix}val_octree_pairs.npz")
 
     # Write completion marker
-    marker = output_dir / ".build_octree_pairs_done"
+    marker_name = f".{prefix}build_octree_pairs_done" if prefix else ".build_octree_pairs_done"
+    marker = output_dir / marker_name
     marker.write_text(
         f"timestamp: {time.strftime('%Y-%m-%dT%H:%M:%S')}\n"
+        f"model_type: {model_type}\n"
         f"train_pairs: {n_train}\n"
         f"val_pairs: {n_val}\n"
     )
@@ -512,6 +553,18 @@ def main() -> None:
         action="store_true",
         help="Delete existing *_octree_pairs.npz caches before rebuilding",
     )
+    parser.add_argument(
+        "--model-type",
+        type=str,
+        default="all",
+        choices=["all", "init", "refine", "leaf"],
+        metavar="TYPE",
+        help=(
+            "Which model's training pairs to build (default: all). "
+            "'init'=L4 only, 'refine'=L1-L3 only, 'leaf'=L0 only, 'all'=all levels. "
+            "Non-'all' values write '{TYPE}_train/val_octree_pairs.npz'."
+        ),
+    )
     args = parser.parse_args()
 
     output_dir = args.output_dir or args.data_dir
@@ -521,6 +574,7 @@ def main() -> None:
         output_dir,
         val_split=args.val_split,
         clean=args.clean,
+        model_type=args.model_type,
     )
 
 

@@ -648,6 +648,17 @@ def main() -> None:
         help="Channel widths for init model (default: 24 48 96)",
     )
     parser.add_argument(
+        "--init-architecture",
+        type=str,
+        default="encoder2d_decoder3d",
+        choices=["encoder2d_decoder3d", "full_3d_unet"],
+        help=(
+            "Init-model backbone (default: encoder2d_decoder3d). "
+            "The 2D→3D path is the current shootout winner; full_3d_unet is kept "
+            "for backward compatibility and ablation runs."
+        ),
+    )
+    parser.add_argument(
         "--refine-channels",
         type=int,
         nargs=3,
@@ -662,6 +673,15 @@ def main() -> None:
         default=[48, 96, 192],
         metavar=("C0", "C1", "C2"),
         help="Channel widths for leaf model (default: 48 96 192)",
+    )
+    parser.add_argument(
+        "--leaf-bottleneck-extra-depth",
+        type=int,
+        default=1,
+        help=(
+            "Extra DoubleConv3d blocks at the leaf 8³ bottleneck (default: 1). "
+            "This is the conservative leaf-model upgrade from the leaf shootout."
+        ),
     )
     parser.add_argument(
         "--vocab",
@@ -800,8 +820,8 @@ def main() -> None:
         type=int,
         default=0,
         help=(
-            "Extra DoubleConv3d blocks at 8³ bottleneck (default: 0). "
-            "Deepens the representation where occupancy decisions are made. "
+            "Legacy global fallback for extra DoubleConv3d blocks at the 8³ bottleneck "
+            "(default: 0). Used by models without a per-model override. "
             "OGN-inspired: multiple convolutions per octree level."
         ),
     )
@@ -836,7 +856,35 @@ def main() -> None:
             "OGN's PROP_KNOWN → PROP_PRED transition."
         ),
     )
+    parser.add_argument(
+        "--models",
+        type=str,
+        default="all",
+        metavar="TYPES",
+        help=(
+            "Comma-separated model types to train: init, refine, leaf, or 'all' (default). "
+            "Examples: --models init  --models init,leaf  --models all. "
+            "Non-'all' values save per-model checkpoints named '{types}_best.pt' etc., "
+            "and load model-specific pair caches when available."
+        ),
+    )
     args = parser.parse_args()
+
+    # ── Parse active model types ──────────────────────────────────────────────
+    _VALID_MODEL_TYPES = {"init", "refine", "leaf"}
+    if args.models == "all":
+        active_types: Optional[Set[str]] = None  # train all models jointly
+        _ckpt_prefix = ""  # legacy unified naming: best_model.pt etc.
+    else:
+        active_types = set(args.models.split(","))
+        invalid = active_types - _VALID_MODEL_TYPES
+        if invalid:
+            raise ValueError(
+                f"Unknown model types: {invalid}. Valid: init, refine, leaf or 'all'"
+            )
+        # Checkpoint filename prefix: e.g. 'init_' or 'init_leaf_'
+        _ckpt_prefix = "_".join(sorted(active_types)) + "_"
+    print(f"Active model types: {sorted(active_types) if active_types else 'all'}")
 
     # CPU thread limit
     if args.num_threads is not None:
@@ -899,9 +947,11 @@ def main() -> None:
         init_channels=tuple(args.init_channels),
         refine_channels=tuple(args.refine_channels),
         leaf_channels=tuple(args.leaf_channels),
+        init_architecture=args.init_architecture,
         parent_embed_dim=args.parent_embed_dim,
         parent_context_mode=args.parent_context_mode,
         bottleneck_extra_depth=args.bottleneck_extra_depth,
+        leaf_bottleneck_extra_depth=args.leaf_bottleneck_extra_depth,
         parent_refine_conv=args.parent_refine_conv,
         use_occ_gate=args.use_occ_gate,
     )
@@ -917,6 +967,11 @@ def main() -> None:
     for name, m in models.items():
         n = sum(p.numel() for p in m.parameters())
         print(f"  {name}: {n:,} params")
+    print(f"  init architecture: {config.init_architecture}")
+    print(
+        "  leaf bottleneck extra depth: "
+        f"{getattr(config, 'leaf_bottleneck_extra_depth', config.bottleneck_extra_depth)}"
+    )
 
     if args.init_block_bias:
         if args.resume is not None:
@@ -945,9 +1000,15 @@ def main() -> None:
         print(f"\nStep 8 (OGN-inspired): {', '.join(step8_active)}")
 
     # ── Datasets ─────────────────────────────────────────────────────
+    # When training a single model type, prefer its dedicated pair cache so
+    # the DataLoader only loops over the relevant levels.
+    dataset_model_type: Optional[str] = None
+    if active_types is not None and len(active_types) == 1:
+        dataset_model_type = next(iter(active_types))
+
     print("\nLoading datasets...")
-    train_dataset = OctreeDataset(data_dir=data_dir, split="train")
-    val_dataset = OctreeDataset(data_dir=data_dir, split="val")
+    train_dataset = OctreeDataset(data_dir=data_dir, split="train", model_type=dataset_model_type)
+    val_dataset = OctreeDataset(data_dir=data_dir, split="val", model_type=dataset_model_type)
 
     # Subset for smoke tests
     if args.max_samples is not None:
@@ -1031,8 +1092,20 @@ def main() -> None:
     # Stash warmup configuration on the loss_fn for use in the training loop
     _occ_warmup_epochs: int = args.occ_warmup_epochs
 
-    all_params = list(p for m in models.values() for p in m.parameters() if p.requires_grad)
-    optimizer = optim.AdamW(all_params, lr=args.lr, weight_decay=1e-4)
+    if active_types is not None:
+        # Independent training: only optimise active model parameters
+        active_params = [
+            p
+            for name, m in models.items()
+            if name in active_types
+            for p in m.parameters()
+            if p.requires_grad
+        ]
+        optimizer = optim.AdamW(active_params, lr=args.lr, weight_decay=1e-4)
+        print(f"Optimizer: {len(active_params)} tensors from {sorted(active_types)}")
+    else:
+        all_params = list(p for m in models.values() for p in m.parameters() if p.requires_grad)
+        optimizer = optim.AdamW(all_params, lr=args.lr, weight_decay=1e-4)
 
     if args.scheduler == "cosine":
         scheduler: optim.lr_scheduler.LRScheduler = optim.lr_scheduler.CosineAnnealingLR(
@@ -1107,6 +1180,7 @@ def main() -> None:
             loss_fn,
             optimizer,
             device,
+            active_types=active_types,
             scheduled_sampling_p=args.scheduled_sampling,
             occ_warmup_scale=occ_warmup_scale,
         )
@@ -1175,32 +1249,44 @@ def main() -> None:
             if isinstance(scheduler, optim.lr_scheduler.ReduceLROnPlateau):
                 scheduler.step(val_loss)
 
-            # Save best
+            # Save best (unified or per-model depending on active_types)
             if val_loss < best_val_loss:
                 best_val_loss = val_loss
+                _save_state_dicts = {
+                    name: m.state_dict()
+                    for name, m in models.items()
+                    if active_types is None or name in active_types
+                }
                 torch.save(
                     {
                         "epoch": epoch,
-                        "model_state_dicts": {name: m.state_dict() for name, m in models.items()},
+                        "model_state_dicts": _save_state_dicts,
                         "optimizer_state_dict": optimizer.state_dict(),
                         "config": config,
                         "val_loss": val_loss,
                         "val_metrics": val_metrics,
+                        "active_types": list(active_types) if active_types else None,
                     },
-                    output_dir / "best_model.pt",
+                    output_dir / f"{_ckpt_prefix}best_model.pt",
                 )
                 print(f"  ** New best model saved (val_loss: {best_val_loss:.4f})")
 
         # Periodic checkpoint
         if epoch % args.save_every == 0:
+            _save_state_dicts = {
+                name: m.state_dict()
+                for name, m in models.items()
+                if active_types is None or name in active_types
+            }
             torch.save(
                 {
                     "epoch": epoch,
-                    "model_state_dicts": {name: m.state_dict() for name, m in models.items()},
+                    "model_state_dicts": _save_state_dicts,
                     "optimizer_state_dict": optimizer.state_dict(),
                     "config": config,
+                    "active_types": list(active_types) if active_types else None,
                 },
-                output_dir / f"checkpoint_epoch_{epoch}.pt",
+                output_dir / f"{_ckpt_prefix}checkpoint_epoch_{epoch}.pt",
             )
 
         epoch_time = time.time() - epoch_start
@@ -1211,16 +1297,23 @@ def main() -> None:
     total_time = time.time() - start_time
     print(f"\nTraining completed in {total_time / 3600:.2f} hours")
 
+    _save_state_dicts = {
+        name: m.state_dict()
+        for name, m in models.items()
+        if active_types is None or name in active_types
+    }
     torch.save(
         {
             "epoch": args.epochs,
-            "model_state_dicts": {name: m.state_dict() for name, m in models.items()},
+            "model_state_dicts": _save_state_dicts,
             "optimizer_state_dict": optimizer.state_dict(),
             "config": config,
+            "active_types": list(active_types) if active_types else None,
         },
-        output_dir / "final_model.pt",
+        output_dir / f"{_ckpt_prefix}final_model.pt",
     )
-    print(f"Final model saved to {output_dir / 'final_model.pt'}")
+    _final_name = f"{_ckpt_prefix}final_model.pt"
+    print(f"Final model saved to {output_dir / _final_name}")
 
 
 if __name__ == "__main__":

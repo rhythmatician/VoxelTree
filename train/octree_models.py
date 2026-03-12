@@ -1,21 +1,19 @@
 """Octree generation models — 3-model architecture for 32³ WorldSections.
 
-Three 3D U-Net models operating on 32³ spatial grids, aligned with Voxy's
-WorldSection hierarchy:
+Model choices are now driven by the notebook shootouts:
 
-- **Model A** ``OctreeInitModel``  (L4 only):  No parent context, root of octree.
-- **Model B** ``OctreeRefineModel`` (L3, L2, L1 shared):  Parent context + level embedding.
-- **Model C** ``OctreeLeafModel``  (L0 only):  Parent context, no occupancy head.
+- **Model A** ``OctreeInitModel``  (L4 only): defaults to a 2D encoder → 3D
+    decoder backbone, which outperformed the old all-3D baseline in the init
+    shootout while staying much faster on CPU.
+- **Model B** ``OctreeRefineModel`` (L3, L2, L1 shared): parent context +
+    level embedding, still using the canonical 3D U-Net path while the refine
+    shootout continues.
+- **Model C** ``OctreeLeafModel``  (L0 only): parent context, no occupancy
+    head, with a configurable deeper bottleneck for the leaf-level path.
 
-All models produce ``block_type_logits`` float[B, V, 32, 32, 32].  Models A and B
+All models produce ``block_type_logits`` float[B, V, 32, 32, 32]. Models A and B
 additionally produce ``occ_logits`` float[B, 8] predicting which child octants
 are non-empty (for octree pruning).
-
-Channel widths are designed as configurable defaults pending shootout experiments::
-
-    Init:   C₀=24,  C₁=48,  C₂=96   (~400K params)
-    Refine: C₀=32,  C₁=64,  C₂=128  (~800K params)
-    Leaf:   C₀=48,  C₁=96,  C₂=192  (~1.8M params)
 """
 
 from __future__ import annotations
@@ -25,7 +23,6 @@ from typing import Dict, Optional, Tuple
 
 import torch
 import torch.nn as nn
-
 
 # ── Configuration ──────────────────────────────────────────────────────
 
@@ -47,6 +44,11 @@ class OctreeConfig:
     init_channels: Tuple[int, int, int] = (24, 48, 96)
     refine_channels: Tuple[int, int, int] = (32, 64, 128)
     leaf_channels: Tuple[int, int, int] = (48, 96, 192)
+
+    # Architecture selections from notebook shootouts.
+    # Old checkpoints won't have these fields, so model code uses getattr()
+    # fallbacks when loading historical runs.
+    init_architecture: str = "encoder2d_decoder3d"
 
     # Conditioning embedding dimensions
     parent_embed_dim: int = 16
@@ -70,6 +72,12 @@ class OctreeConfig:
     #    OGN applies multiple convolutions per octree level — deeper
     #    bottleneck gives the occupancy head richer features to work with.
     bottleneck_extra_depth: int = 0
+
+    # Per-model bottleneck overrides. ``None`` means "use the legacy global
+    # bottleneck_extra_depth value" so older checkpoints remain compatible.
+    init_bottleneck_extra_depth: Optional[int] = None
+    refine_bottleneck_extra_depth: Optional[int] = None
+    leaf_bottleneck_extra_depth: Optional[int] = 1
 
     # B. Parent feature refiner: a Conv3dBlock after the embedding lookup
     #    so the model can learn local spatial correlations from parent
@@ -111,6 +119,136 @@ class DoubleConv3d(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.block(x)
+
+
+class Conv2dBlock(nn.Module):
+    """Conv2d → BatchNorm → ReLU."""
+
+    def __init__(self, in_ch: int, out_ch: int, kernel_size: int = 3, padding: int = 1) -> None:
+        super().__init__()
+        self.conv = nn.Conv2d(in_ch, out_ch, kernel_size, padding=padding)
+        self.bn = nn.BatchNorm2d(out_ch)
+        self.relu = nn.ReLU(inplace=True)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.relu(self.bn(self.conv(x)))
+
+
+class DoubleConv2d(nn.Module):
+    """Two consecutive Conv2d → BN → ReLU blocks."""
+
+    def __init__(self, in_ch: int, out_ch: int) -> None:
+        super().__init__()
+        self.block = nn.Sequential(
+            Conv2dBlock(in_ch, out_ch),
+            Conv2dBlock(out_ch, out_ch),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.block(x)
+
+
+def _get_model_bottleneck_extra_depth(config: OctreeConfig, model_name: str) -> int:
+    """Resolve per-model bottleneck depth with legacy fallback support."""
+
+    specific = getattr(config, f"{model_name}_bottleneck_extra_depth", None)
+    if specific is not None:
+        return int(specific)
+    return int(getattr(config, "bottleneck_extra_depth", 0))
+
+
+class InitEncoder2DDecoder3D(nn.Module):
+    """Init-model backbone from the A3 notebook winner.
+
+    This architecture treats L4 conditioning as fundamentally 2D:
+    heightmap + biome are encoded on the XZ plane, then expanded into a 3D
+    bottleneck and decoded back to 32³ block features.
+
+    Returns ``(features_32, bottleneck_8)`` so the caller can attach the
+    block head and optional occupancy-gating path just like the 3D U-Net.
+    """
+
+    def __init__(
+        self,
+        height_channels: int,
+        biome_vocab_size: int,
+        biome_embed_dim: int,
+        y_vocab_size: int,
+        y_embed_dim: int,
+        channels: Tuple[int, int, int],
+        bottleneck_extra_depth: int = 0,
+    ) -> None:
+        super().__init__()
+        c0, c1, c2 = channels
+
+        self.biome_embed = nn.Embedding(biome_vocab_size, biome_embed_dim)
+        self.y_embed = nn.Embedding(y_vocab_size, y_embed_dim)
+
+        in_2d = height_channels + biome_embed_dim
+        self.enc2d = nn.Sequential(
+            DoubleConv2d(in_2d, c0),
+            nn.MaxPool2d(2),
+            DoubleConv2d(c0, c1),
+            nn.MaxPool2d(2),
+            DoubleConv2d(c1, c2),
+            nn.MaxPool2d(2),
+        )
+        self.y_proj = nn.Linear(y_embed_dim, c2)
+
+        self.expand = nn.Sequential(
+            nn.ConvTranspose3d(c2, c2, kernel_size=2, stride=2),
+            nn.BatchNorm3d(c2),
+            nn.ReLU(inplace=True),
+        )
+        self.bottleneck = DoubleConv3d(c2, c2)
+        if bottleneck_extra_depth > 0:
+            self.bottleneck_extra = nn.Sequential(
+                *[DoubleConv3d(c2, c2) for _ in range(bottleneck_extra_depth)]
+            )
+        else:
+            self.bottleneck_extra = None  # type: ignore[assignment]
+
+        self.up2 = nn.Upsample(scale_factor=2, mode="trilinear", align_corners=False)
+        self.dec2 = DoubleConv3d(c2, c1)
+        self.up1 = nn.Upsample(scale_factor=2, mode="trilinear", align_corners=False)
+        self.dec1 = DoubleConv3d(c1, c0)
+
+    def encode(
+        self,
+        heightmap: torch.Tensor,
+        biome: torch.Tensor,
+        y_position: torch.Tensor,
+    ) -> torch.Tensor:
+        """Encode 2D conditioning into an 8³ bottleneck volume."""
+        batch_size = heightmap.shape[0]
+        biome_ids = biome.long().clamp(0, self.biome_embed.num_embeddings - 1)
+        biome_feat = self.biome_embed(biome_ids).permute(0, 3, 1, 2)
+        feat_2d = self.enc2d(torch.cat([heightmap.float(), biome_feat], dim=1))
+
+        y_ids = y_position.long().clamp(0, self.y_embed.num_embeddings - 1)
+        y_feat = self.y_proj(self.y_embed(y_ids)).view(batch_size, -1, 1, 1, 1)
+
+        bottleneck = feat_2d.unsqueeze(2).expand(-1, -1, 4, -1, -1)
+        bottleneck = self.expand(bottleneck + y_feat)
+        bottleneck = self.bottleneck(bottleneck)
+        if self.bottleneck_extra is not None:
+            bottleneck = self.bottleneck_extra(bottleneck)
+        return bottleneck
+
+    def decode(self, bottleneck: torch.Tensor) -> torch.Tensor:
+        """Decode an 8³ bottleneck volume back to 32³ features."""
+        d2 = self.dec2(self.up2(bottleneck))
+        d1 = self.dec1(self.up1(d2))
+        return d1
+
+    def forward(
+        self,
+        heightmap: torch.Tensor,
+        biome: torch.Tensor,
+        y_position: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        bottleneck = self.encode(heightmap, biome, y_position)
+        return self.decode(bottleneck), bottleneck
 
 
 # ── 3D U-Net backbone ─────────────────────────────────────────────────
@@ -168,9 +306,7 @@ class UNet3D32(nn.Module):
         self.up2 = nn.Upsample(scale_factor=2, mode="nearest")
         self.dec2 = DoubleConv3d(c1 + c0, c0)
 
-    def encode(
-        self, x: torch.Tensor
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def encode(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Encoder path only.
 
         Args:
@@ -310,9 +446,7 @@ class OccGateModule(nn.Module):
         super().__init__()
         self.occ_head = OccupancyHead(in_channels)
 
-    def forward(
-        self, bottleneck: torch.Tensor
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, bottleneck: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """Apply occupancy gate to bottleneck features.
 
         Args:
@@ -433,14 +567,32 @@ class OctreeInitModel(nn.Module):
         super().__init__()
         self.config = config
         c0, c1, c2 = config.init_channels
+        self.init_architecture = getattr(config, "init_architecture", "full_3d_unet")
+        init_extra_depth = _get_model_bottleneck_extra_depth(config, "init")
 
-        # Conditioning embeddings
-        self.biome_embed = nn.Embedding(config.biome_vocab_size, config.biome_embed_dim)
-        self.y_embed = nn.Embedding(config.y_vocab_size, config.y_embed_dim)
+        if self.init_architecture == "encoder2d_decoder3d":
+            self.backbone_2d3d = InitEncoder2DDecoder3D(
+                height_channels=config.height_channels,
+                biome_vocab_size=config.biome_vocab_size,
+                biome_embed_dim=config.biome_embed_dim,
+                y_vocab_size=config.y_vocab_size,
+                y_embed_dim=config.y_embed_dim,
+                channels=config.init_channels,
+                bottleneck_extra_depth=init_extra_depth,
+            )
+        elif self.init_architecture == "full_3d_unet":
+            # Conditioning embeddings
+            self.biome_embed = nn.Embedding(config.biome_vocab_size, config.biome_embed_dim)
+            self.y_embed = nn.Embedding(config.y_vocab_size, config.y_embed_dim)
 
-        # U-Net
-        in_channels = config.height_channels + config.biome_embed_dim + config.y_embed_dim
-        self.unet = UNet3D32(in_channels, config.init_channels, config.bottleneck_extra_depth)
+            # Legacy all-3D backbone retained for backward compatibility.
+            in_channels = config.height_channels + config.biome_embed_dim + config.y_embed_dim
+            self.unet = UNet3D32(in_channels, config.init_channels, init_extra_depth)
+        else:
+            raise ValueError(
+                f"Unknown init_architecture={self.init_architecture!r}. "
+                "Expected 'encoder2d_decoder3d' or 'full_3d_unet'."
+            )
 
         # Heads
         self.block_head = nn.Conv3d(c0, config.block_vocab_size, kernel_size=1)
@@ -480,20 +632,29 @@ class OctreeInitModel(nn.Module):
                 f"y_position values must be in [0, {self.config.y_vocab_size - 1}], "
                 f"got min={y_position.min().item()} max={y_position.max().item()}"
             )
-        # Build 3D conditioning
-        h3d = _build_height_3d(heightmap.float())
-        b3d = _build_biome_3d(biome, self.biome_embed)
-        y3d = _build_scalar_3d(y_position, self.y_embed)
-
-        x = torch.cat([h3d, b3d, y3d], dim=1)  # [B, in_ch, 32, 32, 32]
-
-        if self._use_occ_gate:
-            e1, e2, bn = self.unet.encode(x)
-            gated_bn, occ_logits = self.occ_gate(bn)
-            features = self.unet.decode(e1, e2, gated_bn)
+        if self.init_architecture == "encoder2d_decoder3d":
+            if self._use_occ_gate:
+                bn = self.backbone_2d3d.encode(heightmap, biome, y_position)
+                gated_bn, occ_logits = self.occ_gate(bn)
+                features = self.backbone_2d3d.decode(gated_bn)
+            else:
+                features, bn = self.backbone_2d3d(heightmap, biome, y_position)
+                occ_logits = self.occ_head(bn)
         else:
-            features, bn = self.unet(x)
-            occ_logits = self.occ_head(bn)
+            # Build 3D conditioning for the legacy all-3D path.
+            h3d = _build_height_3d(heightmap.float())
+            b3d = _build_biome_3d(biome, self.biome_embed)
+            y3d = _build_scalar_3d(y_position, self.y_embed)
+
+            x = torch.cat([h3d, b3d, y3d], dim=1)  # [B, in_ch, 32, 32, 32]
+
+            if self._use_occ_gate:
+                e1, e2, bn = self.unet.encode(x)
+                gated_bn, occ_logits = self.occ_gate(bn)
+                features = self.unet.decode(e1, e2, gated_bn)
+            else:
+                features, bn = self.unet(x)
+                occ_logits = self.occ_head(bn)
 
         return {
             "block_type_logits": self.block_head(features),
@@ -619,7 +780,11 @@ class OctreeRefineModel(_OctreeConditionedBase):
             + config.y_embed_dim
             + config.level_embed_dim
         )
-        self.unet = UNet3D32(in_channels, config.refine_channels, config.bottleneck_extra_depth)
+        self.unet = UNet3D32(
+            in_channels,
+            config.refine_channels,
+            _get_model_bottleneck_extra_depth(config, "refine"),
+        )
 
         # Heads
         self.block_head = nn.Conv3d(c0, config.block_vocab_size, kernel_size=1)
@@ -756,7 +921,11 @@ class OctreeLeafModel(_OctreeConditionedBase):
         in_channels = (
             parent_ch + config.height_channels + config.biome_embed_dim + config.y_embed_dim
         )
-        self.unet = UNet3D32(in_channels, config.leaf_channels, config.bottleneck_extra_depth)
+        self.unet = UNet3D32(
+            in_channels,
+            config.leaf_channels,
+            _get_model_bottleneck_extra_depth(config, "leaf"),
+        )
 
         # Block head only — no occupancy head for L0
         self.block_head = nn.Conv3d(c0, config.block_vocab_size, kernel_size=1)

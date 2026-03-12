@@ -162,6 +162,34 @@ def _build_pairs_cmd(p: dict) -> list[str]:
     return cmd
 
 
+def _build_pairs_model_cmd(p: dict, model_type: str) -> list[str]:
+    """Build the pair cache for a specific model type (init/refine/leaf)."""
+    data = p.get("data", {})
+    cmd = [
+        _python(),
+        str(_vt_root() / "scripts" / "build_octree_pairs.py"),
+        "--model-type",
+        model_type,
+        "--val-split",
+        str(data.get("val_split", 0.1)),
+    ]
+    if data.get("data_dir"):
+        cmd += ["--data-dir", str(data["data_dir"])]
+    return cmd
+
+
+def _build_pairs_init_cmd(p: dict) -> list[str]:
+    return _build_pairs_model_cmd(p, "init")
+
+
+def _build_pairs_refine_cmd(p: dict) -> list[str]:
+    return _build_pairs_model_cmd(p, "refine")
+
+
+def _build_pairs_leaf_cmd(p: dict) -> list[str]:
+    return _build_pairs_model_cmd(p, "leaf")
+
+
 def _train_cmd(p: dict) -> list[str]:
     data = p.get("data", {})
     train = p.get("train", {})
@@ -185,17 +213,53 @@ def _train_cmd(p: dict) -> list[str]:
     return cmd
 
 
+def _train_model_cmd(p: dict, model_type: str) -> list[str]:
+    """Train a specific model type independently using train_octree.py directly."""
+    data = p.get("data", {})
+    train = p.get("train", {})
+    cmd = [
+        _python(),
+        str(_vt_root() / "train_octree.py"),
+        "--models",
+        model_type,
+        "--epochs",
+        str(train.get("epochs", 20)),
+        "--batch-size",
+        str(train.get("batch_size", 4)),
+        "--lr",
+        str(train.get("lr", 1e-4)),
+        "--device",
+        str(train.get("device", "auto")),
+    ]
+    if data.get("data_dir"):
+        cmd += ["--data-dir", str(data["data_dir"])]
+    if train.get("output_dir"):
+        cmd += ["--output-dir", str(train["output_dir"])]
+    return cmd
+
+
+def _train_init_cmd(p: dict) -> list[str]:
+    return _train_model_cmd(p, "init")
+
+
+def _train_refine_cmd(p: dict) -> list[str]:
+    return _train_model_cmd(p, "refine")
+
+
+def _train_leaf_cmd(p: dict) -> list[str]:
+    return _train_model_cmd(p, "leaf")
+
+
 def _export_cmd(p: dict) -> list[str]:
     train = p.get("train", {})
     export = p.get("export", {})
     model_dir = train.get("output_dir", "models/voxy_octree")
-    checkpoint = str(Path(model_dir) / "best_model.pt")
     cmd = [
         _python(),
         "pipeline.py",
         "export",
-        "--checkpoint",
-        checkpoint,
+        "--checkpoint-dir",
+        str(model_dir),
     ]
     if export.get("output_dir"):
         cmd += ["--export-dir", str(export["output_dir"])]
@@ -259,22 +323,48 @@ PIPELINE_STEPS: list[StepDef] = [
         prereqs=["extract_octree", "dumpnoise"],
         cmd_factory=_column_heights_cmd,
     ),
+    # ── Build training pairs — one per model, all depend on column_heights ──
     StepDef(
-        id="build_pairs",
-        label="Pairs",
+        id="build_pairs_init",
+        label="P·Init",
         prereqs=["column_heights"],
-        cmd_factory=_build_pairs_cmd,
+        cmd_factory=_build_pairs_init_cmd,
     ),
     StepDef(
-        id="train",
-        label="Train",
-        prereqs=["build_pairs"],
-        cmd_factory=_train_cmd,
+        id="build_pairs_refine",
+        label="P·Refine",
+        prereqs=["column_heights"],
+        cmd_factory=_build_pairs_refine_cmd,
+    ),
+    StepDef(
+        id="build_pairs_leaf",
+        label="P·Leaf",
+        prereqs=["column_heights"],
+        cmd_factory=_build_pairs_leaf_cmd,
+    ),
+    # ── Train — one per model, each depends on its own pair cache ──
+    StepDef(
+        id="train_init",
+        label="T·Init",
+        prereqs=["build_pairs_init"],
+        cmd_factory=_train_init_cmd,
+    ),
+    StepDef(
+        id="train_refine",
+        label="T·Refine",
+        prereqs=["build_pairs_refine"],
+        cmd_factory=_train_refine_cmd,
+    ),
+    StepDef(
+        id="train_leaf",
+        label="T·Leaf",
+        prereqs=["build_pairs_leaf"],
+        cmd_factory=_train_leaf_cmd,
     ),
     StepDef(
         id="export",
         label="Export",
-        prereqs=["train"],
+        prereqs=["train_init", "train_refine", "train_leaf"],
         cmd_factory=_export_cmd,
     ),
     StepDef(
@@ -283,7 +373,7 @@ PIPELINE_STEPS: list[StepDef] = [
         prereqs=["export"],
         cmd_factory=_deploy_cmd,
     ),
-    # ---- Future loopback stubs (leave door open) ----
+    # ──── Future loopback stubs (leave door open) ────
     StepDef(
         id="reset_data",
         label="Reset",

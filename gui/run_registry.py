@@ -103,30 +103,40 @@ class RunRegistry:
     def any_running(self) -> bool:
         return any(v.get("status") == "running" for v in self._state.values())
 
-    def get_next_runnable_step(self) -> str | None:
-        """Return the step_id of the next runnable step.
+    def get_runnable_steps(self) -> list[str]:
+        """Return all step_ids that are eligible to start right now.
 
-        This is the first step AFTER the last completed (success) step.
-        If no steps are completed, returns the first step.
-        If all steps are completed, returns None.
-        Returns None if a step is currently running.
+        A step is eligible when:
+          - all its prereqs have status 'success'
+          - its own status is not 'running' or 'success'
+          - it is enabled
+
+        Unlike the old linear ``get_next_runnable_step``, this is DAG-aware
+        and can return multiple steps simultaneously (e.g. the three parallel
+        training steps once their respective pair caches are done).
+        """
+        runnable: list[str] = []
+        for step in ACTIVE_STEPS:
+            status = self.get_status(step.id)
+            if status in ("running", "success"):
+                continue
+            if self.can_run(step.id):
+                runnable.append(step.id)
+        return runnable
+
+    def get_next_runnable_step(self) -> str | None:
+        """Return the highest-priority single runnable step, or None.
+
+        Returns the first step from ``get_runnable_steps()`` that is not
+        currently running.  This is kept for components that only show one
+        highlighted node at a time (e.g. the compact dashboard row).
+        Returns None if any step is currently running (prefer
+        ``get_runnable_steps()`` + separate running check for parallel UI).
         """
         if self.any_running():
             return None
-
-        # Find the last step with status "success"
-        last_success_idx = -1
-        for idx, step in enumerate(ACTIVE_STEPS):
-            if self.get_status(step.id) == "success":
-                last_success_idx = idx
-
-        # Return the next step
-        next_idx = last_success_idx + 1
-        if next_idx < len(ACTIVE_STEPS):
-            return ACTIVE_STEPS[next_idx].id
-
-        # All steps completed
-        return None
+        runnable = self.get_runnable_steps()
+        return runnable[0] if runnable else None
 
     # ------------------------------------------------------------------
     # Mutators

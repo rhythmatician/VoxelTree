@@ -42,10 +42,6 @@ from build_octree_pairs import (  # noqa: E402
     parent_coords_and_octant,
 )
 
-# ---------------------------------------------------------------------------
-# Import from train/ package
-# ---------------------------------------------------------------------------
-
 from train.octree_dataset import (
     OctreeDataset,
     _model_type_for_level,
@@ -60,6 +56,11 @@ from train.octree_models import (
     create_leaf_model,
     create_refine_model,
 )
+
+# ---------------------------------------------------------------------------
+# Import from train/ package
+# ---------------------------------------------------------------------------
+
 
 # ---------------------------------------------------------------------------
 # Import from train_octree.py (root script — not a package member)
@@ -284,6 +285,11 @@ class TestModelTypeForLevel:
 
 
 class TestOctreeInitModel:
+    def test_default_uses_init_shootout_winner(self, tiny_config: OctreeConfig) -> None:
+        model = create_init_model(tiny_config)
+        assert model.init_architecture == "encoder2d_decoder3d"
+        assert hasattr(model, "backbone_2d3d")
+
     def test_output_keys(self, tiny_config: OctreeConfig) -> None:
         model = create_init_model(tiny_config)
         out = model(
@@ -333,6 +339,17 @@ class TestOctreeInitModel:
         sig = inspect.signature(model.forward)
         assert "parent_blocks" not in sig.parameters
         assert "parent_context" not in sig.parameters
+
+    def test_legacy_full3d_init_architecture_still_works(self, tiny_config: OctreeConfig) -> None:
+        tiny_config.init_architecture = "full_3d_unet"
+        model = create_init_model(tiny_config)
+        out = model(
+            heightmap=torch.randn(2, 5, 32, 32),
+            biome=torch.randint(0, 16, (2, 32, 32)),
+            y_position=torch.randint(0, 24, (2,)),
+        )
+        assert out["block_type_logits"].shape == (2, tiny_config.block_vocab_size, 32, 32, 32)
+        assert out["occ_logits"].shape == (2, 8)
 
 
 # ===========================================================================
@@ -470,6 +487,18 @@ class TestOctreeLeafModel:
         model = create_leaf_model(tiny_config)
         out = self._forward(model, B=1)
         assert out["block_type_logits"].shape[0] == 1
+
+    def test_default_leaf_extra_bottleneck_depth_is_enabled(
+        self, tiny_config: OctreeConfig
+    ) -> None:
+        model = create_leaf_model(tiny_config)
+        assert model.unet.bottleneck_extra is not None
+        assert len(model.unet.bottleneck_extra) == 1
+
+    def test_leaf_extra_bottleneck_depth_can_be_disabled(self, tiny_config: OctreeConfig) -> None:
+        tiny_config.leaf_bottleneck_extra_depth = 0
+        model = create_leaf_model(tiny_config)
+        assert model.unet.bottleneck_extra is None
 
 
 # ===========================================================================
@@ -952,16 +981,12 @@ class TestOccupancyHeadSpatial:
 
     def test_output_shape(self) -> None:
         """Output should be [B, 8] for any valid bottleneck input."""
-        from train.octree_models import OccupancyHead
-
         head = OccupancyHead(in_channels=96)
         bottleneck = torch.randn(4, 96, 8, 8, 8)
         out = head(bottleneck)
         assert out.shape == (4, 8)
 
     def test_gradient_flows(self) -> None:
-        from train.octree_models import OccupancyHead
-
         head = OccupancyHead(in_channels=64)
         bottleneck = torch.randn(2, 64, 8, 8, 8, requires_grad=True)
         out = head(bottleneck)
@@ -970,8 +995,6 @@ class TestOccupancyHeadSpatial:
 
     def test_octant_sensitivity(self) -> None:
         """Each octant logit should depend on features in its spatial quadrant."""
-        from train.octree_models import OccupancyHead
-
         head = OccupancyHead(in_channels=16)
         head.eval()
 
@@ -992,8 +1015,6 @@ class TestOccupancyHeadSpatial:
 
     def test_all_octants_responsive(self) -> None:
         """All 8 octant logits should respond to perturbations in their regions."""
-        from train.octree_models import OccupancyHead
-
         head = OccupancyHead(in_channels=16)
         head.eval()
 
@@ -1014,16 +1035,12 @@ class TestOccupancyHeadSpatial:
             assert diff > 0, f"Octant {octant} logit should respond to its region"
 
     def test_batch_size_one(self) -> None:
-        from train.octree_models import OccupancyHead
-
         head = OccupancyHead(in_channels=128)
         out = head(torch.randn(1, 128, 8, 8, 8))
         assert out.shape == (1, 8)
 
     def test_no_gap_attribute(self) -> None:
         """Verify the old GAP-based design is gone."""
-        from train.octree_models import OccupancyHead
-
         head = OccupancyHead(in_channels=96)
         assert not hasattr(head, "gap"), "OccupancyHead should not have a 'gap' attribute"
 
@@ -1573,11 +1590,13 @@ class TestStep8Combined:
         (out["block_type_logits"].sum() + out["occ_logits"].sum()).backward()
 
     def test_defaults_unchanged(self) -> None:
-        """Default OctreeConfig should have all Step 8 features off."""
+        """Default OctreeConfig should preserve legacy Step 8 defaults."""
         cfg = OctreeConfig()
         assert cfg.bottleneck_extra_depth == 0
         assert cfg.parent_refine_conv is False
         assert cfg.use_occ_gate is False
+        assert cfg.init_architecture == "encoder2d_decoder3d"
+        assert cfg.leaf_bottleneck_extra_depth == 1
 
     def test_param_count_increases(self, tiny_config: OctreeConfig) -> None:
         """Enabling Step 8 features should increase parameter count."""

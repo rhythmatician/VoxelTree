@@ -33,7 +33,6 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset
 
-
 # ── Level → model type classification ────────────────────────────────
 
 
@@ -67,6 +66,10 @@ class OctreeDataset(Dataset[Dict[str, Any]]):
         level_sampling_weights: Optional per-level sampling weights.
             Keys are levels 0–4, values are relative weights.
             If ``None``, uniform sampling across all available samples.
+        model_type: If set (``"init"``, ``"refine"``, or ``"leaf"``), load
+            the per-model cache ``{model_type}_{split}_octree_pairs.npz``
+            when it exists, falling back to the unified cache with level
+            filtering.  ``None`` loads the unified cache (all levels).
     """
 
     def __init__(
@@ -74,27 +77,76 @@ class OctreeDataset(Dataset[Dict[str, Any]]):
         data_dir: Path,
         split: str = "train",
         level_sampling_weights: Optional[Dict[int, float]] = None,
+        model_type: Optional[str] = None,
     ) -> None:
         self.data_dir = Path(data_dir)
         self.split = split
+        self.model_type = model_type
 
-        cache_path = self.data_dir / f"{split}_octree_pairs.npz"
-        if not cache_path.exists():
-            raise FileNotFoundError(
-                f"Octree pair cache not found: {cache_path}\n\n"
-                f"Run the data-prep pipeline first:\n"
-                f"    python data-cli.py dataprep --data-dir {self.data_dir}\n"
+        # Resolve cache path: prefer model-specific file, then unified
+        _VALID_MODEL_TYPES = ("init", "refine", "leaf")
+        if model_type is not None and model_type not in _VALID_MODEL_TYPES:
+            raise ValueError(
+                f"Invalid model_type {model_type!r}. Valid: {_VALID_MODEL_TYPES} or None"
             )
 
+        if model_type is not None:
+            specific = self.data_dir / f"{model_type}_{split}_octree_pairs.npz"
+            unified = self.data_dir / f"{split}_octree_pairs.npz"
+            if specific.exists():
+                cache_path = specific
+            elif unified.exists():
+                cache_path = unified
+                # Will filter to relevant levels after loading
+            else:
+                raise FileNotFoundError(
+                    f"No pair cache found for model_type={model_type!r}.\n\n"
+                    f"Tried:\n"
+                    f"  {specific}\n"
+                    f"  {unified}\n\n"
+                    f"Run the data-prep pipeline first:\n"
+                    f"    python scripts/build_octree_pairs.py --model-type {model_type}"
+                    f" --data-dir {self.data_dir}\n"
+                )
+        else:
+            cache_path = self.data_dir / f"{split}_octree_pairs.npz"
+            if not cache_path.exists():
+                raise FileNotFoundError(
+                    f"Octree pair cache not found: {cache_path}\n\n"
+                    f"Run the data-prep pipeline first:\n"
+                    f"    python data-cli.py dataprep --data-dir {self.data_dir}\n"
+                )
+
         self._load_cache(cache_path)
+
+        # Levels relevant to this model_type (None → all levels)
+        _model_levels: Optional[set] = None
+        if model_type == "init":
+            _model_levels = {4}
+        elif model_type == "refine":
+            _model_levels = {1, 2, 3}
+        elif model_type == "leaf":
+            _model_levels = {0}
 
         # Build per-level index for weighted sampling
         self._level_indices: Dict[int, List[int]] = {}
         for i in range(self._n_samples):
             lv = int(self._levels[i])
+            if _model_levels is not None and lv not in _model_levels:
+                continue  # skip levels that belong to a different model
             if lv not in self._level_indices:
                 self._level_indices[lv] = []
             self._level_indices[lv].append(i)
+
+        # Update _n_samples to count only relevant samples (matters when
+        # model_type is set but a unified cache was loaded)
+        relevant_count = sum(len(v) for v in self._level_indices.values())
+        if relevant_count < self._n_samples:
+            print(
+                f"  Filtered to {relevant_count:,} of {self._n_samples:,} samples "
+                f"for model_type={model_type!r}"
+            )
+            self._n_samples = relevant_count
 
         self._available_levels = sorted(self._level_indices.keys())
 
@@ -108,6 +160,13 @@ class OctreeDataset(Dataset[Dict[str, Any]]):
             lv for lv in self._available_levels if self._sampling_weights.get(lv, 0) > 0
         ]
         self._weight_values = [self._sampling_weights[lv] for lv in self._weight_levels]
+
+        # Flat list of all relevant indices for the direct-index fallback in
+        # __getitem__.  When model_type is set and a unified cache is loaded,
+        # this contains only the subset of indices with relevant levels.
+        self._all_relevant_indices: List[int] = sorted(
+            idx for indices in self._level_indices.values() for idx in indices
+        )
 
     _REQUIRED_KEYS: tuple = (
         "labels32",
@@ -137,14 +196,10 @@ class OctreeDataset(Dataset[Dict[str, Any]]):
         # Validate array shapes
         labels = data["labels32"]
         if labels.ndim != 4 or labels.shape[1:] != (32, 32, 32):
-            raise ValueError(
-                f"labels32 must have shape [N, 32, 32, 32], got {labels.shape}"
-            )
+            raise ValueError(f"labels32 must have shape [N, 32, 32, 32], got {labels.shape}")
         heightmap = data["heightmap32"]
         if heightmap.ndim != 4 or heightmap.shape[1:] != (5, 32, 32):
-            raise ValueError(
-                f"heightmap32 must have shape [N, 5, 32, 32], got {heightmap.shape}"
-            )
+            raise ValueError(f"heightmap32 must have shape [N, 5, 32, 32], got {heightmap.shape}")
 
         self._labels32: np.ndarray = data["labels32"]  # [N, 32, 32, 32]
         self._parent_labels32: np.ndarray = data["parent_labels32"]  # [N, 32, 32, 32]
@@ -174,7 +229,9 @@ class OctreeDataset(Dataset[Dict[str, Any]]):
         compatibility); otherwise uses weighted level sampling.
         """
         if random.random() < 0.1:
-            i = idx % self._n_samples
+            # Use _all_relevant_indices so filtered datasets (model_type set)
+            # never accidentally return samples from other models' levels.
+            i = self._all_relevant_indices[idx % len(self._all_relevant_indices)]
         else:
             # Pick level weighted, then random sample within that level
             chosen_level = random.choices(self._weight_levels, weights=self._weight_values, k=1)[0]

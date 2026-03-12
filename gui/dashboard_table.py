@@ -12,9 +12,9 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from gui.profile_row import ProfileRow
+from gui.profile_row import ProfileRow, _COL_W, _NODE_W, _compute_dag_layout
 from gui.run_registry import RunRegistry
-from gui.step_definitions import ACTIVE_STEPS, STUB_STEPS
+from gui.step_definitions import PIPELINE_STEPS
 
 
 class DashboardTable(QWidget):
@@ -44,42 +44,28 @@ class DashboardTable(QWidget):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
-        # ── Column header bar ──
+        # ── Column header bar (absolute-positioned per DAG column/row) ──
+        positions = _compute_dag_layout(list(PIPELINE_STEPS))
+        max_row = max(r for _, r in positions.values())
+        _LABEL_H = 14
+        _LABEL_ROW_STEP = 18
+        _LEFT = 8 + 90 + 8   # layout-margin + name-label + spacing
+        header_h = (max_row + 1) * _LABEL_ROW_STEP + 8
+
         header = QWidget()
-        header.setFixedHeight(28)
+        header.setFixedHeight(header_h)
         header.setStyleSheet("background: #252525;")
-        h_layout = QHBoxLayout(header)
-        h_layout.setContentsMargins(8, 0, 8, 0)
-        h_layout.setSpacing(0)
 
-        # Spacer matching profile-name label width
-        spacer_lbl = QLabel()
-        spacer_lbl.setFixedWidth(90 + 8)
-        h_layout.addWidget(spacer_lbl)
-
-        all_steps = list(ACTIVE_STEPS) + list(STUB_STEPS)
-        # Each node is 52px wide; connectors are 28px wide
-        for i, step in enumerate(all_steps):
-            if i > 0:
-                conn_spacer = QLabel()
-                conn_spacer.setFixedWidth(28)
-                h_layout.addWidget(conn_spacer)
-
-            lbl = QLabel(step.label)
-            lbl.setFixedWidth(52)
-            lbl.setAlignment(Qt.AlignmentFlag.AlignHCenter)  # Set alignment via code
+        for step in PIPELINE_STEPS:
+            col, row = positions[step.id]
+            x = _LEFT + col * _COL_W
+            y = row * _LABEL_ROW_STEP + 4
+            lbl = QLabel(step.label, header)
+            lbl.move(x, y)
+            lbl.setFixedSize(_NODE_W, _LABEL_H)
+            lbl.setAlignment(Qt.AlignmentFlag.AlignHCenter)
             color = "#505050" if not step.enabled else "#8899bb"
-            lbl.setStyleSheet(
-                f"color: {color}; font-size: 10px; font-weight: bold;"
-            )
-            h_layout.addWidget(lbl)
-
-        h_layout.addStretch()
-
-        # Spacer matching "Details" button width (70px + 8px gap)
-        btn_spacer = QLabel()
-        btn_spacer.setFixedWidth(78)
-        h_layout.addWidget(btn_spacer)
+            lbl.setStyleSheet(f"color: {color}; font-size: 9px; font-weight: bold;")
 
         root.addWidget(header)
 

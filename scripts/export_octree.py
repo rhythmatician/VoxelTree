@@ -30,8 +30,14 @@ ONNX I/O Contracts::
 
 Usage::
 
+    # Unified checkpoint  (all three models in one file)
     python scripts/export_octree.py \\
         --checkpoint octree_training/best_model.pt \\
+        --out-dir production
+
+    # Per-model checkpoints  (independent training runs)
+    python scripts/export_octree.py \\
+        --checkpoint-dir models/v12 \\
         --out-dir production
 
 """
@@ -298,6 +304,7 @@ def _export_init(
         "biome_vocab_size": config.biome_vocab_size,
         "block_vocab_size": V,
         "y_vocab_size": config.y_vocab_size,
+        "architecture": getattr(config, "init_architecture", "full_3d_unet"),
         "channels": list(config.init_channels),
         "assumptions": {
             "y_position_range": [0, config.y_vocab_size - 1],
@@ -513,6 +520,11 @@ def _export_leaf(
         "biome_vocab_size": config.biome_vocab_size,
         "block_vocab_size": V,
         "y_vocab_size": config.y_vocab_size,
+        "leaf_bottleneck_extra_depth": getattr(
+            config,
+            "leaf_bottleneck_extra_depth",
+            getattr(config, "bottleneck_extra_depth", 0),
+        ),
         "channels": list(config.leaf_channels),
         "assumptions": {
             "y_position_range": [0, config.y_vocab_size - 1],
@@ -648,6 +660,88 @@ def load_octree_checkpoint(
     return config, models
 
 
+def load_octree_checkpoints_from_dir(
+    checkpoint_dir: Path,
+) -> Tuple[OctreeConfig, Dict[str, torch.nn.Module]]:
+    """Load per-model checkpoints from a directory.
+
+    Looks for ``{model}_best_model.pt`` (e.g. ``init_best_model.pt``) for each
+    model type.  Falls back to ``best_model.pt`` for any model not found.  At
+    least one checkpoint file must be present.
+
+    Returns ``(config, {"init": model, "refine": model, "leaf": model})``.
+    """
+    model_types = ["init", "refine", "leaf"]
+    model_factories = {
+        "init": create_init_model,
+        "refine": create_refine_model,
+        "leaf": create_leaf_model,
+    }
+
+    # Discover per-model checkpoint files; fall back to unified best_model.pt
+    unified_fallback = checkpoint_dir / "best_model.pt"
+    per_model_paths: Dict[str, Path] = {}
+    for mt in model_types:
+        candidate = checkpoint_dir / f"{mt}_best_model.pt"
+        if candidate.exists():
+            per_model_paths[mt] = candidate
+        elif unified_fallback.exists():
+            per_model_paths[mt] = unified_fallback
+        else:
+            raise FileNotFoundError(
+                f"No checkpoint for model '{mt}': expected {candidate} "
+                f"or fallback {unified_fallback}"
+            )
+
+    LOGGER.info("Per-model checkpoint paths: %s", per_model_paths)
+
+    # Load config from the first available checkpoint
+    config: OctreeConfig | None = None
+    for mt in model_types:
+        if per_model_paths[mt].exists():
+            ckpt = torch.load(per_model_paths[mt], map_location="cpu", weights_only=False)
+            if "config" in ckpt:
+                config = ckpt["config"]
+                LOGGER.info("Config loaded from %s", per_model_paths[mt])
+                break
+    if config is None:
+        raise ValueError("No checkpoint contained a 'config' key.")
+
+    # Load each model from its specific checkpoint
+    models: Dict[str, torch.nn.Module] = {}
+    for mt, factory in model_factories.items():
+        model = factory(config)
+        ckpt_path = per_model_paths[mt]
+        ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
+
+        # Per-model checkpoints store state dicts under model_state_dicts[mt]
+        # Unified checkpoints store all models under model_state_dicts
+        state_dicts = ckpt.get("model_state_dicts", {})
+        if mt in state_dicts:
+            state_dict = state_dicts[mt]
+        elif len(state_dicts) == 1:
+            # Single-model checkpoint: take whatever key is present
+            only_key = next(iter(state_dicts))
+            LOGGER.info(
+                "Single-key checkpoint for '%s': using key '%s'", mt, only_key
+            )
+            state_dict = state_dicts[only_key]
+        else:
+            LOGGER.warning("No state dict for '%s' in %s — random weights", mt, ckpt_path)
+            models[mt] = model
+            continue
+
+        result = model.load_state_dict(state_dict, strict=False)
+        if result.unexpected_keys:
+            LOGGER.warning("Unexpected keys in %s: %s", mt, result.unexpected_keys)
+        if result.missing_keys:
+            LOGGER.warning("Missing keys in %s: %s", mt, result.missing_keys)
+        LOGGER.info("Loaded '%s' from %s", mt, ckpt_path)
+        models[mt] = model
+
+    return config, models
+
+
 # ─── Main ────────────────────────────────────────────────────────────
 
 
@@ -655,11 +749,21 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Export 3 octree models to ONNX with sidecar configs"
     )
-    parser.add_argument(
+    ckpt_group = parser.add_mutually_exclusive_group(required=True)
+    ckpt_group.add_argument(
         "--checkpoint",
         type=Path,
-        required=True,
-        help="Octree checkpoint .pt from train_octree.py",
+        help="Unified octree checkpoint .pt from train_octree.py",
+    )
+    ckpt_group.add_argument(
+        "--checkpoint-dir",
+        type=Path,
+        metavar="DIR",
+        help=(
+            "Directory containing per-model checkpoints "
+            "(init_best_model.pt, refine_best_model.pt, leaf_best_model.pt). "
+            "Falls back to best_model.pt for any models not present."
+        ),
     )
     parser.add_argument(
         "--out-dir",
@@ -686,8 +790,11 @@ def main() -> None:
     out_dir = args.out_dir
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    # Load checkpoint
-    config, models = load_octree_checkpoint(args.checkpoint)
+    # Load checkpoint(s)
+    if args.checkpoint_dir is not None:
+        config, models = load_octree_checkpoints_from_dir(args.checkpoint_dir)
+    else:
+        config, models = load_octree_checkpoint(args.checkpoint)
 
     LOGGER.info("Exporting 3 octree models to %s", out_dir)
 

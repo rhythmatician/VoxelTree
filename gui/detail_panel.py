@@ -45,7 +45,8 @@ class DetailPanel(QDockWidget):
 
         self._profile_name: str | None = None
         self._registry: RunRegistry | None = None
-        self._worker: RunWorker | None = None
+        self._workers: dict[str, RunWorker] = {}  # step_id → worker
+        self._run_from_targets: set[str] = set()  # step_ids queued by 'run from'
         self._edit_callback = None  # callable(profile_name) → open editor
 
         self._build_ui()
@@ -179,16 +180,18 @@ class DetailPanel(QDockWidget):
     def _refresh_buttons(self) -> None:
         if not self._registry:
             return
-        running_id = self._running_step_id()
+        running_ids = self._running_step_ids()
         for step_id, row in self._step_rows.items():
             status = self._registry.get_status(step_id)
-            can_run = self._registry.can_run(step_id) and running_id is None
-            row.update_state(status=status, can_run=can_run, is_running=(step_id == running_id))
+            can_run = self._registry.can_run(step_id) and step_id not in running_ids
+            row.update_state(
+                status=status,
+                can_run=can_run,
+                is_running=(step_id in running_ids),
+            )
 
-    def _running_step_id(self) -> str | None:
-        if self._worker and self._worker.isRunning():
-            return self._worker.step_id
-        return None
+    def _running_step_ids(self) -> set[str]:
+        return {sid for sid, w in self._workers.items() if w.isRunning()}
 
     # ------------------------------------------------------------------
     # Step execution
@@ -199,8 +202,10 @@ class DetailPanel(QDockWidget):
         self._run_step(step_id)
 
     def _run_step(self, step_id: str) -> None:
-        if not self._registry or self._worker and self._worker.isRunning():
+        if not self._registry:
             return
+        if step_id in self._running_step_ids():
+            return  # already running
         step = STEP_BY_ID.get(step_id)
         if not step:
             return
@@ -212,29 +217,32 @@ class DetailPanel(QDockWidget):
         self._launch_worker(step_id, cmd)
 
     def _run_from(self, step_id: str) -> None:
-        """Run all steps from step_id through the last step, in sequence."""
-        # Find index of step_id and run from there
-        ids = [s.id for s in ACTIVE_STEPS]
-        if step_id not in ids:
+        """Run step_id and all downstream steps reachable through the DAG."""
+        if not self._registry:
             return
-        start_idx = ids.index(step_id)
-        remaining = [ACTIVE_STEPS[i] for i in range(start_idx, len(ACTIVE_STEPS))]
-        if remaining:
-            self._run_step(remaining[0].id)
-            # Remaining steps will be chained via step_finished → _auto_advance
+        # BFS from step_id through the DAG to collect all reachable step IDs
+        reachable: set[str] = set()
+        queue = [step_id]
+        while queue:
+            current = queue.pop()
+            if current in reachable:
+                continue
+            reachable.add(current)
+            # Add any active step that lists current as a prereq
+            for step in ACTIVE_STEPS:
+                if current in step.prereqs and step.id not in reachable:
+                    queue.append(step.id)
+        self._run_from_targets = reachable
+        # Launch all currently runnable steps within reachable set
+        for sid in list(self._run_from_targets):
+            if self._registry.can_run(sid) and sid not in self._running_step_ids():
+                status = self._registry.get_status(sid)
+                if status not in ("running", "success"):
+                    self._run_step(sid)
 
     def _auto_advance(self, completed_step_id: str, exit_code: int) -> None:
-        """After a step finishes, automatically run the next step if all went well."""
-        if not self._registry or exit_code != 0:
-            return
-        ids = [s.id for s in ACTIVE_STEPS]
-        if completed_step_id not in ids:
-            return
-        idx = ids.index(completed_step_id)
-        if idx + 1 < len(ids):
-            next_id = ids[idx + 1]
-            if hasattr(self, "_run_from_active") and self._run_from_active:
-                self._run_step(next_id)
+        """Superseded by _run_from_targets logic in _on_step_finished.  Kept for safety."""
+        pass
 
     def _launch_worker(self, step_id: str, cmd: list[str]) -> None:
         assert self._registry is not None
@@ -247,10 +255,11 @@ class DetailPanel(QDockWidget):
         self.append_log("$ " + " ".join(cmd))
         self.append_log(f"{'─'*60}")
 
-        self._worker = RunWorker(step_id, cmd)
-        self._worker.log_line.connect(self._on_log_line)
-        self._worker.step_finished.connect(self._on_step_finished)
-        self._worker.start()
+        worker = RunWorker(step_id, cmd)
+        worker.log_line.connect(self._on_log_line)
+        worker.step_finished.connect(self._on_step_finished)
+        self._workers[step_id] = worker
+        worker.start()
         self._poll_timer.start()
 
     @Slot(str)
@@ -260,7 +269,6 @@ class DetailPanel(QDockWidget):
     @Slot(str, int)
     def _on_step_finished(self, step_id: str, exit_code: int) -> None:
         assert self._registry is not None
-        self._poll_timer.stop()
         ts = datetime.now().strftime("%H:%M:%S")
         if exit_code == 0:
             self._registry.mark_success(step_id)
@@ -272,8 +280,24 @@ class DetailPanel(QDockWidget):
             self._registry.mark_failed(step_id, exit_code)
             self.append_log(f"\n[{ts}] ✗  {step_id} failed (exit {exit_code}).")
 
-        self._worker = None
+        # Remove completed worker; stop poll timer only when all workers done
+        self._workers.pop(step_id, None)
+        if not self._workers:
+            self._poll_timer.stop()
+
         self._refresh_buttons()
+
+        # Auto-advance: if this step succeeded and 'run from' mode is active,
+        # launch any downstream steps that are now eligible
+        if exit_code == 0 and self._run_from_targets:
+            self._run_from_targets.discard(step_id)
+            for sid in list(self._run_from_targets):
+                if (
+                    self._registry.can_run(sid)
+                    and sid not in self._running_step_ids()
+                    and self._registry.get_status(sid) not in ("running", "success")
+                ):
+                    self._run_step(sid)
 
         # Notify the parent window so the dashboard row refreshes
         parent = self.parent()
@@ -281,8 +305,10 @@ class DetailPanel(QDockWidget):
             parent.on_step_finished(self._profile_name, step_id)
 
     def _cancel(self) -> None:
-        if self._worker and self._worker.isRunning():
-            self._worker.cancel()
+        for worker in list(self._workers.values()):
+            if worker.isRunning():
+                worker.cancel()
+        self._run_from_targets.clear()
 
     def _clear_log(self) -> None:
         self._log.clear()
