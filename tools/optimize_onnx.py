@@ -37,8 +37,7 @@ def optimize_model(input_path: Path, output_path: Path) -> None:
     # Creating the session triggers optimization and writes the optimized model.
     # We use CPUExecutionProvider regardless of the deploy target — the graph
     # optimizations (constant folding, op fusion) are EP-agnostic.
-    ort.InferenceSession(str(input_path), sess_options,
-                         providers=["CPUExecutionProvider"])
+    ort.InferenceSession(str(input_path), sess_options, providers=["CPUExecutionProvider"])
 
     in_mb = input_path.stat().st_size / 1e6
     out_mb = output_path.stat().st_size / 1e6
@@ -49,6 +48,7 @@ def validate_model(path: Path) -> bool:
     """Verify the optimized model loads and produces outputs."""
     try:
         import onnx
+
         model = onnx.load(str(path))
         onnx.checker.check_model(model)
         print(f"  ✓ {path.name} — valid")
@@ -59,18 +59,22 @@ def validate_model(path: Path) -> bool:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="Pre-optimize ONNX models with ORT graph passes")
+    parser = argparse.ArgumentParser(description="Pre-optimize ONNX models with ORT graph passes")
     parser.add_argument(
-        "--model-dir", type=Path, default=Path("production"),
+        "--model-dir",
+        type=Path,
+        default=Path("production"),
         help="Directory containing the .onnx files (default: production/)",
     )
     parser.add_argument(
-        "--output-dir", type=Path, default=None,
+        "--output-dir",
+        type=Path,
+        default=None,
         help="Output directory (default: <model-dir>/optimized/)",
     )
     parser.add_argument(
-        "--validate", action="store_true",
+        "--validate",
+        action="store_true",
         help="Run onnx.checker on the optimized models",
     )
     args = parser.parse_args()
@@ -93,9 +97,7 @@ def main() -> None:
 
     if args.validate:
         print("\nValidating optimized models:")
-        all_ok = all(
-            validate_model(out_dir / f"{stem}_optimized.onnx") for stem in STEMS
-        )
+        all_ok = all(validate_model(out_dir / f"{stem}_optimized.onnx") for stem in STEMS)
         if not all_ok:
             print("\n⚠ Some models failed validation — check output above.")
             sys.exit(1)

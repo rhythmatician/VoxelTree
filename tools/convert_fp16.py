@@ -35,7 +35,7 @@ def convert_model(input_path: Path, output_path: Path) -> None:
         model,
         min_positive_val=1e-7,
         max_finite_val=1e4,
-        keep_io_types=True,       # inputs/outputs stay FP32 → no Java changes
+        keep_io_types=True,  # inputs/outputs stay FP32 → no Java changes
         disable_shape_infer=False,
     )
 
@@ -68,15 +68,20 @@ def validate_model(path: Path) -> bool:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Convert ONNX models to FP16")
     parser.add_argument(
-        "--model-dir", type=Path, default=Path("production"),
+        "--model-dir",
+        type=Path,
+        default=Path("production"),
         help="Directory containing the .onnx files (default: production/)",
     )
     parser.add_argument(
-        "--output-dir", type=Path, default=None,
+        "--output-dir",
+        type=Path,
+        default=None,
         help="Output directory (default: <model-dir>/fp16/)",
     )
     parser.add_argument(
-        "--validate", action="store_true",
+        "--validate",
+        action="store_true",
         help="Run onnx.checker on the converted models",
     )
     args = parser.parse_args()
@@ -99,9 +104,7 @@ def main() -> None:
 
     if args.validate:
         print("\nValidating converted models:")
-        all_ok = all(
-            validate_model(out_dir / f"{stem}_fp16.onnx") for stem in STEMS
-        )
+        all_ok = all(validate_model(out_dir / f"{stem}_fp16.onnx") for stem in STEMS)
         if not all_ok:
             print("\n⚠ Some models failed validation — check output above.")
             sys.exit(1)

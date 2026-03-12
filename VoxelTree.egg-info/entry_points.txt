@@ -1,0 +1,2 @@
+[console_scripts]
+voxel-tree = VoxelTree.cli:main

@@ -1,3 +1,33 @@
+[build-system]
+requires = ["setuptools>=66", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "VoxelTree"
+version = "0.1.0"
+description = "3-model octree pipeline for vanilla Minecraft terrain generation (LODiffusion)"
+requires-python = ">=3.11"
+dependencies = [
+    "numpy",
+    "torch>=2.0",
+    "torchvision",
+    "tqdm",
+    "PyYAML",
+    "scipy",
+    "pyside6>=6.6",
+    "onnx",
+]
+
+[project.scripts]
+voxel-tree = "VoxelTree.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["VoxelTree*"]
+
+[tool.setuptools.package-data]
+"VoxelTree.config" = ["*.json"]
+
 [tool.black]
 line-length = 100
 target-version = ['py311']
