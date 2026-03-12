@@ -55,19 +55,56 @@ import subprocess
 import sys
 import types
 from pathlib import Path
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
 
+
+class _LegacyShimModule(types.ModuleType):
+    """A module shim that auto-creates stub classes for any unknown attribute.
+
+    Old checkpoints may reference many classes from the removed ``train.unet3d``
+    package (e.g. ``UNet3DConfig``, ``SimpleFlexibleConfig``, …).  Rather than
+    manually enumerating every class that ever existed there, this shim creates
+    a thin dataclass-style stub on first access so that ``torch.load`` can
+    deserialise without raising ``AttributeError``.
+    """
+
+    def __getattr__(self, name: str) -> type:
+        # Never stub dunder attributes — let Python's normal attribute lookup
+        # raise AttributeError for those (e.g. __file__, __spec__, __path__…).
+        if name.startswith("__") and name.endswith("__"):
+            raise AttributeError(name)
+        # Build a minimal stub that survives pickle round-trips.
+        stub = type(
+            name,
+            (),
+            {
+                "__module__": self.__name__,
+                "__init__": lambda self, *a, **kw: None,
+                "__setstate__": lambda self, s: (
+                    self.__dict__.update(s) if isinstance(s, dict) else None
+                ),
+                "__repr__": lambda self: f"<{name}(legacy-stub)>",
+            },
+        )
+        # Cache so subsequent accesses return the same class.
+        setattr(self, name, stub)
+        return stub
+
+
+if "train" not in sys.modules:
+    sys.modules["train"] = types.ModuleType("train")
 if "train.unet3d" not in sys.modules:
-    mod = types.ModuleType("train.unet3d")
+    mod = _LegacyShimModule("train.unet3d")
     from VoxelTree.train.octree_models import OctreeConfig as UNet3DConfig
     from VoxelTree.train.octree_models import UNet3D32 as UNet3D
 
-    mod.UNet3D = UNet3D
-    mod.UNet3DConfig = UNet3DConfig
+    mod.UNet3D = UNet3D  # type: ignore[attr-defined]
+    mod.UNet3DConfig = UNet3DConfig  # type: ignore[attr-defined]
     sys.modules["train.unet3d"] = mod
+    sys.modules["train"].unet3d = mod  # type: ignore[attr-defined]
 
 from VoxelTree.train.octree_models import (
     OctreeConfig,
@@ -671,6 +708,7 @@ def load_octree_checkpoint(
 
 def load_octree_checkpoints_from_dir(
     checkpoint_dir: Path,
+    models: Optional[List[str]] = None,
 ) -> Tuple[OctreeConfig, Dict[str, torch.nn.Module]]:
     """Load per-model checkpoints from a directory.
 
@@ -678,9 +716,18 @@ def load_octree_checkpoints_from_dir(
     model type.  Falls back to ``best_model.pt`` for any model not found.  At
     least one checkpoint file must be present.
 
+    Args:
+        checkpoint_dir: Directory containing the checkpoint files.
+        models: Optional list of model names to load (e.g. ``["init"]``).  If
+            ``None`` (default) all three models are loaded.  Restricting the
+            list avoids loading checkpoint files for models that will not be
+            exported — useful when old fallback checkpoints use serialised
+            classes that no longer exist in the current codebase.
+
     Returns ``(config, {"init": model, "refine": model, "leaf": model})``.
     """
-    model_types = ["init", "refine", "leaf"]
+    all_model_types = ["init", "refine", "leaf"]
+    model_types = models if models else all_model_types
     model_factories = {
         "init": create_init_model,
         "refine": create_refine_model,
@@ -702,23 +749,38 @@ def load_octree_checkpoints_from_dir(
                 f"or fallback {unified_fallback}"
             )
 
+    # When only a subset of models is requested try to load the config from a
+    # per-model checkpoint first (avoids loading stale fallback checkpoints).
+    config_search_order = list(model_types) + [
+        mt for mt in ["init", "refine", "leaf"] if mt not in model_types
+    ]
+
     LOGGER.info("Per-model checkpoint paths: %s", per_model_paths)
 
-    # Load config from the first available checkpoint
+    # Load config from the first available checkpoint (prefer per-model chkpts)
     config: OctreeConfig | None = None
-    for mt in model_types:
-        if per_model_paths[mt].exists():
-            ckpt = torch.load(per_model_paths[mt], map_location="cpu", weights_only=False)
-            if "config" in ckpt:
-                config = ckpt["config"]
-                LOGGER.info("Config loaded from %s", per_model_paths[mt])
-                break
+    for mt in config_search_order:
+        ckpt_path = per_model_paths.get(mt) or (checkpoint_dir / f"{mt}_best_model.pt")
+        if not ckpt_path.exists():
+            ckpt_path = unified_fallback
+        if not ckpt_path.exists():
+            continue
+        try:
+            ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.debug("Skipping config load from %s: %s", ckpt_path, exc)
+            continue
+        if "config" in ckpt:
+            config = ckpt["config"]
+            LOGGER.info("Config loaded from %s", ckpt_path)
+            break
     if config is None:
         raise ValueError("No checkpoint contained a 'config' key.")
 
     # Load each model from its specific checkpoint
-    models: Dict[str, torch.nn.Module] = {}
-    for mt, factory in model_factories.items():
+    loaded_models: Dict[str, torch.nn.Module] = {}
+    for mt in model_types:
+        factory = model_factories[mt]
         model = factory(config)
         ckpt_path = per_model_paths[mt]
         ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
@@ -735,7 +797,7 @@ def load_octree_checkpoints_from_dir(
             state_dict = state_dicts[only_key]
         else:
             LOGGER.warning("No state dict for '%s' in %s — random weights", mt, ckpt_path)
-            models[mt] = model
+            loaded_models[mt] = model
             continue
 
         result = model.load_state_dict(state_dict, strict=False)
@@ -744,9 +806,9 @@ def load_octree_checkpoints_from_dir(
         if result.missing_keys:
             LOGGER.warning("Missing keys in %s: %s", mt, result.missing_keys)
         LOGGER.info("Loaded '%s' from %s", mt, ckpt_path)
-        models[mt] = model
+        loaded_models[mt] = model
 
-    return config, models
+    return config, loaded_models
 
 
 # ─── Main ────────────────────────────────────────────────────────────
@@ -805,7 +867,9 @@ def main(argv: list[str] | None = None) -> None:
 
     # Load checkpoint(s)
     if args.checkpoint_dir is not None:
-        config, models = load_octree_checkpoints_from_dir(args.checkpoint_dir)
+        config, models = load_octree_checkpoints_from_dir(
+            args.checkpoint_dir, models=args.models
+        )
     else:
         config, models = load_octree_checkpoint(args.checkpoint)
 
@@ -894,12 +958,6 @@ def main(argv: list[str] | None = None) -> None:
 
     LOGGER.info("Pipeline manifest: %s", manifest_path)
     LOGGER.info("Export complete.")
-    for p in exported:
-        LOGGER.info("  %s", p)
-
-
-if __name__ == "__main__":
-    main()
     for p in exported:
         LOGGER.info("  %s", p)
 
