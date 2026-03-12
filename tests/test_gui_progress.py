@@ -108,3 +108,16 @@ def test_profilerow_refresh_shows_progress():
     assert node is not None
     assert node._progress == 0.33
     assert node._icon() == "33%"
+
+
+def test_progress_helper_prints(capsys):
+    # reports at various points and clamps
+    from VoxelTree.utils.progress import report
+
+    report(0, 10)
+    report(5, 10)
+    report(10, 10)
+    report(-1, 10)  # below zero
+    report(11, 10)  # above total
+    captured = capsys.readouterr().out.strip().splitlines()
+    assert captured == ["[PROGRESS] 0%", "[PROGRESS] 50%", "[PROGRESS] 100%", "[PROGRESS] 0%", "[PROGRESS] 100%"]

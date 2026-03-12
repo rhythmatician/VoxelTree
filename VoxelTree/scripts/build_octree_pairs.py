@@ -52,6 +52,8 @@ import numpy as np
 import numpy.typing as npt
 from tqdm import tqdm
 
+from VoxelTree.utils.progress import report as _report_progress
+
 # Ensure project root is importable
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(_REPO_ROOT) not in sys.path:
@@ -213,7 +215,9 @@ def build_pairs_for_level(
     items = sorted(child_index.items())
     desc = f"L{child_level}" + (f"<-L{parent_level}" if not is_init else " (init)")
 
-    for (cx, cy, cz), child_path in tqdm(items, desc=f"  Pairs {desc}", unit="sect"):
+    total_items = len(items)
+    for idx, ((cx, cy, cz), child_path) in enumerate(tqdm(items, desc=f"  Pairs {desc}", unit="sect")):
+        _report_progress(idx, total_items)
         # Load child data
         child_data = load_section_npz(child_path)
         child_labels = child_data["labels32"]  # (32,32,32) int32
@@ -581,4 +585,5 @@ def main(argv: list[str] | None = None) -> None:
 
 
 if __name__ == "__main__":
+    main()
     main()

@@ -49,6 +49,8 @@ import numpy.typing as npt
 from biome_mapping import BIOME_NAME_TO_ID, UNKNOWN_BIOME_ID
 from tqdm import tqdm
 
+from VoxelTree.utils.progress import report as _report_progress
+
 # ---------------------------------------------------------------------------
 # Height normalisation constant (MC world height range: -64 to 320 = 384)
 # ---------------------------------------------------------------------------
@@ -75,12 +77,19 @@ def load_noise_dumps(noise_dump_dir: Path) -> dict[tuple[int, int], dict[str, An
         sys.exit(1)
 
     dumps: dict[tuple[int, int], dict[str, Any]] = {}
-    for fpath in tqdm(files, desc="Loading noise dumps", unit="file", dynamic_ncols=True):
+    total = len(files)
+    for idx, fpath in enumerate(
+        tqdm(files, desc="Loading noise dumps", unit="file", dynamic_ncols=True)
+    ):
+        # emit explicit progress as well so the GUI sees it even if tqdm
+        # suppresses output when run under a pipe
+        _report_progress(idx, total)
         with open(fpath) as f:
             data = json.load(f)
         cx = data["chunk_x"]
         cz = data["chunk_z"]
         dumps[(cx, cz)] = data
+    _report_progress(total, total)
 
     print(f"Loaded {len(dumps)} noise dump JSON files from {noise_dump_dir}")
     return dumps
@@ -324,7 +333,9 @@ def run_octree(args: argparse.Namespace) -> None:
         skipped_nocoord = 0
         skipped_nodata = 0
 
-        for fpath in tqdm(files, desc=f"  L{level} heightmaps", unit="file"):
+        total2 = len(files)
+        for idx, fpath in enumerate(tqdm(files, desc=f"  L{level} heightmaps", unit="file")):
+            _report_progress(idx, total2)
             # Load existing NPZ
             try:
                 npz = np.load(fpath)
@@ -448,4 +459,5 @@ def main(argv: list[str] | None = None) -> None:
 
 
 if __name__ == "__main__":
+    main()
     main()
