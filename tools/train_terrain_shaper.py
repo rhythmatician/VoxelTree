@@ -507,6 +507,11 @@ def main():
     # Generate training data
     inputs, outputs = generate_training_data(num_samples=2000000)
 
+    # Shuffle data before splitting to ensure independence of train/val sets
+    shuffled_indices = torch.randperm(len(inputs))
+    inputs = inputs[shuffled_indices]
+    outputs = outputs[shuffled_indices]
+
     # Split into train and val
     split = int(0.9 * len(inputs))
     train_inputs, val_inputs = inputs[:split], inputs[split:]
