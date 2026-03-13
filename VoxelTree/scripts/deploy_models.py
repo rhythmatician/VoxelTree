@@ -42,9 +42,22 @@ def main(argv: list[str] | None = None) -> None:
     if args.dest:
         dest = args.dest.resolve()
     else:
-        # Default: sibling LODiffusion project
-        repo_root = Path(__file__).resolve().parent.parent
-        dest = repo_root.parent / "LODiffusion" / "run" / "config" / "lodiffusion"
+        # Default destination: locate the LODiffusion repo as a sibling of the
+        # VoxelTree repo inside the workspace.
+        # Layout on disk:
+        #   MC/
+        #     VoxelTree/          ← repo root (3 levels up from __file__)
+        #       VoxelTree/        ← Python package
+        #         scripts/        ← this file's directory
+        #     LODiffusion/        ← target repo (sibling of VoxelTree repo)
+        #
+        # __file__ → .parent → scripts/
+        #           → .parent.parent → VoxelTree/ (pkg)
+        #           → .parent.parent.parent → VoxelTree/ (repo, 3rd parent)
+        #           → .parent.parent.parent.parent → MC/ (workspace root)
+        workspace_root = Path(__file__).resolve().parent.parent.parent.parent
+        candidate = workspace_root / "LODiffusion"
+        dest = candidate / "run" / "config" / "lodiffusion"
 
     # ── Read manifest ────────────────────────────────────────────────
     manifest_path = source / "pipeline_manifest.json"
