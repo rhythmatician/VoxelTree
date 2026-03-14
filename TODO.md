@@ -127,29 +127,25 @@ seed → noise params (SSBOs, once per world)
 **Repo:** LODiffusion  
 **Can run in parallel with WS-1/WS-2** — shares no dependencies.
 
-- [ ] **3.1 — Parent embedding loader**
-  - `OctreeModelRunner.java` (898 lines) needs to load `parent_embedding.npz`
-  - Implement embedding lookup table in Java
-  - The ONNX model expects a `parent_embedding` input tensor — currently crashes
-  - Effort: 2 days
+- [x] **3.1 — Parent embedding loader**
+  - Model redesigned to accept `parent_blocks int64[N,32,32,32]` directly (embedding baked into ONNX).
+  - No `parent_embedding.npz` lookup needed in Java — `OctreeModelRunner.runRefine/runLeaf` passes `long[]` directly.
 
-- [ ] **3.2 — Octant extraction**
-  - Input: parent 32³ block volume
-  - Extract one 16³ octant → upsample 2× → feed as 32³ to refine model
-  - There are 8 octants per parent — the model refines one at a time
-  - Effort: 1 day
+- [x] **3.2 — Octant extraction**
+  - `OctreeQueue.extractAndUpsampleOctant(int[][][], offY, offZ, offX)` → `long[32768]`
+  - 16³ octant extracted from parent 32³ argmax, upsampled 2× via nearest-neighbor.
+  - Called in `spawnChildren()` when creating each child `OctreeTask`.
 
-- [ ] **3.3 — Wire into LodGenerationService**
-  - The octree traversal in `LodGenerationService.java` needs to call Init→Refine→Leaf chain
-  - Currently the ONNX pipeline doesn't connect to the LOD scheduler
-  - Effort: 1 day
+- [x] **3.3 — Wire into LodGenerationService**
+  - `LodGenerationService.runOctreeLevelWorker()` calls `runInitBatch` (L4), `runRefineBatch` (L1-L3), `runLeafBatch` (L0).
+  - Batch inference, surface-clip pruning, `spawnChildren()`, and `VoxySectionWriter` writes all wired.
 
-- [ ] **3.4 — Integration tests**
-  - Java output must match Python inference for identical inputs
-  - Use test vectors from VoxelTree training to verify
-  - Effort: 1-2 days
+- [x] **3.4 — Integration tests**
+  - `OctreeQueueSpawnTest.java` (627 lines): coordinate helpers, octant extraction, spawn/dedup, priority scaling.
+  - `OctreeModelRunnerTest.java` (new, 23 tests): `computeArgmaxDirect`, `sigmoidThreshold`, Python parity spot-check.
 
-**Done when:** OGN Init→Refine→Leaf chain runs without crashes and produces correct blocks.
+**Done when:** OGN Init→Refine→Leaf chain runs without crashes and produces correct blocks.  
+**✅ COMPLETE**
 
 ---
 
