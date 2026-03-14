@@ -58,10 +58,15 @@ seed → noise params (SSBOs, once per world)
   - Note: `nnDepthNoise`/`nnJagged` still -1 (buried in finalDensity tree — deferred)
   - Effort: 1 day
 
-- [ ] **1.3 — Validate shader output vs. vanilla**
+- [x] **1.3 — Validate shader output vs. vanilla**
   - Run `NoiseDumperCommand` in-game (`/dump_noise`) at 100+ positions
   - Compare shader `surfDens` output to Java reference at same positions
   - Tolerance: `|shader - java| < 0.01`
+  - ✅ Implemented: `ShaderSSBOManager.dispatchAndRead()` reads 16×384×16 density floats;
+    `WorldGenEventHandler.writeGpuParityFile()` auto-writes `parity_reports/gpu_chunk_0_0.json`
+    on world load; `/dumpnoise parity <cx> <cz>` command writes Java reference JSON;
+    `VoxelTree/tools/validate_shader_parity.py` compares both files with tolerance + optional heatmap.
+    Fixed buffer size bug: was 256 KB hardcoded, now 393,216 bytes (16×384×16×4).
   - Effort: 1 day
 
 **Done when:** Shader produces correct surface density at verified positions.
