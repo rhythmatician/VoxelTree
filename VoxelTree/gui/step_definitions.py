@@ -296,6 +296,7 @@ def _deploy_cmd(p: dict) -> list[str]:
 
 # convenience wrappers for tests and step definitions
 
+
 def _export_init_cmd(p: dict) -> list[str]:
     return _export_cmd({**p, "export": {**p.get("export", {}), "models": ["init"]}})
 
@@ -318,6 +319,43 @@ def _deploy_refine_cmd(p: dict) -> list[str]:
 
 def _deploy_leaf_cmd(p: dict) -> list[str]:
     return _deploy_cmd({**p, "deploy": {**p.get("deploy", {}), "models": ["leaf"]}})
+
+
+# ---------------------------------------------------------------------------
+# Stage 1 Density (tiny NN) helpers
+# ---------------------------------------------------------------------------
+
+
+def _train_stage1_density_cmd(p: dict) -> list[str]:
+    data = p.get("data", {})
+    train = p.get("train", {})
+    cmd = [_python(), "tools/train_stage1_density.py"]
+    if data.get("stage1_dump_dir"):
+        cmd += ["--data-dir", str(data["stage1_dump_dir"])]
+    if train.get("output_dir"):
+        cmd += ["--out-dir", str(train["output_dir"])]
+    if train.get("epochs") is not None:
+        cmd += ["--epochs", str(train["epochs"])]
+    if train.get("batch_size") is not None:
+        cmd += ["--batch-size", str(train["batch_size"])]
+    if train.get("lr") is not None:
+        cmd += ["--lr", str(train["lr"])]
+    return cmd
+
+
+def _extract_stage1_weights_cmd(p: dict) -> list[str]:
+    data = p.get("data", {})
+    train = p.get("train", {})
+    extract = p.get("extract", {})
+    cmd = [_python(), "tools/extract_stage1_weights.py"]
+    # model directory generally matches train.output_dir
+    model_dir = train.get("output_dir")
+    if model_dir:
+        cmd += ["--model-dir", str(model_dir)]
+    # output dir can be overridden
+    if extract.get("output_dir"):
+        cmd += ["--out-dir", str(extract["output_dir"])]
+    return cmd
 
 
 # Future loopback stubs (enabled=False → rendered faded, not clickable)
@@ -351,9 +389,23 @@ PIPELINE_STEPS: list[StepDef] = [
     StepDef(
         id="dumpnoise",
         label="Noise",
-        prereqs=["pregen"],
+        # Dumpnoise only requires the server to be running; no pregen needed.
+        prereqs=[],
         cmd_factory=_dumpnoise_cmd,
         server_required=True,
+    ),
+    # ── Tiny NN (Stage 1 density) pipeline ──
+    StepDef(
+        id="train_stage1_density",
+        label="T1 Density",
+        prereqs=["dumpnoise"],
+        cmd_factory=_train_stage1_density_cmd,
+    ),
+    StepDef(
+        id="extract_stage1_weights",
+        label="E1 Weights",
+        prereqs=["train_stage1_density"],
+        cmd_factory=_extract_stage1_weights_cmd,
     ),
     StepDef(
         id="extract_octree",
