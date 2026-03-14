@@ -117,17 +117,28 @@ class RunRegistry:
 
         data = profile.get("data", {})
         data_dir = Path(data.get("data_dir", ""))
-        # if any section NPZ exists, we assume extraction completed
+
+        # If extraction output exists, assume the early pipeline steps completed.
+        any_npz = False
         if data_dir.is_dir():
             any_npz = any(data_dir.glob("level_*/*.npz"))
-        else:
-            any_npz = False
 
         if any_npz:
             _set_success("pregen")
             _set_success("voxy_import")
             _set_success("dumpnoise")
             _set_success("extract_octree")
+
+        # Dumpnoise can be considered successful if the noise-dump directory exists
+        # and contains any files.  This allows users to run dumpnoise independently
+        # from pregen.
+        dump_dir = Path(data.get("noise_dump_dir", "tools/fabric-server/runtime/noise_dumps"))
+        if dump_dir.is_dir() and any(dump_dir.iterdir()):
+            _set_success("dumpnoise")
+            # If we have dumpnoise output, the server was clearly reachable.
+            # In that case, we can also consider pregen/voxy_import as done.
+            _set_success("pregen")
+            _set_success("voxy_import")
 
             # column heights if any file already contains the feature
             for npz_path in data_dir.glob("level_*/*.npz"):
