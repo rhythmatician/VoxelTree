@@ -173,46 +173,41 @@ At runtime, inference is `dot(weights, input) + bias` → `max(0, result)`. That
 - Weights exported to `terrain_shaper_weights.bin`, loaded into SSBO binding 9
 - Files: `tools/train_terrain_shaper.py`, `tools/extract_terrain_shaper_weights.py`
 
-### Stage 1: Cave + Density MLP — TODO
+### Stage 1: Cave + Density MLP — DONE ✅
 
-- [ ] **4.1 — Build Stage 1 training dataset**
-  - Run vanilla Minecraft server with `NoiseDumperCommand`
-  - Dump `finalDensity` at millions of (x, y, z) positions
-  - Also dump the 12 input values per position:
-    - `offset, factor, jaggedness` (from Stage 0 / spline eval)
-    - `surfDens, slopedCheese` (surface density values)
-    - `y` (block height)
-    - `entrances, cheeseCaves, spaghetti2D, roughness, noodleToggle, noodleVal` (cave noise)
-  - Save as `.npz` files
-  - Effort: 2-3 days
+- [x] **4.1 — Build Stage 1 training dataset**
+  - `/dumpnoise stage1 <radius>` command added to `NoiseDumperCommand.java`
+  - Dumps `finalDensity` at 4×48×4 cell resolution per chunk
+  - Dumps the 12 input values per cell:
+    - `offset, factor, jaggedness` (from Stage 0 / TerrainShaperMLP)
+    - `depth, sloped_cheese` (surface density values)
+    - `y` (cell-centre block height)
+    - `entrances, cheese_caves, spaghetti_2d, roughness, noodle, base_3d_noise` (cave noise)
+  - Output: `run/stage1_dumps/chunk_<cx>_<cz>.json` (one file per chunk)
+  - `WorldNoiseAccess.lookupDensityFunction(String path)` added for registry lookup
 
-- [ ] **4.2 — Train Stage 1**
-  - Architecture: 12→64→64→1
-  - Freeze TerrainShaperMLP weights (the first 3 outputs are frozen checkpoint values)
-  - Train new layers on `MSE(predicted_finalDensity, true_finalDensity)`
-  - This NN absorbs: `rangeChoice`, noodle caves, slide, blendDensity, squeeze
+- [x] **4.2 — Train Stage 1**
+  - Architecture: 12→64→64→1, ReLU hidden, MSE loss, AdamW + cosine LR
+  - Input normalisation (z-score) baked into ONNX export
   - Grok metric: MSE < 0.001
-  - Effort: 1-2 weeks
+  - Script: `VoxelTree/tools/train_stage1_density.py`
+  - Outputs: `stage1_mlp.pt`, `stage1_mlp.onnx`, `stage1_mlp_weights.bin`
 
-- [ ] **4.2a — Export Stage 1 weights to GLSL**
-  - Same pattern as Stage 0: flatten weights → binary file → SSBO
-  - Add `mc_stage1_mlp(float[12])` function to `terrain_compute.comp`
-  - Effort: 1-2 days
+- [x] **4.2a — Export Stage 1 weights to GLSL**
+  - Script: `VoxelTree/tools/extract_stage1_weights.py`
+  - Exports `stage1_mlp_weights.bin`, `stage1_norm_mean.bin`, `stage1_norm_std.bin`
+  - Copies all to `LODiffusion/src/main/resources/assets/lodiffusion/models/`
+  - Pattern mirrors `extract_terrain_shaper_weights.py`
 
-### Stage 1 also needs cave noise in GLSL:
+### Stage 1 also needs cave noise in GLSL — DONE ✅
 
-- [ ] **4.1a — Implement cave noise sampling (GLSL)**
-  - 6 noise calls, all branchless `mc_normal_noise()`:
-    - `spaghetti2D` — 1 noise call
-    - `entrances` — 4 noise calls (multi-octave)
-    - `cheeseCaves` — 1 noise call
-    - `roughness` — 1 noise call
-    - `noodleToggle` — 1 noise call
-    - `noodleVal` — 2 noise calls (ridge)
-  - These are inputs to Stage 1 NN, not the cave logic itself
-  - The branchy part (min/max/if/rangeChoice) is what the NN learns
+- [x] **4.1a — Implement cave noise sampling (GLSL)**
+  - 5 cave noise indices added to `RouterConfig` UBO (`terrain_compute.comp` + `TerrainComputeDispatcher.java`)
+  - UBO extended from 80 → 112 bytes
+  - `withCaveIndices(entrances, cheeseCaves, spaghetti2d, roughness, noodle)` added to `RouterConfig`
+  - Cave carving in `computeFinalDensity`: cheese caves, spaghetti tunnels, entrances, noodle corridors
+  - All branches guard on index == -1 (graceful fallback when not yet wired)
   - Reference: `NoiseRouter.java` and `NoiseSampler.java` in `reference-code/26.1-snapshot-11/`
-  - Effort: 2-3 days
 
 ### Stage 2: Block Select MLP — TODO
 
@@ -261,7 +256,7 @@ At runtime, inference is `dot(weights, input) + bias` → `max(0, result)`. That
 | Milestone | Definition | Requirements | Status |
 |-----------|-----------|--------------|--------|
 | **M1** | Player sees distant terrain shapes (stone/water/air) generated on client GPU | WS-1 + WS-2 | Implemented (needs in-game validation) |
-| **M2** | Distant terrain has biome-appropriate blocks at all LOD levels | WS-3 + WS-4 (Stages 1-2) | Not started |
+| **M2** | Distant terrain has biome-appropriate blocks at all LOD levels | WS-3 + WS-4 (Stages 1-2) | WS-3 ✅, WS-4 Stage 1 ✅, Stage 2 not started |
 | **M3** | Polished mod, public release | WS-4 (Stage 3) + WS-5 | Not started |
 
 ---
