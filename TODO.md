@@ -39,19 +39,23 @@ seed → noise params (SSBOs, once per world)
 **File:** `src/main/resources/assets/lodiffusion/shaders/worldgen/terrain_compute.comp`  
 **Goal:** Surface density field matches vanilla Minecraft (no caves yet)
 
-- [ ] **1.1 — Implement ShiftedNoise (XZ distortion)**
+- [x] **1.1 — Implement ShiftedNoise (XZ distortion)**
   - Port `ShiftedNoise.java` to GLSL
   - Two `mc_normal_noise()` calls: `shift_a`, `shift_b` → shifted x', z'
   - All downstream 2D noise sampling uses shifted coordinates
   - Reference: `NoiseRouterData.bootstrap()` lines 100-103 in `reference-code/26.1-snapshot-11/`
   - This is branchless math: sample two noise fields, add to coords
-  - Currently the 2D noise bank samples at raw `(bx, bz)` — needs `(bx + shift_a, bz + shift_b)`
+  - ✅ Implemented: xzScale=0.25 applied, shift_x/z computed from Noises.SHIFT (ShiftA/ShiftB coord
+    permutation), all 5 2D noises now at correct (bx*0.25+shift_x, 0, bz*0.25+shift_z)
   - Effort: 1-2 days
 
-- [ ] **1.2 — Wire RouterConfig named indices**
+- [x] **1.2 — Wire RouterConfig named indices**
   - Replace `-1` defaults in `RouterConfig` UBO (binding 8) with actual noise indices
   - `NoiseRouterExtractor.java` already extracts noise params into SSBOs 0-6
-  - Need to map noise name → SSBO index and populate the UBO from Java
+  - ✅ Implemented: fixed `visitNoise()` NoiseHolder handling so ShiftedNoise/ShiftA/ShiftB NormalNoise
+    instances are registered; `wireNamedIndices()` resolves continents/erosion/ridges/shift via
+    reflection; `ShaderSSBOManager` now calls `withNamedIndices()` from extracted data
+  - Note: `nnDepthNoise`/`nnJagged` still -1 (buried in finalDensity tree — deferred)
   - Effort: 1 day
 
 - [ ] **1.3 — Validate shader output vs. vanilla**
