@@ -259,6 +259,9 @@ class ProfileEditorDialog(QDialog):
             self._data = copy.deepcopy(_DEFAULT_PROFILE)
 
         self._fields: dict[str, QWidget] = {}
+        # Per-profile DAG (None = user has not edited it; kept in sync with _data)
+        from VoxelTree.gui.dag_definition import ProfileDag  # late to avoid circular
+        self._dag: ProfileDag | None = ProfileDag.from_profile_dict(self._data)
         self._build_ui()
 
     # ------------------------------------------------------------------
@@ -357,6 +360,29 @@ class ProfileEditorDialog(QDialog):
             deploy.get("target_dir", "../LODiffusion/run/config/lodiffusion"),
         )
         form_layout.addWidget(dep_box)
+
+        # ── Pipeline DAG ──
+        dag_box = self._group("Pipeline DAG")
+        dag_v = QVBoxLayout(dag_box)
+        dag_v.setSpacing(6)
+        self._dag_summary_label = QLabel()
+        self._dag_summary_label.setStyleSheet(
+            "color: #7799bb; font-size: 10px; padding: 2px 0;"
+        )
+        self._dag_summary_label.setWordWrap(True)
+        dag_v.addWidget(self._dag_summary_label)
+        edit_dag_btn = QPushButton("Edit Pipeline DAG…")
+        edit_dag_btn.setFixedWidth(160)
+        edit_dag_btn.setStyleSheet(
+            "QPushButton { background: #2a3d5a; color: #9abfdd; border: 1px solid #4a7abf;"
+            " border-radius: 4px; padding: 4px 10px; }"
+            "QPushButton:hover { background: #3a5a8a; }"
+        )
+        edit_dag_btn.clicked.connect(self._on_edit_dag)
+        dag_v.addWidget(edit_dag_btn)
+        form_layout.addWidget(dag_box)
+        self._update_dag_summary()
+
         form_layout.addStretch()
 
         scroll.setWidget(inner)
@@ -450,6 +476,11 @@ class ProfileEditorDialog(QDialog):
             QMessageBox.warning(self, "Validation", "Profile name cannot be empty.")
             return
         self._collect()
+        # Persist (or clear) per-profile DAG
+        if self._dag is not None and not self._dag.is_empty:
+            self._data["dag"] = self._dag.to_dag_dict()
+        else:
+            self._data.pop("dag", None)
         try:
             save_profile(self._data)
         except OSError as exc:
@@ -492,3 +523,35 @@ class ProfileEditorDialog(QDialog):
 
     def profile_name(self) -> str:
         return str(self._data.get("name", ""))
+
+    # ------------------------------------------------------------------
+    # DAG helpers
+    # ------------------------------------------------------------------
+
+    def _on_edit_dag(self) -> None:
+        from VoxelTree.gui.dag_definition import ProfileDag
+        from VoxelTree.gui.dag_editor_dialog import DagEditorDialog
+
+        # Use current edited dag, or build a default one if not yet set
+        current_dag = self._dag if (self._dag is not None and not self._dag.is_empty) \
+            else ProfileDag.default()
+        dlg = DagEditorDialog(
+            profile_name=str(self._data.get("name", "?")),
+            dag=current_dag,
+            parent=self,
+        )
+        if dlg.exec():
+            self._dag = dlg.result_dag()
+            self._update_dag_summary()
+
+    def _update_dag_summary(self) -> None:
+        dag = self._dag
+        if dag is None or dag.is_empty:
+            self._dag_summary_label.setText("Default — all PIPELINE_STEPS")
+            return
+        try:
+            steps = dag.resolve_steps()
+            labels = "  →  ".join(s.label for s in steps)
+            self._dag_summary_label.setText(f"{len(steps)} steps:  {labels}")
+        except Exception as exc:
+            self._dag_summary_label.setText(f"⚠  {exc}")

@@ -15,7 +15,7 @@ from PySide6.QtWidgets import (
 
 from VoxelTree.gui.profile_row import _COL_W, _NODE_W, ProfileRow, _compute_dag_layout
 from VoxelTree.gui.run_registry import RunRegistry
-from VoxelTree.gui.step_definitions import PIPELINE_STEPS
+from VoxelTree.gui.step_definitions import PIPELINE_STEPS, StepDef
 
 
 class DashboardTable(QWidget):
@@ -111,10 +111,27 @@ class DashboardTable(QWidget):
     # Public API
     # ------------------------------------------------------------------
 
-    def add_profile(self, profile_name: str, registry: RunRegistry) -> None:
+    def add_profile(
+        self,
+        profile_name: str,
+        registry: RunRegistry,
+        steps: list[StepDef] | None = None,
+    ) -> None:
+        """Add a profile row to the dashboard.
+
+        Parameters
+        ----------
+        profile_name:
+            Display name and unique key.
+        registry:
+            Run state storage for this profile.
+        steps:
+            Optional custom step list from a per-profile ``ProfileDag``.  When
+            *None* the global ``PIPELINE_STEPS`` list is used.
+        """
         if profile_name in self._rows:
             return
-        row = ProfileRow(profile_name, registry)
+        row = ProfileRow(profile_name, registry, steps=steps)
         row.details_clicked.connect(self.details_clicked)
         row.delete_clicked.connect(self.delete_profile_requested)
         row.node_clicked.connect(self.node_clicked)
@@ -127,6 +144,24 @@ class DashboardTable(QWidget):
         count = self._rows_layout.count()
         self._rows_layout.insertWidget(count - 1, row)
         self._rows[profile_name] = row
+
+    def update_profile_steps(
+        self, profile_name: str, steps: list[StepDef] | None
+    ) -> None:
+        """Replace the step list for an already-loaded profile row.
+
+        This rebuilds the row widget in place so that the new DAG topology
+        is reflected immediately.  If *steps* is *None* the global default
+        is restored.
+        """
+        row = self._rows.get(profile_name)
+        if row is None:
+            return
+        registry = row.registry
+        self._rows_layout.removeWidget(row)
+        row.deleteLater()
+        del self._rows[profile_name]
+        self.add_profile(profile_name, registry, steps=steps)
 
     def remove_profile(self, profile_name: str) -> None:
         row = self._rows.pop(profile_name, None)

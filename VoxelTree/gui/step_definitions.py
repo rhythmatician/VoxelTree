@@ -463,6 +463,11 @@ PIPELINE_STEPS: list[StepDef] = [
 # Convenience lookup
 STEP_BY_ID: dict[str, StepDef] = {s.id: s for s in PIPELINE_STEPS}
 
+# Registry alias — preferred name when treating PIPELINE_STEPS as a type catalogue
+# rather than a fixed pipeline order.  New code should import STEP_REGISTRY; the
+# ``PIPELINE_STEPS`` name is kept for backward compatibility with existing callers.
+STEP_REGISTRY: list[StepDef] = PIPELINE_STEPS
+
 # Only the enabled steps shown as live nodes; disabled ones are stubs
 ACTIVE_STEPS: list[StepDef] = [s for s in PIPELINE_STEPS if s.enabled]
 STUB_STEPS: list[StepDef] = [s for s in PIPELINE_STEPS if not s.enabled]

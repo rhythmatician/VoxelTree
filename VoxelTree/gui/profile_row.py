@@ -9,7 +9,7 @@ from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QMenu, QPushButton, QSizePolicy, QWidget
 
 from VoxelTree.gui.run_registry import RunRegistry
-from VoxelTree.gui.step_definitions import ACTIVE_STEPS, PIPELINE_STEPS, StepDef
+from VoxelTree.gui.step_definitions import PIPELINE_STEPS, StepDef
 from VoxelTree.gui.step_node_widget import StepNodeWidget
 
 _NODE_W = 52
@@ -71,11 +71,17 @@ class ProfileRow(QWidget):
     cancel_requested: Signal = Signal(str, str)
 
     def __init__(
-        self, profile_name: str, registry: RunRegistry, parent: QWidget | None = None
+        self,
+        profile_name: str,
+        registry: RunRegistry,
+        steps: list[StepDef] | None = None,
+        parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         self.profile_name = profile_name
         self.registry = registry
+        # Per-profile step list.  None → fall back to global PIPELINE_STEPS.
+        self._steps: list[StepDef] | None = steps
 
         self._nodes: dict[str, StepNodeWidget] = {}
         self._runnable_steps: set[str] = set()
@@ -96,8 +102,10 @@ class ProfileRow(QWidget):
         layout.addWidget(name_lbl)
         layout.addSpacing(8)
 
-        # DAG nodes container
-        all_steps = list(PIPELINE_STEPS)  # includes stubs
+        # DAG nodes container — use per-profile steps if provided, else global list
+        all_steps: list[StepDef] = (
+            self._steps if self._steps is not None else list(PIPELINE_STEPS)
+        )
         self._nodes_container = _NodesWidget(self)
         self._nodes_container.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
 
@@ -226,6 +234,7 @@ class _NodesWidget(QWidget):
         self._step_positions: dict[str, tuple[int, int]] = {}  # step_id → (col, row)
         self._node_widgets: dict[str, StepNodeWidget] = {}
         self._active_ids: set[str] = set()
+        self._steps: list[StepDef] = []  # stored for paintEvent
 
     def layout_nodes(
         self,
@@ -234,7 +243,9 @@ class _NodesWidget(QWidget):
     ) -> None:
         """Compute DAG positions and place child node widgets."""
         self._node_widgets = nodes
-        self._active_ids = {s.id for s in ACTIVE_STEPS}
+        self._steps = steps  # store for paintEvent
+        # active IDs = all enabled steps in the provided list
+        self._active_ids = {s.id for s in steps if s.enabled}
         self._step_positions = _compute_dag_layout(steps)
 
         if not self._step_positions:
@@ -266,7 +277,7 @@ class _NodesWidget(QWidget):
         # Background
         painter.fillRect(self.rect(), QColor("#1e1e1e"))
 
-        for step in PIPELINE_STEPS:
+        for step in self._steps:
             if step.id not in self._step_positions:
                 continue
             dst_col, dst_row = self._step_positions[step.id]
