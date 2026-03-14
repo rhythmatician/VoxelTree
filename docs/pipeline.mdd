@@ -1,0 +1,158 @@
+graph TD
+    %% ──────────────── INPUTS ────────────────
+    seed([seed])
+    pos_xz([x, z])
+    pos_y([y])
+    lod([lod_level])
+
+    seed -->|once per world| noise_params[/"NoiseRouterExtractor<br/>→ SSBOs 0–6"/]
+
+    %% ──────────────── XZ DISTORTION (GLSL — TODO) ────────────────
+    pos_xz --> shift_a[mc_normal_noise<br/>shift_a]
+    pos_xz --> shift_b[mc_normal_noise<br/>shift_b]
+    noise_params -.-> shift_a
+    noise_params -.-> shift_b
+    shift_a --> shifted_xz[/shifted x', z'/]
+    shift_b --> shifted_xz
+
+    %% ──────────────── 2D NOISE BANK (GLSL — done) ────────────────
+    shifted_xz --> continents[mc_normal_noise<br/>continents]
+    shifted_xz --> erosion[mc_normal_noise<br/>erosion]
+    shifted_xz --> weirdness_sample[mc_normal_noise<br/>ridges]
+    shifted_xz --> temperature[mc_normal_noise<br/>temperature]
+    shifted_xz --> vegetation[mc_normal_noise<br/>vegetation]
+    noise_params -.-> continents
+    noise_params -.-> erosion
+    noise_params -.-> weirdness_sample
+    noise_params -.-> temperature
+    noise_params -.-> vegetation
+
+    weirdness_sample --> weirdness(weirdness)
+    weirdness --> peaksAndValleys[peaksAndValleys]
+    peaksAndValleys --> ridges_folded(ridges_folded)
+
+    %% ──────────────── STAGE 0 NN — TerrainShaperMLP ────────────────
+    continents --> TSM
+    erosion --> TSM
+    ridges_folded --> TSM
+    weirdness --> TSM
+    TSM{{"⬡ Stage 0 NN<br/>TerrainShaperMLP<br/>4→32→32→3<br/>✓ frozen"}}
+    TSM --> offset("offset†")
+    TSM --> factor("factor†")
+    TSM --> jaggedness("jaggedness†")
+
+    %% ──────────────── SURFACE DENSITY (GLSL — done) ────────────────
+    pos_y --> y_gradient[YClampedGradient<br/>-64→+1.5, 320→-1.5]
+    y_gradient --> depth_grad(depth_gradient)
+    depth_grad --> add_depth["+"]
+    offset --> add_depth
+    add_depth --> depth(depth)
+
+    pos_xz --> sloped_cheese_noise[mc_normal_noise<br/>slopedCheese]
+    pos_y --> sloped_cheese_noise
+    noise_params -.-> sloped_cheese_noise
+    sloped_cheese_noise --> sloped_cheese(slopedCheese)
+
+    pos_xz --> jagged_noise[mc_normal_noise<br/>jagged]
+    pos_y --> jagged_noise
+    noise_params -.-> jagged_noise
+    jagged_noise --> half_neg[halfNegative]
+    half_neg --> jag_applied["×"]
+    jaggedness --> jag_applied
+    jag_applied --> jaggedness_applied(jaggedness_applied)
+
+    depth --> add_dj["+"]
+    jaggedness_applied --> add_dj
+    add_dj --> mul_factor["× factor"]
+    factor --> mul_factor
+    mul_factor --> quarter_neg[quarterNegative × 4]
+    quarter_neg --> initial_density(initial_density)
+    initial_density --> add_cheese["+"]
+    sloped_cheese --> add_cheese
+    add_cheese --> surfDens(surfDens)
+
+    %% ──────────────── CAVE NOISE SAMPLING (GLSL — TODO, branchless) ────────────────
+    pos_xz --> cave_spaghetti[mc_normal_noise<br/>spaghetti2D]
+    pos_y --> cave_spaghetti
+    noise_params -.-> cave_spaghetti
+    cave_spaghetti --> spaghetti2D(spaghetti2D)
+
+    pos_xz --> cave_entrances[mc_normal_noise ×4<br/>entrances]
+    pos_y --> cave_entrances
+    noise_params -.-> cave_entrances
+    cave_entrances --> entrances(entrances)
+
+    pos_xz --> cave_cheese[mc_normal_noise<br/>cheeseCaves]
+    pos_y --> cave_cheese
+    noise_params -.-> cave_cheese
+    cave_cheese --> cheeseCaves(cheeseCaves)
+
+    pos_xz --> cave_rough[mc_normal_noise<br/>roughness]
+    pos_y --> cave_rough
+    noise_params -.-> cave_rough
+    cave_rough --> roughness(roughness)
+
+    pos_xz --> noodle_t[mc_normal_noise<br/>noodleToggle]
+    pos_y --> noodle_t
+    noise_params -.-> noodle_t
+    noodle_t --> noodleToggle(noodleToggle)
+
+    pos_xz --> noodle_v[mc_normal_noise ×2<br/>noodleRidge]
+    pos_y --> noodle_v
+    noise_params -.-> noodle_v
+    noodle_v --> noodleVal(noodleVal)
+
+    %% ──────────────── STAGE 1 NN — Cave + Density ────────────────
+    %% Inputs: offset†, factor†, jag† (from TSM, frozen) +
+    %%         surfDens, slopedCheese, y, entrances, cheeseCaves,
+    %%         spaghetti2D, roughness, noodleToggle, noodleVal (9 GLSL)
+    offset --> S1NN
+    factor --> S1NN
+    jaggedness --> S1NN
+    surfDens --> S1NN
+    sloped_cheese --> S1NN
+    pos_y --> S1NN
+    entrances --> S1NN
+    cheeseCaves --> S1NN
+    spaghetti2D --> S1NN
+    roughness --> S1NN
+    noodleToggle --> S1NN
+    noodleVal --> S1NN
+    S1NN{{"⬡ Stage 1 NN<br/>Cave + Density MLP<br/>12→64→64→1<br/>absorbs: rangeChoice, noodle,<br/>slide, blendDensity, squeeze"}}
+    S1NN --> finalDensity("finalDensity†")
+
+    %% ──────────────── STAGE 2 NN — Block Selection ────────────────
+    %% Inputs: finalDensity† + continents, erosion, temperature,
+    %%         vegetation, depth, weirdness, y  (7 climate GLSL)
+    %% Replaces: Climate.TargetPoint + RTree biome lookup + block_select
+    finalDensity --> S2NN
+    continents --> S2NN
+    erosion --> S2NN
+    temperature --> S2NN
+    vegetation --> S2NN
+    depth --> S2NN
+    weirdness --> S2NN
+    pos_y --> S2NN
+    S2NN{{"⬡ Stage 2 NN<br/>Block Select MLP<br/>8→128→128→K<br/>replaces: RTree biome lookup<br/>+ surface/block rules"}}
+    S2NN --> block_id(block_id)
+
+    %% ──────────────── VOXY PACKING ────────────────
+    block_id --> pack["pack 64-bit voxel<br/>block(20b) + biome(9b) + light(8b)"]
+    lod -->|sample spacing| pos_xz
+    pack --> ws[("WorldSection<br/>long[32768]<br/>32³ voxels")]
+
+    %% ──────────────── STYLING ────────────────
+    classDef done fill:#2d6a2d,stroke:#1a4a1a,color:#fff
+    classDef todo fill:#8b4513,stroke:#6b3410,color:#fff
+    classDef nn fill:#4a2d8b,stroke:#3a1d7b,color:#fff
+    classDef future fill:#555,stroke:#333,color:#ccc,stroke-dasharray: 5 5
+
+    class continents,erosion,weirdness_sample,temperature,vegetation done
+    class sloped_cheese_noise,jagged_noise,peaksAndValleys,y_gradient done
+    class half_neg,quarter_neg,noise_params done
+    class add_depth,add_dj,mul_factor,add_cheese done
+    class TSM nn
+    class shift_a,shift_b,shifted_xz todo
+    class cave_spaghetti,cave_entrances,cave_cheese,cave_rough,noodle_t,noodle_v todo
+    class S1NN,S2NN nn
+    class pack,ws future
