@@ -205,24 +205,17 @@ class StepNodeWidget(QWidget):
             return self._metadata
         # Next, if we know a progress fraction show a percentage.
         # We display two significant figures: use one decimal place for
-        # values <10, otherwise show an integer.  This matches the desired
-        # behaviour (e.g. "2.3%" but "82%", "2.0%" at low values).
+        # values <10, otherwise show an integer.
         if self._progress is not None:
             pct = self._progress * 100.0
             if pct < 10:
                 return f"{pct:.1f}%"
             else:
                 return f"{int(pct)}%"
+        # Otherwise show the node's label directly.
         if self.stub:
             return "-"
-        icons = {
-            "not_run": "-",
-            "running": "⟳",
-            "success": "✓",
-            "failed": "✗",
-            "stale": "!",
-        }
-        return icons.get(self._status, self.label)
+        return self.label
 
     def sizeHint(self) -> QSize:
         return QSize(_DIAMETER, _DIAMETER)

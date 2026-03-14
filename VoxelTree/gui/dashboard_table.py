@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
     QHBoxLayout,
-    QLabel,
     QPushButton,
     QScrollArea,
     QSizePolicy,
@@ -13,9 +12,9 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from VoxelTree.gui.profile_row import _COL_W, _NODE_W, ProfileRow, _compute_dag_layout
+from VoxelTree.gui.profile_row import ProfileRow
 from VoxelTree.gui.run_registry import RunRegistry
-from VoxelTree.gui.step_definitions import PIPELINE_STEPS, StepDef
+from VoxelTree.gui.step_definitions import StepDef
 
 
 class DashboardTable(QWidget):
@@ -46,31 +45,6 @@ class DashboardTable(QWidget):
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
-
-        # ── Column header bar (absolute-positioned per DAG column/row) ──
-        positions = _compute_dag_layout(list(PIPELINE_STEPS))
-        max_row = max(r for _, r in positions.values())
-        _LABEL_H = 14
-        _LABEL_ROW_STEP = 18
-        _LEFT = 8 + 90 + 8  # layout-margin + name-label + spacing
-        header_h = (max_row + 1) * _LABEL_ROW_STEP + 8
-
-        header = QWidget()
-        header.setFixedHeight(header_h)
-        header.setStyleSheet("background: #252525;")
-
-        for step in PIPELINE_STEPS:
-            col, row = positions[step.id]
-            x = _LEFT + col * _COL_W
-            y = row * _LABEL_ROW_STEP + 4
-            lbl = QLabel(step.label, header)
-            lbl.move(x, y)
-            lbl.setFixedSize(_NODE_W, _LABEL_H)
-            lbl.setAlignment(Qt.AlignmentFlag.AlignHCenter)
-            color = "#505050" if not step.enabled else "#8899bb"
-            lbl.setStyleSheet(f"color: {color}; font-size: 9px; font-weight: bold;")
-
-        root.addWidget(header)
 
         # ── Scrollable rows area ──
         scroll = QScrollArea()
