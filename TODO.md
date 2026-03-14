@@ -78,7 +78,7 @@ seed → noise params (SSBOs, once per world)
 **Repo:** LODiffusion  
 **Goal:** Convert density float → block IDs → Voxy format → visible terrain
 
-- [ ] **2.1 — Threshold logic in shader**
+- [x] **2.1 — Threshold logic in shader**
   - Add to `terrain_compute.comp` after `surfDens` computation:
     ```glsl
     int block_id;
@@ -87,24 +87,34 @@ seed → noise params (SSBOs, once per world)
     else block_id = AIR;
     ```
   - This is an MVP — no biome-specific blocks yet
+  - ✅ Implemented: binding 11 (`block_out` int SSBO), MAT_AIR/STONE/WATER/GRASS/DIRT constants,
+    pass 2 in `main()` fills `block_out` from `density_out`
   - Effort: 1 day
 
-- [ ] **2.2 — Surface layer heuristic**
+- [x] **2.2 — Surface layer heuristic**
   - Top 4 blocks of solid: `grass_block / dirt / dirt / dirt`
   - Ocean floor: `sand` or `gravel`
   - Uses the `depth` value already computed in the shader
+  - ✅ Implemented: top-down scan for `surface_yi`; dry-land surface (surface_blockY >= SEA_LEVEL)
+    gets GRASS at dist=0, DIRT for 1-3 below; underwater solid = STONE (MVP)
   - Effort: 2-3 days
 
-- [ ] **2.3 — Write to Voxy format**
+- [x] **2.3 — Write to Voxy format**
   - Pack into 64-bit voxels: `block(20b) + biome(9b) + light(8b)`
   - Use existing `VoxySectionWriter.java`
   - Output: `WorldSection` of `long[32768]` (32³ voxels)
+  - ✅ Implemented: `ShaderSectionWriter.java` — resolves Voxy IDs for 5 material types via
+    Mapper reflection; `writeColumn()` slices 16×384×16 ints into 24 × 16³ VoxelizedSections,
+    fills voxels, mips, insertUpdate. All-air sections skipped.
   - Effort: 1-2 days
 
-- [ ] **2.4 — End-to-end integration test**
+- [x] **2.4 — End-to-end integration test**
   - Dispatch shader → read density buffer → threshold → write Voxy → see terrain
   - Player should see distant mountains, oceans, plains in correct positions
   - No caves, no grass colors — just shapes
+  - ✅ Implemented: `WorldGenEventHandler.writeBlocksToVoxy()` called after parity write on world
+    load; reads binding 11, gets Voxy world engine from level, creates ShaderSectionWriter, writes
+    chunk (0,0). `ShaderSSBOManager.readBlockOutput()` + `readIntBuffer()` added.
   - Effort: 1-2 days
 
 **Done when:** Player sees distant terrain generated entirely on client GPU.  
@@ -254,7 +264,7 @@ At runtime, inference is `dot(weights, input) + bias` → `max(0, result)`. That
 
 | Milestone | Definition | Requirements | Status |
 |-----------|-----------|--------------|--------|
-| **M1** | Player sees distant terrain shapes (stone/water/air) generated on client GPU | WS-1 + WS-2 | Not started |
+| **M1** | Player sees distant terrain shapes (stone/water/air) generated on client GPU | WS-1 + WS-2 | Implemented (needs in-game validation) |
 | **M2** | Distant terrain has biome-appropriate blocks at all LOD levels | WS-3 + WS-4 (Stages 1-2) | Not started |
 | **M3** | Polished mod, public release | WS-4 (Stage 3) + WS-5 | Not started |
 
