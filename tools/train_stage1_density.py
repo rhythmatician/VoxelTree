@@ -89,6 +89,39 @@ class Stage1DensityMLP(nn.Module):
         return self.net(x).squeeze(-1)
 
 
+def _load_profile(path: str) -> dict:
+    """Load a YAML profile and return its contents as a dict."""
+    try:
+        import yaml  # type: ignore
+    except ImportError:
+        print("[WARN] PyYAML not installed — ignoring --profile. "
+              "Install with: pip install pyyaml", file=sys.stderr)
+        return {}
+    with open(path) as f:
+        return yaml.safe_load(f) or {}
+
+
+def _apply_profile(args: argparse.Namespace, profile: dict) -> None:
+    """
+    Override argparse defaults with values from the profile's `train` and
+    `data` sections.  Explicit CLI flags always win over profile values.
+    """
+    mapping = {
+        # profile key path             argparse attr    cast
+        ("data",  "stage1_dump_dir"): ("data_dir",    str),
+        ("data",  "val_split"):        ("val_split",   float),
+        ("train", "output_dir"):       ("out_dir",     str),
+        ("train", "epochs"):           ("epochs",      int),
+        ("train", "batch_size"):       ("batch_size",  int),
+        ("train", "lr"):               ("lr",          float),
+        ("train", "target_mse"):       ("target_mse",  float),
+    }
+    for (section, key), (attr, cast) in mapping.items():
+        value = profile.get(section, {}).get(key)
+        if value is not None and getattr(args, attr) is None:
+            setattr(args, attr, cast(value))
+
+
 # ---------------------------------------------------------------------------
 # Data loading
 # ---------------------------------------------------------------------------
@@ -372,21 +405,44 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
         description="Train Stage 1 density MLP from /dumpnoise stage1 data."
     )
-    p.add_argument("--data-dir",   default="stage1_dumps",
+    p.add_argument("--profile",    default=None,
+                   help="Path to a YAML profile (e.g. profiles/stage1_density.yaml). "
+                        "Profile values are used as defaults; explicit flags override them.")
+    p.add_argument("--data-dir",   default=None,
                    help="Directory containing chunk_*.json files  (default: stage1_dumps)")
-    p.add_argument("--out-dir",    default="stage1_model",
+    p.add_argument("--out-dir",    default=None,
                    help="Where to write trained weights/checkpoints  (default: stage1_model)")
-    p.add_argument("--epochs",     type=int,   default=200,
+    p.add_argument("--epochs",     type=int,   default=None,
                    help="Maximum training epochs  (default: 200)")
-    p.add_argument("--batch-size", type=int,   default=4096,
+    p.add_argument("--batch-size", type=int,   default=None,
                    help="SGD mini-batch size  (default: 4096)")
-    p.add_argument("--lr",         type=float, default=1e-3,
+    p.add_argument("--lr",         type=float, default=None,
                    help="Initial AdamW learning rate  (default: 1e-3)")
-    p.add_argument("--target-mse", type=float, default=0.001,
+    p.add_argument("--target-mse", type=float, default=None,
                    help="Early-stop when val MSE < this threshold  (default: 0.001)")
     p.add_argument("--seed",       type=int,   default=42,
                    help="Random seed  (default: 42)")
-    return p.parse_args()
+    args = p.parse_args()
+
+    # Apply profile defaults (before hard-coded fallbacks below)
+    if args.profile:
+        profile = _load_profile(args.profile)
+        _apply_profile(args, profile)
+        print(f"[Profile] Loaded: {args.profile}")
+        if "name" in profile:
+            print(f"[Profile] Name: {profile['name']}")
+        if "description" in profile:
+            print(f"[Profile] {profile['description']}")
+
+    # Hard-coded fallbacks (after profile, before returning)
+    if args.data_dir   is None: args.data_dir   = "stage1_dumps"
+    if args.out_dir    is None: args.out_dir    = "stage1_model"
+    if args.epochs     is None: args.epochs     = 200
+    if args.batch_size is None: args.batch_size = 4096
+    if args.lr         is None: args.lr         = 1e-3
+    if args.target_mse is None: args.target_mse = 0.001
+
+    return args
 
 
 def main():
