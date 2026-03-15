@@ -25,12 +25,22 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-# Determine the project root as the directory two levels above this module.
-# During the big refactor the package directory (VoxelTree/VoxelTree) was added, so
-# ``parent.parent`` pointed inside the package instead of the workspace root.  By
-# using ``parents[2]`` we correctly locate the repo root regardless of whether the
-# code is executed from the source tree or an installed package.
-_PROJECT_ROOT = Path(__file__).resolve().parents[2]
+# Determine the project root by walking up from this module until we find
+# a repository marker (pyproject.toml or .git). This works correctly both when
+# running from the source tree and when installed in editable/packaged mode.
+#
+# This is important because the code lives under ``VoxelTree/VoxelTree/`` when
+# checking out the repo, but the repo root (where ``profiles/`` and ``runs/``
+# live) is one level above that.
+
+def _find_project_root(start: Path) -> Path:
+    for ancestor in [start] + list(start.parents):
+        if (ancestor / "pyproject.toml").exists() or (ancestor / ".git").exists():
+            return ancestor
+    return start
+
+
+_PROJECT_ROOT = _find_project_root(Path(__file__).resolve().parent)
 _PROFILES_DIR = _PROJECT_ROOT / "profiles"
 _RUNS_DIR = _PROJECT_ROOT / "runs"
 
@@ -261,6 +271,7 @@ class ProfileEditorDialog(QDialog):
         self._fields: dict[str, QWidget] = {}
         # Per-profile DAG (None = user has not edited it; kept in sync with _data)
         from VoxelTree.gui.dag_definition import ProfileDag  # late to avoid circular
+
         self._dag: ProfileDag | None = ProfileDag.from_profile_dict(self._data)
         self._build_ui()
 
@@ -366,9 +377,7 @@ class ProfileEditorDialog(QDialog):
         dag_v = QVBoxLayout(dag_box)
         dag_v.setSpacing(6)
         self._dag_summary_label = QLabel()
-        self._dag_summary_label.setStyleSheet(
-            "color: #7799bb; font-size: 10px; padding: 2px 0;"
-        )
+        self._dag_summary_label.setStyleSheet("color: #7799bb; font-size: 10px; padding: 2px 0;")
         self._dag_summary_label.setWordWrap(True)
         dag_v.addWidget(self._dag_summary_label)
         edit_dag_btn = QPushButton("Edit Pipeline DAG…")
@@ -533,8 +542,11 @@ class ProfileEditorDialog(QDialog):
         from VoxelTree.gui.dag_editor_dialog import DagEditorDialog
 
         # Use current edited dag, or build a default one if not yet set
-        current_dag = self._dag if (self._dag is not None and not self._dag.is_empty) \
+        current_dag = (
+            self._dag
+            if (self._dag is not None and not self._dag.is_empty)
             else ProfileDag.default()
+        )
         dlg = DagEditorDialog(
             profile_name=str(self._data.get("name", "?")),
             dag=current_dag,

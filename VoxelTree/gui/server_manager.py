@@ -21,7 +21,27 @@ from pathlib import Path
 
 from PySide6.QtCore import QObject, QProcess, QTimer, Signal, Slot
 
-_TOOLS_DIR = Path(__file__).resolve().parent.parent / "tools" / "fabric-server"
+
+def _find_fabric_tools_dir() -> Path:
+    """Find the repository's tools/fabric-server directory.
+
+    The GUI may be executed from an installed package or directly from the repo.
+    Walk up the parent chain looking for a `tools/fabric-server` directory and
+    return the first match.
+    """
+
+    cur = Path(__file__).resolve()
+    for _ in range(6):
+        candidate = cur.parent / "tools" / "fabric-server"
+        if candidate.exists():
+            return candidate
+        cur = cur.parent
+
+    # Fallback (best-effort): assume repo root is two levels up.
+    return Path(__file__).resolve().parents[2] / "tools" / "fabric-server"
+
+
+_TOOLS_DIR = _find_fabric_tools_dir()
 _RUNTIME_DIR = _TOOLS_DIR / "runtime"
 
 # Locate the server JAR in tools/fabric-server (not inside runtime/)
@@ -128,7 +148,8 @@ class ServerManager(QObject):
         if not _JAR_PATH or not _JAR_PATH.exists():
             self.log_line.emit(
                 f"[Server] ERROR: Server JAR not found in {_TOOLS_DIR}\n"
-                "Expected: tools/fabric-server/fabric-server-mc.*.jar"
+                "Expected: tools/fabric-server/fabric-server-mc.*.jar\n"
+                "Tip: run the Fabric installer (or ensure the jar is checked out/copied into tools/fabric-server)."
             )
             return
         if not _RUNTIME_DIR.exists():
@@ -175,19 +196,54 @@ class ServerManager(QObject):
         self._stop_timer.start()
 
     # ------------------------------------------------------------------
+    # Compatibility helpers
+    # ------------------------------------------------------------------
+
+    def stop_server(self) -> None:
+        """Legacy alias for :meth:`stop` kept for backwards compatibility."""
+        self.stop()
+
+    def start_server(self) -> None:
+        """Legacy alias for :meth:`start` kept for backwards compatibility."""
+        self.start()
+
+    def start_session(self, profile_name: str, steps: list[tuple[str, str]]) -> None:
+        """Start a 'server session'.
+
+        This method is invoked by the GUI but the session orchestration is
+        currently handled elsewhere; this implementation ensures the server is
+        running and avoids AttributeError crashes.
+        """
+        # Ensure the server is started before attempting any profile-specific
+        # actions. The GUI will drive step execution via other components.
+        self.start()
+
+    # ------------------------------------------------------------------
     # Private slots
     # ------------------------------------------------------------------
 
     @Slot()
     def _on_stdout(self) -> None:
-        raw = self._process.readAllStandardOutput().data().decode("utf-8", errors="replace")
+        raw_bytes = self._process.readAllStandardOutput().data()
+        if isinstance(raw_bytes, memoryview):
+            raw = bytes(raw_bytes).decode("utf-8", errors="replace")
+        elif isinstance(raw_bytes, (bytes, bytearray)):
+            raw = raw_bytes.decode("utf-8", errors="replace")
+        else:
+            raw = str(raw_bytes)
         for line in raw.splitlines():
             if line.strip():
                 self.log_line.emit(line)
 
     @Slot()
     def _on_stderr(self) -> None:
-        raw = self._process.readAllStandardError().data().decode("utf-8", errors="replace")
+        raw_bytes = self._process.readAllStandardError().data()
+        if isinstance(raw_bytes, memoryview):
+            raw = bytes(raw_bytes).decode("utf-8", errors="replace")
+        elif isinstance(raw_bytes, (bytes, bytearray)):
+            raw = raw_bytes.decode("utf-8", errors="replace")
+        else:
+            raw = str(raw_bytes)
         for line in raw.splitlines():
             if line.strip():
                 self.log_line.emit(line)

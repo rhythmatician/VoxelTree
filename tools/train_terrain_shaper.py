@@ -24,7 +24,6 @@ import torch.optim as optim
 from torch.utils.data import TensorDataset, DataLoader
 from pathlib import Path
 import json
-from typing import cast
 
 # ============================================================================
 # Minecraft CubicSpline — exact port of CubicSpline.java (Multipoint + Constant)
@@ -578,8 +577,8 @@ def generate_training_data(num_samples=500_000):
     print("\nOutput ranges:")
     for j, name in enumerate(("offset", "factor", "jaggedness")):
         print(
-            f"  {name}: [{outputs[:,j].min():.4f}, {outputs[:,j].max():.4f}]  "
-            f"mean={outputs[:,j].mean():.4f}  std={outputs[:,j].std():.4f}"
+            f"  {name}: [{outputs[:, j].min():.4f}, {outputs[:, j].max():.4f}]  "
+            f"mean={outputs[:, j].mean():.4f}  std={outputs[:, j].std():.4f}"
         )
 
     return torch.from_numpy(inputs), torch.from_numpy(outputs)
@@ -754,30 +753,57 @@ def train_model(
 def export_onnx(model, output_path):
     """Export the trained model as ONNX."""
     dummy_input = torch.randn(1, 4, dtype=torch.float32)
-    try:
-        traced = cast(torch.jit.ScriptModule, torch.jit.trace(model, dummy_input))
+
+    # Ensure human-readable prints don't fail on Windows consoles with limited encodings.
+    reconfigure = getattr(sys.stdout, "reconfigure", None)
+    if callable(reconfigure):
+        reconfigure(encoding="utf-8", errors="replace")
+
+    # Export should be done in eval mode to avoid training-time behavior (dropout, etc.).
+    model.eval()
+
+    def _try_export(obj):
         torch.onnx.export(
-            traced,
+            obj,
             (dummy_input,),
             output_path,
             input_names=["input"],
             output_names=["output"],
-            opset_version=11,
+            opset_version=18,
             do_constant_folding=False,
+            export_params=True,
         )
+
+    try:
+        # Prefer exporting the raw nn.Module rather than tracing to a ScriptModule.
+        _try_export(model)
         print(f"ONNX model exported to {output_path}")
+        return
     except Exception as e1:
+        # PyTorch 2.x may require converting ScriptModule to ExportedProgram
+        if "Exporting a ScriptModule is not supported" in str(e1):
+            try:
+                from torch.export import TS2EPConverter  # type: ignore[attr-defined]
+
+                ep = TS2EPConverter(model, (dummy_input,)).convert()
+                _try_export(ep)
+                print(f"ONNX model (via ExportedProgram) exported to {output_path}")
+                return
+            except Exception as e2:
+                print(f"ONNX export via ExportedProgram also failed: {e2}")
+
         print(f"ONNX export failed: {e1}")
-        checkpoint_path = output_path.replace(".onnx", ".pth")
-        torch.save(
-            {
-                "model_state_dict": model.state_dict(),
-                "model_class": "TerrainShaperMLP",
-                "hidden_size": 128,
-            },
-            checkpoint_path,
-        )
-        print(f"PyTorch checkpoint saved to {checkpoint_path}")
+
+    checkpoint_path = output_path.replace(".onnx", ".pth")
+    torch.save(
+        {
+            "model_state_dict": model.state_dict(),
+            "model_class": "TerrainShaperMLP",
+            "hidden_size": 128,
+        },
+        checkpoint_path,
+    )
+    print(f"PyTorch checkpoint saved to {checkpoint_path}")
 
 
 class _Tee:
@@ -822,7 +848,20 @@ def _main():
 
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "--fresh", action="store_true", help="Ignore existing checkpoint and start over"
+        "--fresh",
+        action="store_true",
+        help="Ignore existing checkpoint and start over",
+    )
+    parser.add_argument(
+        "--export-only",
+        action="store_true",
+        help="Skip training and export ONNX from the existing checkpoint",
+    )
+    parser.add_argument(
+        "--onnx-path",
+        type=str,
+        default=None,
+        help="Path to write the exported ONNX model (default is the standard output path)",
     )
     args, _ = parser.parse_known_args()
 
@@ -836,6 +875,35 @@ def _main():
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
+
+    model = TerrainShaperMLP(hidden_size=128).to(device)
+
+    # If the user only wants to export the ONNX model, load weights from checkpoint
+    # and skip the expensive training procedure.
+    if args.export_only:
+        if not checkpoint_path.exists():
+            raise SystemExit(
+                f"No checkpoint found at {checkpoint_path}; cannot export without training."
+            )
+        print(f"Loading checkpoint from {checkpoint_path} for ONNX export...")
+        ckpt = torch.load(checkpoint_path, weights_only=False)
+        model.load_state_dict(ckpt["model_state"])
+
+        output_dir = (
+            Path(__file__).parent.parent
+            / "src"
+            / "main"
+            / "resources"
+            / "assets"
+            / "lodiffusion"
+            / "models"
+        )
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        onnx_path = Path(args.onnx_path) if args.onnx_path else output_dir / "terrain_shaper.onnx"
+        model.cpu()
+        export_onnx(model, str(onnx_path))
+        return
 
     inputs, outputs = generate_training_data(num_samples=500_000)
 
@@ -851,8 +919,6 @@ def _main():
         TensorDataset(train_inputs, train_outputs), batch_size=4096, shuffle=True
     )
     val_loader = DataLoader(TensorDataset(val_inputs, val_outputs), batch_size=4096, shuffle=False)
-
-    model = TerrainShaperMLP(hidden_size=128).to(device)
 
     train_loader = [(bx.to(device), by.to(device)) for bx, by in train_loader]
     val_loader = [(bx.to(device), by.to(device)) for bx, by in val_loader]

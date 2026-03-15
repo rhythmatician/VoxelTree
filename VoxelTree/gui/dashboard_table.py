@@ -77,6 +77,17 @@ class DashboardTable(QWidget):
         )
         new_btn.clicked.connect(self.new_profile_requested)
         t_layout.addWidget(new_btn)
+
+        refresh_btn = QPushButton("↻ Refresh")
+        refresh_btn.setFixedWidth(110)
+        refresh_btn.setStyleSheet(
+            "QPushButton { background: #2e5a6e; color: #cce0ff; border: 1px solid #4a7abf; "
+            "border-radius: 4px; padding: 4px 10px; font-weight: bold; } "
+            "QPushButton:hover { background: #3a7a9e; }"
+        )
+        refresh_btn.clicked.connect(self.refresh_all)
+        t_layout.addWidget(refresh_btn)
+
         t_layout.addStretch()
 
         root.addWidget(toolbar)
@@ -119,9 +130,7 @@ class DashboardTable(QWidget):
         self._rows_layout.insertWidget(count - 1, row)
         self._rows[profile_name] = row
 
-    def update_profile_steps(
-        self, profile_name: str, steps: list[StepDef] | None
-    ) -> None:
+    def update_profile_steps(self, profile_name: str, steps: list[StepDef] | None) -> None:
         """Replace the step list for an already-loaded profile row.
 
         This rebuilds the row widget in place so that the new DAG topology
@@ -154,3 +163,18 @@ class DashboardTable(QWidget):
 
     def profile_names(self) -> list[str]:
         return list(self._rows.keys())
+
+    # ------------------------------------------------------------------
+    # Compatibility helpers
+    # ------------------------------------------------------------------
+
+    def set_step_queue(self, queue: list[tuple[str, str]]) -> None:
+        """Compatibility stub: store queued server steps for future use."""
+        # This GUI currently doesn't display the queue; keep it for possible
+        # future use and to avoid crashes when callers invoke it.
+        self._step_queue = queue
+
+    def set_server_status(self, status: str) -> None:
+        """Compatibility stub: record last server status."""
+        # No-op (server status is already shown in the ServerStatusBar)
+        self._server_status = status

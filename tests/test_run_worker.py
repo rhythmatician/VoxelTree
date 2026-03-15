@@ -57,7 +57,7 @@ def test_progress_signal_parsed(monkeypatch):
     worker = run_worker.RunWorker("step1", ["dummy"])
     received: list[tuple[str, float]] = []
     worker.progress.connect(lambda sid, frac: received.append((sid, frac)))
-    worker.log_line.connect(lambda _l: None)
+    worker.log_line.connect(lambda _sid, _l: None)
     worker.step_finished.connect(lambda _sid, _code: None)
 
     worker.run()  # call directly instead of start() to stay in same thread

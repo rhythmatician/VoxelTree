@@ -24,7 +24,7 @@ class RunWorker(QThread):
         Carries (step_id, exit_code).  exit_code == -2 means cancelled.
     """
 
-    log_line: Signal = Signal(str)
+    log_line: Signal = Signal(str, str)
     step_started: Signal = Signal(str)
     step_finished: Signal = Signal(str, int)
     # progress fraction (0.0–1.0) updated during a run; emitted when a recognisable
@@ -72,7 +72,7 @@ class RunWorker(QThread):
                 # strip both newline and carriage return so regex works on
                 # lines that use '\r' for in-place updates
                 stripped = line.rstrip("\r\n")
-                self.log_line.emit(stripped)
+                self.log_line.emit(self.step_id, stripped)
                 # scan for a percentage anywhere in the line
                 m = self._PROGRESS_RE.search(stripped)
                 if m:
@@ -85,7 +85,7 @@ class RunWorker(QThread):
             self._proc.wait()
             exit_code = -2 if self._cancelled else self._proc.returncode
         except Exception as exc:  # noqa: BLE001
-            self.log_line.emit(f"[RunWorker error] {exc}")
+            self.log_line.emit(self.step_id, f"[RunWorker error] {exc}")
             exit_code = -1
 
         self.step_finished.emit(self.step_id, exit_code)

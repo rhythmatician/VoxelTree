@@ -25,22 +25,25 @@ from typing import Any, Literal
 
 import numpy as np
 
-from VoxelTree.gui.step_definitions import (ACTIVE_STEPS, PIPELINE_STEPS,
-                                            STEP_BY_ID)
+from VoxelTree.gui.step_definitions import ACTIVE_STEPS, PIPELINE_STEPS, STEP_BY_ID
 
 StepStatus = Literal["not_run", "running", "success", "failed"]
 
-# During the previous refactor the package directory got a second nesting level
-# (``VoxelTree/VoxelTree``).  The old ``parent.parent`` expression therefore
-# pointed inside the installed package instead of the project root.  As a
-# result the GUI was reading/writing run_state.json files under
-# ``.../VoxelTree/VoxelTree/runs`` while the CLI and other tools used the
-# top-level ``.../VoxelTree/runs`` directory.  The mismatch caused the
-# dashboard to show every step as ``not_run``.
+# When running from the repo tree the code lives in ``VoxelTree/VoxelTree``.
+# When installed, the package could be in a different location.  We therefore
+# search upward from the current module until we find a repo marker (pyproject
+# or .git) and treat that directory as the project root.
 #
-# We now mirror the logic used by ``profile_editor`` to locate the project
-# root reliably: climb two parent levels from this file.
-_RUNS_ROOT = Path(__file__).resolve().parents[2] / "runs"
+# This keeps the GUI in sync with the CLI and other tools which all expect
+# run state to live under ``<repo_root>/runs``.
+
+def _find_project_root(start: Path) -> Path:
+    for ancestor in [start] + list(start.parents):
+        if (ancestor / "pyproject.toml").exists() or (ancestor / ".git").exists():
+            return ancestor
+    return start
+
+_RUNS_ROOT = _find_project_root(Path(__file__).resolve().parent) / "runs"
 
 
 def _now_iso() -> str:
@@ -88,6 +91,30 @@ class RunRegistry:
     def reload(self) -> None:
         """Re-read from disk (useful when switching profiles)."""
         self._load()
+        # Also reconcile against the profile YAML so that externally-generated
+        # outputs (e.g. noise_dumps) can be detected and reflected in the UI.
+        profile = self._load_profile_yaml()
+        if profile:
+            self.reconcile_with_profile(profile)
+
+    def _load_profile_yaml(self) -> dict:
+        """Load the profile YAML for this registry (returns empty dict if missing)."""
+        try:
+            import yaml
+        except ImportError:
+            return {}
+
+        from pathlib import Path
+
+        profiles_dir = Path(__file__).resolve().parents[2] / "profiles"
+        path = profiles_dir / f"{self.profile_name}.yaml"
+        if not path.exists():
+            return {}
+        try:
+            with open(path, encoding="utf-8") as f:
+                return yaml.safe_load(f) or {}
+        except Exception:
+            return {}
 
     # ------------------------------------------------------------------
     # State reconciliation helpers
@@ -141,14 +168,19 @@ class RunRegistry:
             _set_success("voxy_import")
 
             # column heights if any file already contains the feature
+            # (avoid loading many large npz files on the UI thread)
+            max_checks = 20
+            checked = 0
             for npz_path in data_dir.glob("level_*/*.npz"):
+                if checked >= max_checks:
+                    break
+                checked += 1
                 try:
-                    arr = np.load(npz_path)
-                    if "heightmap32" in arr:
-                        _set_success("column_heights")
-                        arr.close()
-                        break
-                    arr.close()
+                    # Use mmap_mode to avoid reading large arrays into memory.
+                    with np.load(npz_path, mmap_mode="r") as arr:
+                        if "heightmap32" in getattr(arr, "files", []):
+                            _set_success("column_heights")
+                            break
                 except Exception:
                     continue
 
@@ -299,8 +331,7 @@ class RunRegistry:
         self.save()
 
     def set_progress(self, step_id: str, fraction: float | None) -> None:
-        """Convenience wrapper for :meth:`set_metadata` using key ``'progress'``.
-        """
+        """Convenience wrapper for :meth:`set_metadata` using key ``'progress'``."""
         self.set_metadata(step_id, "progress", fraction)
 
     def reset_from(self, step_id: str) -> None:

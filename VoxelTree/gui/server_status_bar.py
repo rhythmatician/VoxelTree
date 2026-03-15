@@ -102,6 +102,7 @@ class ServerStatusBar(QWidget):
             "QPushButton:disabled { background:#2a2a2a; color:#555; }"
         )
 
+        # Layout the widgets
         for w in (
             self._dot,
             self._status_lbl,
@@ -112,6 +113,13 @@ class ServerStatusBar(QWidget):
             self._session_btn,
         ):
             layout.addWidget(w)
+
+        # Show a short live log snippet (useful when the detail panel is hidden)
+        self._log_msg_lbl = QLabel("")
+        self._log_msg_lbl.setStyleSheet("color: #aaa; font-size: 10px;")
+        self._log_msg_lbl.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        layout.addWidget(self._log_msg_lbl)
+
         layout.addStretch()
 
         self.setStyleSheet("background:#1e1e1e; border-bottom:1px solid #333;")
@@ -165,6 +173,14 @@ class ServerStatusBar(QWidget):
             self._session_btn.setText(f"▶ Run Server Steps  [{self._active_profile}]")
         else:
             self._session_btn.setText("Run Server Steps  (select a profile)")
+
+    def append_log(self, line: str) -> None:
+        """Show a short snippet of the latest server log in the status bar."""
+        max_len = 120
+        if len(line) > max_len:
+            line = line[: max_len - 3] + "..."
+        self._log_msg_lbl.setText(line)
+        self._log_msg_lbl.setToolTip(line)
 
 
 class _Sep(QLabel):

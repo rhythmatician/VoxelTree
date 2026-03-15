@@ -81,6 +81,18 @@ from pathlib import Path
 
 from VoxelTree.preprocessing.rcon import RconClient, RconError
 
+
+def _safe_unicode(char: str, fallback: str) -> str:
+    """Return *char* if stdout encoding supports it, else return *fallback*."""
+
+    encoding = getattr(sys.stdout, "encoding", None) or "utf-8"
+    try:
+        char.encode(encoding)
+        return char
+    except Exception:
+        return fallback
+
+
 # Path anchors — cli.py lives at VoxelTree/preprocessing/
 _PREPROCESSING_DIR = Path(__file__).resolve().parent  # VoxelTree/preprocessing/
 _PKG_DIR = _PREPROCESSING_DIR.parent  # VoxelTree/
@@ -186,7 +198,8 @@ def _run_commands(
                 print(f"  > {cmd}")
                 print(f"    {status}")
             else:
-                tick = "✓" if status != "(no response)" or "Error" not in status else "✗"
+                ok = status != "(no response)" or "Error" not in status
+                tick = _safe_unicode("✓", "[OK]") if ok else _safe_unicode("✗", "[FAIL]")
                 print(f"  {tick}  {desc}")
 
 
@@ -352,7 +365,15 @@ def cmd_dumpnoise(cfg: PipelineConfig) -> None:
 
     with RconClient(cfg.host, cfg.port, cfg.password) as rcon:
         resp = rcon.command(cmd_str)
-        print(f"  Server response: {resp.strip() or '(no response)'}")
+        # Some server responses contain unicode characters (e.g. arrows) which
+        # may not be representable in the default Windows console encoding.
+        resp_text = resp.strip() or "(no response)"
+        try:
+            enc = getattr(sys.stdout, "encoding", None) or "utf-8"
+            resp_text = resp_text.encode(enc, errors="replace").decode(enc)
+        except Exception:
+            resp_text = resp_text.encode("utf-8", errors="replace").decode("utf-8")
+        print(f"  Server response: {resp_text}")
 
         # /dumpnoise runs on a worker thread — poll for the "Done" message.
         timeout = cfg.voxy_import_timeout  # reuse the same timeout
@@ -494,7 +515,7 @@ def _check_prerequisites(from_step: str, args: argparse.Namespace) -> bool:
             print("  Expected: <saves>/<world>/voxy/<hash>/storage/")
             print("  Did pregen + voxy-import complete?")
             return False
-        print(f"  ✓ Found {len(dbs)} Voxy database(s)")
+        print(f"  {_safe_unicode('✓', '[OK]')} Found {len(dbs)} Voxy database(s)")
 
     # column-heights-octree → evidence that extract-octree ran AND noise dumps exist
     if from_step == "column-heights-octree":
@@ -512,7 +533,7 @@ def _check_prerequisites(from_step: str, args: argparse.Namespace) -> bool:
         if total_npz == 0:
             print(f"ERROR: No NPZ files in level_N/ directories under {data_dir}")
             return False
-        print(f"  ✓ {total_npz:,} octree NPZ files across level_N/ directories")
+        print(f"  {_safe_unicode('✓', '[OK]')} {total_npz:,} octree NPZ files across level_N/ directories")
 
         noise_dump_dir = getattr(args, "noise_dump_dir", DEFAULT_NOISE_DUMP_DIR)
         jsons = list(noise_dump_dir.glob("chunk_*.json")) if noise_dump_dir.is_dir() else []
@@ -520,7 +541,7 @@ def _check_prerequisites(from_step: str, args: argparse.Namespace) -> bool:
             print(f"ERROR: No noise dump JSON files in {noise_dump_dir}")
             print("  Run:  python data-cli.py dataprep --from-step dumpnoise ...")
             return False
-        print(f"  ✓ {len(jsons):,} noise dump JSON file(s)")
+        print(f"  {_safe_unicode('✓', '[OK]')} {len(jsons):,} noise dump JSON file(s)")
 
     # build-pairs → evidence that column-heights ran: heightmap_surface arrays
     if from_step == "build-pairs":
@@ -535,7 +556,7 @@ def _check_prerequisites(from_step: str, args: argparse.Namespace) -> bool:
                 print(f"  - {f.name}")
             print("  Run: python data-cli.py dataprep --from-step column-heights ...")
             return False
-        print("  ✓ NPZ files have heightmap_surface")
+        print(f"  {_safe_unicode('✓', '[OK]')} NPZ files have heightmap_surface")
 
     # build-octree-pairs → evidence that column-heights-octree ran: heightmap32 arrays
     if from_step == "build-octree-pairs":
@@ -560,7 +581,7 @@ def _check_prerequisites(from_step: str, args: argparse.Namespace) -> bool:
         if not sample_found:
             print(f"ERROR: No octree NPZ files found in {data_dir}")
             return False
-        print("  ✓ Octree NPZ files have heightmap32")
+        print(f"  {_safe_unicode('✓', '[OK]')} Octree NPZ files have heightmap32")
 
     return True
 

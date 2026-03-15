@@ -2,6 +2,8 @@
 
 Detailed specification of input/output tensor shapes, data types, and generation strategies for the three parallel Phase 1 feature networks.
 
+**NOTE (March 14, 2026):** This document describes **Phase 1A/B/C**, which learn from upstream Perlin noise to predict the 7 terrain-shaping features. This is **distinct** from **Stage1 Density**, which directly learns the 12 finaldensity computation inputs (see [MINECRAFT_TERRAIN_DAG_COMPLETE.md § 2.1.1](MINECRAFT_TERRAIN_DAG_COMPLETE.md)). Both approaches are valid; this doc focuses on the first strategy.
+
 ---
 
 ## Overview

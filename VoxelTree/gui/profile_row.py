@@ -103,9 +103,7 @@ class ProfileRow(QWidget):
         layout.addSpacing(8)
 
         # DAG nodes container — use per-profile steps if provided, else global list
-        all_steps: list[StepDef] = (
-            self._steps if self._steps is not None else list(PIPELINE_STEPS)
-        )
+        all_steps: list[StepDef] = self._steps if self._steps is not None else list(PIPELINE_STEPS)
         self._nodes_container = _NodesWidget(self)
         self._nodes_container.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
 
@@ -153,8 +151,10 @@ class ProfileRow(QWidget):
         layout.addWidget(del_btn)
 
     def _on_node_clicked(self, step_id: str) -> None:
-        if step_id in self._runnable_steps:
-            self.node_clicked.emit(self.profile_name, step_id)
+        # Always emit clicks (even if the step is not currently marked runnable),
+        # so users can re-run steps or see logs even when the DAG isn't in a
+        # runnable state.
+        self.node_clicked.emit(self.profile_name, step_id)
 
     def _on_node_contextmenu(self, step_id: str, global_pos) -> None:
         """Build and display the per-step context menu when a node is right-clicked."""

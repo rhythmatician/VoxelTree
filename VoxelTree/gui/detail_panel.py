@@ -291,9 +291,22 @@ class DetailPanel(QDockWidget):
         worker.start()
         self._poll_timer.start()
 
-    @Slot(str)
-    def _on_log_line(self, line: str) -> None:
+    @Slot(str, str)
+    def _on_log_line(self, step_id: str, line: str) -> None:
+        # Forward the raw log output to the log panel
         self.append_log(line)
+
+        # Tight coupling: allow certain common training scripts to drive GUI metadata
+        # (epoch count) so their nodes can show progress/epoch info.
+        # We avoid hard dependency on specific training scripts by looking for
+        # generic patterns like "Epoch 5/20".
+        if self._registry and self._registry.get_status(step_id) == "running":
+            import re
+
+            m = re.search(r"Epoch\s+(\d+)[/\\](\d+)", line)
+            if m:
+                epoch = int(m.group(1))
+                self._registry.set_metadata(step_id, "epochs_completed", epoch)
 
     @Slot(str, int)
     def _on_step_finished(self, step_id: str, exit_code: int) -> None:

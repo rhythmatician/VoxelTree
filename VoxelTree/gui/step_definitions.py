@@ -358,6 +358,28 @@ def _extract_stage1_weights_cmd(p: dict) -> list[str]:
     return cmd
 
 
+def _distill_density_cmd(p: dict) -> list[str]:
+    train = p.get("train", {})
+    distill = p.get("distill", {})
+    cmd = [
+        _python(),
+        "scripts/distill_density_nn.py",
+        "--teacher",
+        str(distill.get("teacher", "unet")),
+        "--student",
+        str(distill.get("student", "sep")),
+        "--epochs",
+        str(distill.get("epochs", 120)),
+        "--alpha",
+        str(distill.get("alpha", 0.5)),
+        "--lr",
+        str(distill.get("lr", 2e-3)),
+        "--device",
+        str(train.get("device", "auto")),
+    ]
+    return cmd
+
+
 # Future loopback stubs (enabled=False → rendered faded, not clickable)
 def _reset_data_cmd(p: dict) -> list[str]:
     return ["echo", "[loopback] reset_data not yet implemented"]
@@ -406,6 +428,12 @@ PIPELINE_STEPS: list[StepDef] = [
         label="E1 Weights",
         prereqs=["train_stage1_density"],
         cmd_factory=_extract_stage1_weights_cmd,
+    ),
+    StepDef(
+        id="distill_density",
+        label="Distill",
+        prereqs=["train_stage1_density"],
+        cmd_factory=_distill_density_cmd,
     ),
     StepDef(
         id="extract_octree",

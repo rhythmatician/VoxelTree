@@ -13,6 +13,8 @@ VoxelTree/config/voxy_vocab.json
 VoxelTree/gui/__init__.py
 VoxelTree/gui/__main__.py
 VoxelTree/gui/app.py
+VoxelTree/gui/dag_definition.py
+VoxelTree/gui/dag_editor_dialog.py
 VoxelTree/gui/dashboard_table.py
 VoxelTree/gui/detail_panel.py
 VoxelTree/gui/main_window.py

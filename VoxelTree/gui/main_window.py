@@ -14,7 +14,7 @@ from VoxelTree.gui.detail_panel import DetailPanel
 from VoxelTree.gui.profile_editor import (
     ProfileDeleteDialog,
     ProfileEditorDialog,
-    delete_profile_data,
+    delete_profile,
     list_profiles,
     load_profile,
 )
@@ -59,6 +59,10 @@ class MainWindow(QMainWindow):
         self._profiles: dict[str, dict] = {}
         # Step queue for server session: list of (profile_name, step_id)
         self._step_queue: list[tuple[str, str]] = []
+        # Server session queue state (step IDs to run sequentially)
+        self._server_session_queue: list[str] = []
+        self._server_session_current: str | None = None
+        self._server_session_active = False
 
         print("[MW.init.4b] Creating ServerManager...", flush=True)
         self._server = ServerManager()
@@ -124,6 +128,10 @@ class MainWindow(QMainWindow):
         self._profiles[name] = data
         if name not in self._registries:
             self._registries[name] = RunRegistry(name)
+        # Reconcile registry state against on-disk artifacts (e.g. noise dumps) so
+        # the UI can show correct success statuses even if the user ran the CLI.
+        self._registries[name].reconcile_with_profile(data)
+
         # Resolve per-profile DAG if present, else pass None (→ global default)
         dag = ProfileDag.from_profile_dict(data)
         steps = dag.resolve_steps() if dag is not None else None
@@ -163,6 +171,8 @@ class MainWindow(QMainWindow):
                 self._load_profile(new_name)
             else:
                 self._profiles[profile_name] = load_profile(profile_name)
+                # Reconcile the registry so statuses reflect on-disk outputs
+                self._registries[profile_name].reconcile_with_profile(self._profiles[profile_name])
                 # Re-apply DAG in case the ``dag:`` section changed
                 data = self._profiles[profile_name]
                 dag = ProfileDag.from_profile_dict(data)
@@ -173,7 +183,7 @@ class MainWindow(QMainWindow):
     @Slot(str, str)
     def _on_delete_profile(self, profile_name: str, reason: str) -> None:
         if reason == "delete":
-            delete_profile_data(profile_name)
+            delete_profile(profile_name)
             self._dashboard.remove_profile(profile_name)
             self._profiles.pop(profile_name, None)
             self._registries.pop(profile_name, None)
@@ -195,7 +205,11 @@ class MainWindow(QMainWindow):
             self._on_run_server_session(profile_name)
             return
 
-        self._queue_append(profile_name, step_id)
+        # Open details and run the clicked step directly (rather than silently
+        # queuing it) so the user sees status/log output immediately.
+        self._on_details_clicked(profile_name)
+        if hasattr(self, "_detail") and self._detail:
+            self._detail.run_step(step_id)
 
     def _queue_append(self, profile_name: str, step_id: str) -> None:
         if step_id not in {"cancel", "run"}:
@@ -208,7 +222,20 @@ class MainWindow(QMainWindow):
 
     @Slot(str)
     def _on_server_log(self, line: str) -> None:
-        self._dashboard.add_log_line(line)
+        # Display server log output where the user will notice it.
+        # Primary target is the detail panel (when open), otherwise show a
+        # short snippet in the status bar and print to stdout.
+        if hasattr(self, "_detail") and self._detail.isVisible():
+            self._detail.append_log(line)
+        else:
+            print(line, flush=True)
+
+        if hasattr(self, "_server_bar"):
+            self._server_bar.append_log(line)
+
+        # Show critical errors to the user even if the log panel isn't visible.
+        if "[Server] ERROR" in line or "ERROR:" in line:
+            QMessageBox.critical(self, "Server Error", line)
 
     @Slot(str)
     def _on_server_status_changed(self, status: str) -> None:
@@ -218,14 +245,48 @@ class MainWindow(QMainWindow):
         if profile_name not in self._profiles:
             return
 
-        if not self._step_queue:
-            # run all required steps before finishing
-            self._step_queue.extend(
-                (profile_name, step_id) for step_id in _SERVER_SESSION_STEPS
-            )
+        # Ensure the Fabric server is running
+        self._server.start()
 
-        self._server.start_session(profile_name, self._step_queue)
+        # Load the detail panel for this profile (so we can run steps).
+        registry = self._registries.get(profile_name)
+        if registry:
+            self._detail.load_profile(profile_name, registry)
+
+        # Build the list of steps to run.  If the user hasn't queued any, run the
+        # full required server session.
+        if not self._step_queue:
+            self._step_queue.extend((profile_name, step_id) for step_id in _SERVER_SESSION_STEPS)
+
+        # Keep only steps for this profile (ignore others) and flatten to ids.
+        self._server_session_queue = [step_id for p, step_id in self._step_queue if p == profile_name]
+        self._step_queue.clear()
+        self._dashboard.set_step_queue(self._step_queue)
+
+        self._server_session_active = bool(self._server_session_queue)
+        self._run_next_server_session_step()
+
+    def _run_next_server_session_step(self) -> None:
+        if not self._server_session_queue:
+            self._server_session_active = False
+            self._server_session_current = None
+            return
+
+        next_step = self._server_session_queue.pop(0)
+        self._server_session_current = next_step
+        self._detail.run_from_step(next_step)
+
+    def on_step_finished(self, profile_name: str | None, step_id: str) -> None:
+        """Called by DetailPanel when a step completes."""
+        if not self._server_session_active:
+            return
+        if step_id != self._server_session_current:
+            return
+
+        # Continue to the next queued step.
+        self._run_next_server_session_step()
 
     def closeEvent(self, event) -> None:
-        self._server.stop_server()
+        # Ensure the Fabric server is stopped cleanly when the GUI exits.
+        self._server.stop()
         event.accept()
