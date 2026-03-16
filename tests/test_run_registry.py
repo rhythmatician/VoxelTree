@@ -13,11 +13,11 @@ from pathlib import Path
 
 import pytest  # noqa: E402
 
-from ..VoxelTree.gui import run_registry  # noqa: E402
+from VoxelTree.gui import run_registry
 
 # we only need the constant for the server‑session test
-from ..VoxelTree.gui.main_window import _SERVER_SESSION_STEPS
-from ..VoxelTree.gui.run_registry import RunRegistry
+from VoxelTree.gui.main_window import _SERVER_SESSION_STEPS
+from VoxelTree.gui.run_registry import RunRegistry
 
 
 def test_run_registry_persistence(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -109,7 +109,7 @@ def test_phase_export_and_deploy_args(monkeypatch, tmp_path):
     # patch the underlying script entrypoints that phase3_export/phase4_deploy
     # import dynamically
     monkeypatch.setattr("VoxelTree.scripts.octree.export.main", fake_export_main)
-    monkeypatch.setattr("VoxelTree.scripts.octree.deploy.main", fake_deploy_main)
+    monkeypatch.setattr("VoxelTree.scripts.deploy_models.main", fake_deploy_main)
 
     phase3 = __import__(
         "VoxelTree.preprocessing.pipeline", fromlist=["phase3_export"]

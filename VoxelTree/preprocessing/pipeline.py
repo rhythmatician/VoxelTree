@@ -172,7 +172,7 @@ def phase3_export(
         print("ERROR: Checkpoint directory not found: %s" % checkpoint_dir)
         return False
 
-    from VoxelTree.scripts.octree.export_octree import main as _export_main
+    from VoxelTree.scripts.octree.export import main as _export_main
 
     try:
         args_list: list[str] = ["--out-dir", str(export_dir)]

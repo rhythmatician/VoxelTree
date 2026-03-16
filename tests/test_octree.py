@@ -26,8 +26,8 @@ from typing import Any, Dict
 # The repo structure is: <repo>/VoxelTree/VoxelTree (package) and tests live in <repo>/VoxelTree/tests.
 ROOT = Path(__file__).resolve().parents[1]
 INTERNAL_PKG = ROOT / "VoxelTree"
-if str(INTERNAL_PKG) not in sys.path:
-    sys.path.insert(0, str(INTERNAL_PKG))
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 # If VoxelTree is loaded as a namespace package pointing to the outer folder,
 # patch its __path__ to include the real package directory so submodules can be found.
@@ -76,12 +76,12 @@ from VoxelTree.scripts.sparse_octree_targets import (
     child_occupancy_mask,
     iter_sparse_octree_nodes,
 )
-from VoxelTree.train.octree_dataset import (
+from VoxelTree.scripts.octree.dataset import (
     OctreeDataset,
     _model_type_for_level,
     collate_octree_batch,
 )
-from VoxelTree.train.octree_models import (
+from VoxelTree.scripts.octree.models import (
     OccGateModule,
     OccupancyHead,
     OctreeConfig,
@@ -90,7 +90,7 @@ from VoxelTree.train.octree_models import (
     create_leaf_model,
     create_refine_model,
 )
-from VoxelTree.VoxelTree.scripts.octree.train import (
+from VoxelTree.train.train import (
     OctreeLoss,
     _bitmask_to_binary,
     _prepare_targets,
@@ -1346,7 +1346,7 @@ class TestParentContextAblation:
     """Test parent_context_mode='embed'/'zeros'/'disabled' on refine + leaf."""
 
     def _refine_fwd(self, mode: str) -> Dict[str, torch.Tensor]:
-        from VoxelTree.train.octree_models import OctreeConfig, create_refine_model
+        from VoxelTree.scripts.octree.models import OctreeConfig, create_refine_model
 
         cfg = OctreeConfig(
             block_vocab_size=32,
@@ -1375,7 +1375,7 @@ class TestParentContextAblation:
             )
 
     def _leaf_fwd(self, mode: str) -> Dict[str, torch.Tensor]:
-        from VoxelTree.train.octree_models import OctreeConfig, create_leaf_model
+        from VoxelTree.scripts.octree.models import OctreeConfig, create_leaf_model
 
         cfg = OctreeConfig(
             block_vocab_size=32,
@@ -1431,7 +1431,7 @@ class TestParentContextAblation:
 
     def test_disabled_has_fewer_params(self) -> None:
         """Disabled mode should have fewer parameters than embed mode."""
-        from VoxelTree.train.octree_models import OctreeConfig, create_refine_model
+        from VoxelTree.scripts.octree.models import OctreeConfig, create_refine_model
 
         def _count(mode: str) -> int:
             cfg = OctreeConfig(
@@ -1454,7 +1454,7 @@ class TestParentContextAblation:
 
     def test_zeros_has_same_arch_as_embed(self) -> None:
         """Zeros mode uses same U-Net input channels as embed, just zero-filled."""
-        from VoxelTree.train.octree_models import OctreeConfig, create_refine_model
+        from VoxelTree.scripts.octree.models import OctreeConfig, create_refine_model
 
         cfg_embed = OctreeConfig(
             block_vocab_size=32,
@@ -1483,7 +1483,7 @@ class TestParentContextAblation:
 
     def test_embed_raises_without_parent(self) -> None:
         """In embed mode, calling without parent should raise ValueError."""
-        from VoxelTree.train.octree_models import OctreeConfig, create_refine_model
+        from VoxelTree.scripts.octree.models import OctreeConfig, create_refine_model
 
         cfg = OctreeConfig(
             block_vocab_size=32,
@@ -1565,20 +1565,20 @@ class TestParentEmbedDimCLI:
     """Test that parent_embed_dim is properly wired through config."""
 
     def test_config_stores_parent_embed_dim(self) -> None:
-        from VoxelTree.train.octree_models import OctreeConfig
+        from VoxelTree.scripts.octree.models import OctreeConfig
 
         cfg = OctreeConfig(parent_embed_dim=64)
         assert cfg.parent_embed_dim == 64
 
     def test_config_stores_parent_context_mode(self) -> None:
-        from VoxelTree.train.octree_models import OctreeConfig
+        from VoxelTree.scripts.octree.models import OctreeConfig
 
         cfg = OctreeConfig(parent_context_mode="zeros")
         assert cfg.parent_context_mode == "zeros"
 
     def test_refine_model_uses_config_dim(self) -> None:
         """Refine model U-Net input channels should reflect parent_embed_dim."""
-        from VoxelTree.train.octree_models import OctreeConfig, create_refine_model
+        from VoxelTree.scripts.octree.models import OctreeConfig, create_refine_model
 
         for dim in [4, 8, 32]:
             cfg = OctreeConfig(

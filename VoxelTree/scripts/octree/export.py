@@ -108,8 +108,8 @@ if "train" not in sys.modules:
     sys.modules["train"] = types.ModuleType("train")
 if "train.unet3d" not in sys.modules:
     mod = _LegacyShimModule("train.unet3d")
-    from VoxelTree.train.octree_models import OctreeConfig as UNet3DConfig
-    from VoxelTree.train.octree_models import UNet3D32 as UNet3D
+    from VoxelTree.scripts.octree.models import OctreeConfig as UNet3DConfig
+    from VoxelTree.scripts.octree.models import UNet3D32 as UNet3D
 
     mod.UNet3D = UNet3D  # type: ignore[attr-defined]
     mod.UNet3DConfig = UNet3DConfig  # type: ignore[attr-defined]

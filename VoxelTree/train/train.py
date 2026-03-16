@@ -39,8 +39,8 @@ from torch.utils.data import DataLoader, Subset
 from torchvision.ops import sigmoid_focal_loss
 from tqdm import tqdm
 
-from VoxelTree.train.octree_dataset import OctreeDataset, collate_octree_batch
-from VoxelTree.train.octree_models import (
+from VoxelTree.scripts.octree.dataset import OctreeDataset, collate_octree_batch
+from VoxelTree.scripts.octree.models import (
     OctreeConfig,
     OctreeInitModel,
     OctreeLeafModel,

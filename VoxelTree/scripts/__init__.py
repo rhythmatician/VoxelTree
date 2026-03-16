@@ -7,7 +7,7 @@ importing a heavy optional dependency at package load time. Import it
 directly: ``from VoxelTree.scripts.voxy_reader import VoxyReader``
 """
 
-from VoxelTree.scripts.build_octree_pairs import (
+from VoxelTree.scripts.octree.build_pairs import (
     build_section_index,
     child_coords_from_parent,
     extract_octant_and_upsample,

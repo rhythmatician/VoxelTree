@@ -8,7 +8,7 @@ L2 children needed to compute non_empty_children.
 
 from pathlib import Path
 
-from VoxelTree.scripts.build_octree_pairs import child_coords_from_parent
+from VoxelTree.scripts.octree.build_pairs import child_coords_from_parent
 
 
 def _copy_file(src: Path, dst: Path) -> None:

@@ -19,11 +19,11 @@ collate_octree_batch
     Collate function grouping samples by model type.
 """
 
-from VoxelTree.train.octree_dataset import (  # noqa: F401
+from VoxelTree.scripts.octree.dataset import (  # noqa: F401
     OctreeDataset,
     collate_octree_batch,
 )
-from VoxelTree.train.octree_models import (  # noqa: F401
+from VoxelTree.scripts.octree.models import (  # noqa: F401
     OctreeConfig,
     OctreeInitModel,
     OctreeLeafModel,

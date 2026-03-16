@@ -94,7 +94,7 @@ def test_load_checkpoint_with_old_module(tmp_path: Path):
 
     We create a dummy object whose ``__module__`` is set to the old path and
     include it in the checkpoint.  ``torch.load`` will then attempt to import
-    that module; the shim in ``export_octree`` should provide it.
+    that module; the compatibility shim in ``export`` should provide it.
     """
     import importlib
 
@@ -119,7 +119,7 @@ def test_load_checkpoint_with_old_module(tmp_path: Path):
     legacy_obj = FakeLegacy()
 
     # build a minimal checkpoint containing the fake object
-    from VoxelTree.train.octree_models import OctreeConfig
+    from VoxelTree.scripts.octree.models import OctreeConfig
 
     cfg = OctreeConfig()
     ckpt = {

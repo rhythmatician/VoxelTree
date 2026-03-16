@@ -91,7 +91,7 @@ def main(argv: list[str] | None = None) -> None:
         _main(rest)
 
     elif cmd == "build-pairs":
-        from VoxelTree.scripts.build_octree_pairs import main as _main
+        from VoxelTree.scripts.octree.build_pairs import main as _main
 
         _main(rest)
 
