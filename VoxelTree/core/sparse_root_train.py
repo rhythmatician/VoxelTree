@@ -74,9 +74,11 @@ class SparseRootDataset(Dataset):  # type: ignore[type-arg]
         for lvl, lvl_data in raw.items():
             split = (~lvl_data.is_leaf).astype(np.float32).reshape(-1)
             label = lvl_data.labels.astype(np.int64).reshape(-1)
+            is_leaf = lvl_data.is_leaf.astype(np.bool_).reshape(-1)
             targets[lvl] = {
                 "split": torch.from_numpy(split),
                 "label": torch.from_numpy(label),
+                "is_leaf": torch.from_numpy(is_leaf),
             }
         return targets
 
@@ -109,7 +111,8 @@ def sparse_root_collate(batch: List[Dict[str, Any]]) -> Dict[str, Any]:
     for lvl in levels:
         split = torch.stack([b["targets"][lvl]["split"] for b in batch], dim=0)  # [B,N]
         label = torch.stack([b["targets"][lvl]["label"] for b in batch], dim=0)  # [B,N]
-        targets[lvl] = {"split": split, "label": label}
+        is_leaf = torch.stack([b["targets"][lvl]["is_leaf"] for b in batch], dim=0)  # [B,N]
+        targets[lvl] = {"split": split, "label": label, "is_leaf": is_leaf}
 
     return {
         "noise_2d": noise_2d,
@@ -128,7 +131,7 @@ def _sparse_root_loss(
     preds: Dict[int, Dict[str, torch.Tensor]],
     targets: Dict[int, Dict[str, torch.Tensor]],
     split_weight: float = 1.0,
-    label_weight: float = 1.0,
+    label_weight: float = 0.35,
     level_split_weights: Optional[Dict[int, float]] = None,
     level_label_weights: Optional[Dict[int, float]] = None,
     label_smoothing: float = 0.0,
@@ -136,8 +139,9 @@ def _sparse_root_loss(
 ) -> torch.Tensor:
     """Per-level split (BCE) + leaf-label (CE) loss.
 
-    Label loss is applied at all positions; split nodes contribute 0 via
-    ``ignore_index=-1`` (split nodes carry label -1 from build_sparse_octree_targets).
+    Material/label CE is *explicitly* leaf-masked so only nodes with
+    ``split_target == 0`` contribute. This keeps optimization focused on
+    octree sparsity decisions first, then material labels at true leaves.
     """
     ce = nn.CrossEntropyLoss(ignore_index=-1, label_smoothing=label_smoothing)
 
@@ -169,17 +173,17 @@ def _sparse_root_loss(
                 bce = nn.BCEWithLogitsLoss()
             loss = loss + split_scale * bce(split_pred, split_tgt)
 
-        # CE ignores positions with label=-1 (split nodes) automatically.
-        # Guard against the all-ignored case (PyTorch returns NaN when every
-        # target equals ignore_index).
+        # Explicit leaf-only mask keeps material supervision restricted to
+        # split_target == 0. This remains robust even if future target writers
+        # stop encoding internal labels as -1.
         B, N, C = label_pred.shape
-        label_flat = label_tgt.reshape(B * N)
-        if (label_flat != -1).any():
+        if "is_leaf" in tgt:
+            leaf_mask = tgt["is_leaf"].to(device=device, dtype=torch.bool)
+        else:
+            leaf_mask = split_tgt < 0.5
+        if leaf_mask.any():
             label_scale = label_weight * level_label_weights.get(lvl, 1.0)
-            loss = loss + label_scale * ce(
-                label_pred.reshape(B * N, C),
-                label_flat,
-            )
+            loss = loss + label_scale * ce(label_pred[leaf_mask], label_tgt[leaf_mask])
 
     return loss
 
@@ -195,6 +199,64 @@ def _default_level_weights(max_level: int) -> tuple[Dict[int, float], Dict[int, 
     # No children exist below L0, so supervising split there only wastes capacity.
     split_weights[0] = 0.0
     return split_weights, label_weights
+
+
+def _update_batch_metrics(
+    preds: Dict[int, Dict[str, torch.Tensor]],
+    targets: Dict[int, Dict[str, torch.Tensor]],
+    accum: Dict[str, float],
+) -> None:
+    """Accumulate split-first metrics from one batch."""
+    for lvl, out in preds.items():
+        split_pred = out["split"] > 0
+        split_tgt = targets[lvl]["split"].to(split_pred.device) > 0.5
+
+        tp = (split_pred & split_tgt).sum().item()
+        tn = ((~split_pred) & (~split_tgt)).sum().item()
+        fp = (split_pred & (~split_tgt)).sum().item()
+        fn = ((~split_pred) & split_tgt).sum().item()
+        accum["split_tp"] += float(tp)
+        accum["split_tn"] += float(tn)
+        accum["split_fp"] += float(fp)
+        accum["split_fn"] += float(fn)
+
+        # Predicted/ground-truth node counts proxy complexity. A node is active
+        # when it is internal (split=1) or a leaf with material supervision.
+        pred_active = split_pred.numel() - split_pred.sum().item()
+        gt_active = split_tgt.numel() - split_tgt.sum().item()
+        accum["pred_leaf_nodes"] += float(pred_active)
+        accum["gt_leaf_nodes"] += float(gt_active)
+
+        label_pred = out["label"].argmax(dim=-1)
+        if "is_leaf" in targets[lvl]:
+            leaf_mask = targets[lvl]["is_leaf"].to(label_pred.device)
+        else:
+            leaf_mask = targets[lvl]["label"].to(label_pred.device) != -1
+        if leaf_mask.any():
+            label_tgt = targets[lvl]["label"].to(label_pred.device)
+            accum["leaf_total"] += float(leaf_mask.sum().item())
+            accum["leaf_correct"] += float((label_pred[leaf_mask] == label_tgt[leaf_mask]).sum().item())
+
+
+def _finalize_metrics(accum: Dict[str, float]) -> Dict[str, float]:
+    tp = accum["split_tp"]
+    tn = accum["split_tn"]
+    fp = accum["split_fp"]
+    fn = accum["split_fn"]
+    split_total = tp + tn + fp + fn
+    precision = tp / max(tp + fp, 1.0)
+    recall = tp / max(tp + fn, 1.0)
+    f1 = 2.0 * precision * recall / max(precision + recall, 1e-12)
+    return {
+        "split_acc": (tp + tn) / max(split_total, 1.0),
+        "split_precision": precision,
+        "split_recall": recall,
+        "split_f1": f1,
+        "split_over_rate": fp / max(fp + tn, 1.0),
+        "split_under_rate": fn / max(fn + tp, 1.0),
+        "leaf_acc": accum["leaf_correct"] / max(accum["leaf_total"], 1.0),
+        "leaf_node_ratio": accum["pred_leaf_nodes"] / max(accum["gt_leaf_nodes"], 1.0),
+    }
 
 
 def _build_model(
@@ -230,6 +292,8 @@ def train_sparse_root(
     device: str = "cpu",
     model_variant: str = "fast",
     cache_targets: bool = True,
+    split_weight: float = 1.0,
+    label_weight: float = 0.35,
     label_smoothing: float = 0.03,
     progress_callback: Optional[Callable[[int, int, Dict[str, float]], None]] = None,
 ) -> Dict[str, Any]:
@@ -274,6 +338,16 @@ def train_sparse_root(
         model.train()
         total_loss = 0.0
         total_batches = 0
+        metric_accum = {
+            "split_tp": 0.0,
+            "split_tn": 0.0,
+            "split_fp": 0.0,
+            "split_fn": 0.0,
+            "leaf_correct": 0.0,
+            "leaf_total": 0.0,
+            "pred_leaf_nodes": 0.0,
+            "gt_leaf_nodes": 0.0,
+        }
 
         for batch in loader:
             noise_2d = batch["noise_2d"].to(_device)
@@ -284,6 +358,8 @@ def train_sparse_root(
             loss = _sparse_root_loss(
                 preds,
                 batch["targets"],
+                split_weight=split_weight,
+                label_weight=label_weight,
                 level_split_weights=level_split_weights,
                 level_label_weights=level_label_weights,
                 label_smoothing=label_smoothing,
@@ -293,9 +369,11 @@ def train_sparse_root(
             optimizer.step()
             total_loss += float(loss.detach())
             total_batches += 1
+            _update_batch_metrics(preds, batch["targets"], metric_accum)
 
         avg_loss = total_loss / max(total_batches, 1)
         row = {"epoch": float(epoch), "loss": avg_loss}
+        row.update(_finalize_metrics(metric_accum))
         history.append(row)
 
         if avg_loss < best_loss:
