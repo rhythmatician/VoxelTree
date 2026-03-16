@@ -469,7 +469,7 @@ class TestBuildFunctionOutput:
 
         # fake section indices always non-empty
         monkeypatch.setattr(
-            "VoxelTree.scripts.octree.build_octree_pairs.build_section_index",
+            "VoxelTree.scripts.octree.build_pairs.build_section_index",
             lambda data_dir, level: {0: 1},
         )
 
@@ -489,13 +489,13 @@ class TestBuildFunctionOutput:
             ]
 
         monkeypatch.setattr(
-            "VoxelTree.scripts.octree.build_octree_pairs.build_pairs_for_level",
+            "VoxelTree.scripts.octree.build_pairs.build_pairs_for_level",
             fake_build_pairs_for_level,
         )
 
         # bypass actual NPZ writing
         monkeypatch.setattr(
-            "VoxelTree.scripts.octree.build_octree_pairs.stack_and_save",
+            "VoxelTree.scripts.octree.build_pairs.stack_and_save",
             lambda pairs, path: len(pairs),
         )
 

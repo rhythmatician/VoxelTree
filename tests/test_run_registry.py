@@ -8,11 +8,18 @@ registry must read and write JSON state files under the project root
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
-import pytest
+# Ensure we import the correct internal package when running tests from the repo root.
+ROOT = Path(__file__).resolve().parents[1]
+INTERNAL_PKG = ROOT / "VoxelTree"
+if str(INTERNAL_PKG) not in sys.path:
+    sys.path.insert(0, str(INTERNAL_PKG))
 
-from VoxelTree.gui import run_registry
+import pytest  # noqa: E402
+
+from VoxelTree.gui import run_registry  # noqa: E402
 
 # we only need the constant for the server‑session test
 from VoxelTree.gui.main_window import _SERVER_SESSION_STEPS

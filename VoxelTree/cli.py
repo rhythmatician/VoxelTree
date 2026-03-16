@@ -51,7 +51,7 @@ def main(argv: list[str] | None = None) -> None:
         _launch_gui()
 
     elif cmd == "train":
-        from VoxelTree.train.train_octree import main as _main
+        from VoxelTree.train.train import main as _main
 
         _main(rest)
 
@@ -96,12 +96,12 @@ def main(argv: list[str] | None = None) -> None:
         _main(rest)
 
     elif cmd == "export-onnx":
-        from VoxelTree.scripts.octree.export_octree import main as _main
+        from VoxelTree.scripts.octree.export import main as _main
 
         _main(rest)
 
     elif cmd == "deploy-models":
-        from VoxelTree.scripts.deploy_models import main as _main
+        from VoxelTree.scripts.deploy import main as _main
 
         _main(rest)
 

@@ -9,7 +9,7 @@ This shim re-exports the original implementation.
 
 from __future__ import annotations
 
-from VoxelTree.scripts.octree.build_octree_pairs import *  # noqa: F401,F403
+from VoxelTree.scripts.octree.build_pairs import *  # noqa: F401,F403
 
 __all__ = [
     # core helpers

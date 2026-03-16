@@ -96,7 +96,7 @@ def phase2_train(
         return None
     print("Training data: %s" % data_dir)
 
-    from VoxelTree.train.train_octree import main as _train_main
+    from VoxelTree.train.train import main as _train_main
 
     train_args = [
         "--data-dir",
