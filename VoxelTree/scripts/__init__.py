@@ -13,10 +13,22 @@ from VoxelTree.scripts.build_octree_pairs import (
     extract_octant_and_upsample,
     parent_coords_and_octant,
 )
+from .sparse_octree_targets import (
+    SparseOctreeLevel,
+    SparseOctreeNode,
+    build_sparse_octree_targets,
+    child_occupancy_mask,
+    iter_sparse_octree_nodes,
+)
 
 __all__ = [
+    "SparseOctreeLevel",
+    "SparseOctreeNode",
     "build_section_index",
+    "build_sparse_octree_targets",
     "child_coords_from_parent",
+    "child_occupancy_mask",
     "extract_octant_and_upsample",
+    "iter_sparse_octree_nodes",
     "parent_coords_and_octant",
 ]

@@ -8,7 +8,7 @@ column-height enrichment, and octree pair cache building.
 Canonical pipeline steps (run all, or start from any step):
   1) pregen              — RCON: freeze world + Chunky chunk generation
   2) voxy-import         — RCON: /voxy import world <name>
-  3) dumpnoise           — RCON: /dumpnoise <radius> → noise_dumps/*.json
+  3) dumpnoise           — RCON: /dumpnoise stage1 + sparse_root → all training formats
   4) extract-octree      — Voxy RocksDB → data/voxy_octree/level_N/*.npz
   5) column-heights-octree — Merge vanilla heightmaps from dumpnoise JSON into NPZs
   6) build-octree-pairs  — NPZ → octree training pair caches (*_octree_pairs.npz)
@@ -19,7 +19,7 @@ Steps logically group into three phases:
 
   WORLD & NOISE GENERATION (Steps 1–3):
     └─ RCON commands: freeze/pregen/dumpnoise
-    └─ Outputs: Voxy RocksDB + noise_dumps/*.json
+    └─ Outputs: Voxy RocksDB + stage1_dumps/*.json + sparse_root_dumps/*.json
     └─ Only needed if regenerating data or switching world seeds
 
   DATA EXTRACTION (Step 4):
@@ -303,7 +303,17 @@ def cmd_voxy_import(cfg: PipelineConfig) -> None:
 
     with RconClient(cfg.host, cfg.port, cfg.password) as rcon:
         resp = rcon.command(cmd_str)
-        print(f"  Server response: {resp.strip() or '(no response)'}")
+        resp_text = resp.strip() or "(no response)"
+        print(f"  Server response: {resp_text}")
+
+        if "unknown or incomplete" in resp_text.lower():
+            print(
+                "\n  ERROR: 'voxy' command is not available via RCON in this Voxy version."
+                "\n  Connect your Minecraft client to the server (localhost:25565) and run:"
+                f"\n    /voxy import world {world_name}"
+                "\n  Wait for Voxy to finish importing, then re-run extract-octree from the GUI."
+            )
+            sys.exit(1)
 
         # Poll for completion
         timeout = cfg.voxy_import_timeout
@@ -322,9 +332,18 @@ def cmd_voxy_import(cfg: PipelineConfig) -> None:
                 continue
             print(f"  [{time.strftime('%H:%M:%S')}] {status_text}")
             lower = status_text.lower()
-            if any(kw in lower for kw in ("complete", "done", "finished", "imported", "100%")):
+            if any(kw in lower for kw in ("done", "finished", "imported", "100%", "import complete")):
                 print("\n  Voxy import complete!")
                 return
+            if "unknown or incomplete" in lower:
+                # RCON: voxy command not registered — must be run in-game by a player
+                print(
+                    "\n  ERROR: 'voxy' is not available via RCON in this Voxy version."
+                    "\n  Connect a Minecraft client to the server and run:"
+                    f"\n    /voxy import world {world_name}"
+                    "\n  Then re-run extract-octree from the GUI."
+                )
+                sys.exit(1)
             if "error" in lower or "fail" in lower:
                 print("\n  ERROR: Voxy import failed — see server log.")
                 sys.exit(1)
@@ -337,22 +356,24 @@ def cmd_voxy_import(cfg: PipelineConfig) -> None:
 
 
 def cmd_dumpnoise(cfg: PipelineConfig) -> None:
-    """Send ``/dumpnoise <radius>`` to export vanilla heightmaps to JSON.
+    """Consolidate all training noise dumps via single /dumpnoise command.
 
-    The LODiffusion ``/dumpnoise`` command uses ``ChunkGenerator.getHeight()``
-    with ``WORLD_SURFACE_WG`` to produce the *exact same* vanilla terrain
-    heightmap that the Java runtime computes at LOD inference time.  This
-    ensures training heightmaps match runtime inputs bit-for-bit.
+    Sends both /dumpnoise stage1 and /dumpnoise sparse_root in sequence,
+    generating all noise data needed for the full training pipeline:
+    - stage1 format (4×48×4 cells): 12 input features + final_density per chunk
+    - sparse_root format (4×2×4 cells): 13 noise channels + biome_ids per section
 
-    Output goes to ``<game_dir>/noise_dumps/chunk_<cx>_<cz>.json``, one per
-    chunk.  The ``column-heights`` step later merges these into the NPZ files.
+    Output:
+      <game_dir>/stage1_dumps/chunk_<cx>_<cz>.json
+      <game_dir>/sparse_root_dumps/section_<cx>_<sy>_<cz>.json
     """
-    # Convert pregen block-radius to chunk-radius (round up so we cover the area)
+    # Convert block-radius to chunk-radius (round up to cover the requested area)
     chunk_radius = max(1, (cfg.radius + 15) // 16)
-    cmd_str = f"dumpnoise {chunk_radius}"
 
     if cfg.dry_run:
-        print(f"\n  [DRY-RUN] Would send: /{cmd_str}")
+        print("\n  [DRY-RUN] Would send:")
+        print(f"    /dumpnoise stage1 {chunk_radius}")
+        print(f"    /dumpnoise sparse_root {chunk_radius}")
         print(f"  (block radius {cfg.radius} → chunk radius {chunk_radius})")
         return
 
@@ -361,44 +382,69 @@ def cmd_dumpnoise(cfg: PipelineConfig) -> None:
         sys.exit(1)
 
     total_chunks = (2 * chunk_radius + 1) ** 2
-    print(f"\n  Dumping noise for {total_chunks:,} chunks (radius {chunk_radius} chunks)...")
+    total_sections = total_chunks * 24  # 24 sections per chunk column
+    print("\n  Consolidating training noise dumps:")
+    print(f"    Stage1:    {total_chunks:,} chunks @ 4×48×4 resolution")
+    print(f"    SparseRoot: {total_sections:,} sections @ 4×2×4 resolution + biome_ids")
+
+    timeout = cfg.voxy_import_timeout
+    interval = 5
 
     with RconClient(cfg.host, cfg.port, cfg.password) as rcon:
+        # ── Stage 1 dump ────────────────────────────────────────────────────
+        print("\n  [1/2] Dumping Stage1 noise...")
+        cmd_str = f"dumpnoise stage1 {chunk_radius}"
         resp = rcon.command(cmd_str)
-        # Some server responses contain unicode characters (e.g. arrows) which
-        # may not be representable in the default Windows console encoding.
         resp_text = resp.strip() or "(no response)"
         try:
             enc = getattr(sys.stdout, "encoding", None) or "utf-8"
             resp_text = resp_text.encode(enc, errors="replace").decode(enc)
         except Exception:
             resp_text = resp_text.encode("utf-8", errors="replace").decode("utf-8")
-        print(f"  Server response: {resp_text}")
+        print(f"        Server: {resp_text}")
 
-        # /dumpnoise runs on a worker thread — poll for the "Done" message.
-        timeout = cfg.voxy_import_timeout  # reuse the same timeout
-        interval = 5
         start = time.time()
         while time.time() - start < timeout:
             time.sleep(interval)
-            # The server sends a chat feedback when the worker finishes;
-            # unfortunately RCON can't receive async chat messages.  We check
-            # for the output files instead — once the expected count appears
-            # on disk, we're done.
-            # Because the output dir is on the server (game CWD), we simply
-            # wait a generous duration proportional to the chunk count.
             elapsed = time.time() - start
-            # Heuristic: ~200 chunks/sec is typical
+            # Heuristic: ~200 chunks/sec is typical for Stage1
             estimate = total_chunks / 200.0 + 5.0
             if elapsed >= estimate:
                 break
             print(
-                f"  [{time.strftime('%H:%M:%S')}] Waiting for dumpnoise worker "
+                f"        [{time.strftime('%H:%M:%S')}] Waiting "
                 f"(~{int(estimate - elapsed)}s remaining)..."
             )
 
-        print("\n  Noise dump expected at <game_dir>/noise_dumps/")
-        print(f"  Total chunks requested: {total_chunks:,}")
+        # ── SparseRoot dump ─────────────────────────────────────────────────
+        print("\n  [2/2] Dumping SparseRoot noise...")
+        cmd_str = f"dumpnoise sparse_root {chunk_radius}"
+        resp = rcon.command(cmd_str)
+        resp_text = resp.strip() or "(no response)"
+        try:
+            enc = getattr(sys.stdout, "encoding", None) or "utf-8"
+            resp_text = resp_text.encode(enc, errors="replace").decode(enc)
+        except Exception:
+            resp_text = resp_text.encode("utf-8", errors="replace").decode("utf-8")
+        print(f"        Server: {resp_text}")
+
+        start = time.time()
+        while time.time() - start < timeout:
+            time.sleep(interval)
+            elapsed = time.time() - start
+            # Heuristic: ~400 sections/sec is typical for SparseRoot (more fine-grained, smaller writes)
+            estimate = total_sections / 400.0 + 5.0
+            if elapsed >= estimate:
+                break
+            print(
+                f"        [{time.strftime('%H:%M:%S')}] Waiting "
+                f"(~{int(estimate - elapsed)}s remaining)..."
+            )
+
+    # ── Summary ─────────────────────────────────────────────────────────
+    print("\n  Noise consolidation complete:")
+    print(f"    [OK] Stage1:    <game_dir>/stage1_dumps/ ({total_chunks:,} files)")
+    print(f"    [OK] SparseRoot: <game_dir>/sparse_root_dumps/ ({total_sections:,} files)")
 
 
 def cmd_status(cfg: PipelineConfig) -> None:
@@ -533,7 +579,9 @@ def _check_prerequisites(from_step: str, args: argparse.Namespace) -> bool:
         if total_npz == 0:
             print(f"ERROR: No NPZ files in level_N/ directories under {data_dir}")
             return False
-        print(f"  {_safe_unicode('✓', '[OK]')} {total_npz:,} octree NPZ files across level_N/ directories")
+        print(
+            f"  {_safe_unicode('✓', '[OK]')} {total_npz:,} octree NPZ files across level_N/ directories"
+        )
 
         noise_dump_dir = getattr(args, "noise_dump_dir", DEFAULT_NOISE_DUMP_DIR)
         jsons = list(noise_dump_dir.glob("chunk_*.json")) if noise_dump_dir.is_dir() else []
@@ -884,7 +932,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser(
         "dumpnoise",
         parents=[shared, pregen_args],
-        help="Send /dumpnoise <radius> via RCON to export vanilla heightmaps",
+        help="Consolidate Stage1 + SparseRoot noise dumps via RCON (both formats needed for training)",
     )
     sub.add_parser(
         "info",
@@ -903,7 +951,7 @@ def build_parser() -> argparse.ArgumentParser:
             Pipeline steps:
               pregen                 RCON — freeze world + Chunky pregeneration
               voxy-import            RCON — /voxy import world <name>
-              dumpnoise              RCON — /dumpnoise <radius> → noise_dumps/*.json
+              dumpnoise              RCON — /dumpnoise stage1 + /dumpnoise sparse_root → all formats
               extract-octree         Voxy RocksDB → data/voxy_octree/level_N/*.npz (all LOD levels)
               column-heights-octree  Merge 5-plane heightmaps (32×32) into octree NPZs
               build-octree-pairs     Build parent/child octree training pairs

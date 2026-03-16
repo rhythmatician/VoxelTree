@@ -60,7 +60,7 @@ DEFAULT_VOCAB_PATH = _PKG_DIR / "config" / "voxy_vocab.json"
 
 
 class OctreeLoss(nn.Module):
-    """Combined block-type cross-entropy + occupancy loss.
+    """Combined block-type cross-entropy + occupancy + hierarchical consistency loss.
 
     The occupancy loss is only applied to init (L4) and refine (L3-L1)
     models.  Leaf (L0) has no child octants to predict.
@@ -75,6 +75,19 @@ class OctreeLoss(nn.Module):
     subtree, so FN cost >> FP cost.  ``occ_pos_weight > 1.0`` biases
     toward recall.
 
+    The hierarchical consistency loss (``consistency_weight > 0``) penalises
+    LOD seams — the failure mode where a coarser level predicts *solid* but
+    its finer children predict *air* (or vice-versa), causing visible
+    popping when Voxy transitions between LODs.  It is applied to refine
+    and leaf models only (the init model has no meaningful parent to be
+    consistent with).
+
+    Implementation: the child's ``block_type_logits [B, V, 32, 32, 32]`` are
+    average-pooled 2× to ``[B, V, 16, 16, 16]``, then compared against
+    ``parent_octant16 [B, 16, 16, 16]`` — the native 16³ Voxy octant stored
+    directly in the NPZ cache.  Cross-entropy is used so the loss is
+    compatible with the per-class ``class_weights``.
+
     Args:
         occ_weight: Weight for the occupancy loss term.
         class_weights: Optional per-class weight tensor for CE loss,
@@ -86,6 +99,8 @@ class OctreeLoss(nn.Module):
         occ_pos_weight: Positive class weight for BCE occupancy loss.
             Values > 1.0 penalize false negatives (missed subtrees) more
             heavily.  RocNet-inspired.  Ignored when focal_gamma > 0.
+        consistency_weight: Weight for the hierarchical consistency loss
+            (default: 0.0 = disabled).  Recommended starting value: 0.1.
     """
 
     def __init__(
@@ -96,6 +111,7 @@ class OctreeLoss(nn.Module):
         focal_alpha: float = 0.75,
         level_occ_weights: Optional[Dict[int, float]] = None,
         occ_pos_weight: float = 1.0,
+        consistency_weight: float = 0.0,
     ) -> None:
         super().__init__()
         self.occ_weight = occ_weight
@@ -103,6 +119,7 @@ class OctreeLoss(nn.Module):
         self.focal_alpha = focal_alpha
         self.level_occ_weights = level_occ_weights  # e.g. {4: 2.0, 3: 1.5}
         self.occ_pos_weight = occ_pos_weight
+        self.consistency_weight = consistency_weight
         self.register_buffer("class_weights", class_weights)
 
     def forward(
@@ -118,14 +135,17 @@ class OctreeLoss(nn.Module):
         Args:
             predictions: Model output dict (``block_type_logits``, optionally ``occ_logits``).
             targets: Dict with ``target_blocks`` ``[B, 32, 32, 32]`` int64,
-                     and ``occ_targets`` ``[B, 8]`` float (for init/refine).
+                     ``occ_targets`` ``[B, 8]`` float (for init/refine), and
+                     optionally ``parent_octant16`` ``[B, 16, 16, 16]`` int64
+                     (native Voxy parent octant for the hierarchical consistency loss).
             model_type: ``"init"``, ``"refine"``, or ``"leaf"``.
             level: Optional LOD level (4, 3, 2, 1, 0) for per-level occ weight.
             occ_weight_override: If provided, overrides the default occ_weight for this call
                 (e.g., for warmup scheduling). Takes precedence over level-based weights.
 
         Returns:
-            Dict with ``total_loss``, ``block_loss``, and ``occ_loss`` tensors.
+            Dict with ``total_loss``, ``block_loss``, ``occ_loss``, and
+            ``consistency_loss`` tensors.
         """
         # Block classification loss
         block_logits = predictions["block_type_logits"]  # [B, V, 32, 32, 32]
@@ -179,12 +199,40 @@ class OctreeLoss(nn.Module):
         else:
             effective_occ_weight = self.occ_weight
 
-        total_loss = block_loss + effective_occ_weight * occ_loss
+        # Hierarchical consistency loss (refine + leaf only; disabled when weight == 0)
+        # Penalises LOD seams where coarser levels disagree with finer ones.
+        # ``parent_octant16`` is the native 16³ Voxy octant stored directly
+        # in the NPZ cache — no roundtrip through our own upsampling logic.
+        consistency_loss = torch.zeros(1, device=device).squeeze()
+        if self.consistency_weight > 0.0 and model_type in ("refine", "leaf"):
+            parent_octant = targets.get("parent_octant16")  # [B, 16, 16, 16]
+            if parent_octant is not None:
+                # Coarsen child logits: [B, V, 32, 32, 32] → [B, V, 16, 16, 16]
+                child_coarse = nn.functional.avg_pool3d(
+                    block_logits.float(), kernel_size=2, stride=2
+                )
+                B2, V2, D2, H2, W2 = child_coarse.shape
+                cons_flat = child_coarse.permute(0, 2, 3, 4, 1).reshape(-1, V2)
+                par_flat = parent_octant.long().reshape(-1)
+                consistency_loss = nn.functional.cross_entropy(
+                    cons_flat,
+                    par_flat,
+                    weight=(
+                        self.class_weights if isinstance(self.class_weights, torch.Tensor) else None
+                    ),
+                )
+
+        total_loss = (
+            block_loss
+            + effective_occ_weight * occ_loss
+            + self.consistency_weight * consistency_loss
+        )
 
         return {
             "total_loss": total_loss,
             "block_loss": block_loss,
             "occ_loss": occ_loss,
+            "consistency_loss": consistency_loss,
         }
 
 
@@ -295,6 +343,16 @@ def _prepare_targets(
     nec = batch["non_empty_children"]
     assert isinstance(nec, torch.Tensor)
     targets["occ_targets"] = _bitmask_to_binary(nec).to(device)
+
+    # Parent labels for hierarchical consistency loss (refine/leaf batches only;
+    # init batches carry a zero placeholder that the loss skips automatically
+    # because model_type=="init" never enters the consistency branch).
+    parent_labels = batch.get("parent_labels32")
+    if isinstance(parent_labels, torch.Tensor):
+        targets["parent_labels32"] = parent_labels.to(device)
+    parent_octant = batch.get("parent_octant16")
+    if isinstance(parent_octant, torch.Tensor):
+        targets["parent_octant16"] = parent_octant.to(device)
 
     return targets
 
@@ -852,6 +910,19 @@ def main(argv: list[str] | None = None) -> None:  # noqa: FA100
         ),
     )
     parser.add_argument(
+        "--consistency-weight",
+        type=float,
+        default=0.0,
+        metavar="W",
+        help=(
+            "Weight for hierarchical consistency loss (default: 0.0 = disabled). "
+            "Penalises LOD seams by enforcing that the refine/leaf model's "
+            "predictions, when coarsened 2×, agree with the parent section's "
+            "target labels.  Recommended starting value: 0.1.  "
+            "Only affects refine and leaf models."
+        ),
+    )
+    parser.add_argument(
         "--models",
         type=str,
         default="all",
@@ -1080,7 +1151,11 @@ def main(argv: list[str] | None = None) -> None:  # noqa: FA100
         focal_alpha=args.focal_alpha,
         level_occ_weights=level_occ_weights,
         occ_pos_weight=args.occ_pos_weight,
+        consistency_weight=args.consistency_weight,
     ).to(device)
+
+    if args.consistency_weight > 0.0:
+        print(f"Hierarchical consistency loss enabled (weight={args.consistency_weight})")
 
     # Stash warmup configuration on the loss_fn for use in the training loop
     _occ_warmup_epochs: int = args.occ_warmup_epochs
@@ -1184,10 +1259,13 @@ def main(argv: list[str] | None = None) -> None:  # noqa: FA100
 
         # Print training stats
         print(f"\nEpoch {epoch}/{args.epochs}")
+        _cons = train_metrics.get("consistency_loss", 0.0)
+        _cons_str = f", Cons: {_cons:.4f}" if _cons else ""
         print(
             f"  Train — Loss: {train_metrics.get('total_loss', 0):.4f} "
             f"(Block: {train_metrics.get('block_loss', 0):.4f}, "
-            f"Occ: {train_metrics.get('occ_loss', 0):.4f})"
+            f"Occ: {train_metrics.get('occ_loss', 0):.4f}"
+            f"{_cons_str})"
         )
         print(
             f"  Train — Acc: {train_metrics.get('overall_accuracy', 0):.3f} "
@@ -1214,10 +1292,13 @@ def main(argv: list[str] | None = None) -> None:  # noqa: FA100
             val_metrics = validate_octree_epoch(models, val_loader, loss_fn, device)
 
             val_loss = val_metrics.get("total_loss", float("inf"))
+            _val_cons = val_metrics.get("consistency_loss", 0.0)
+            _val_cons_str = f", Cons: {_val_cons:.4f}" if _val_cons else ""
             print(
                 f"  Val   — Loss: {val_loss:.4f} "
                 f"(Block: {val_metrics.get('block_loss', 0):.4f}, "
-                f"Occ: {val_metrics.get('occ_loss', 0):.4f})"
+                f"Occ: {val_metrics.get('occ_loss', 0):.4f}"
+                f"{_val_cons_str})"
             )
             print(
                 f"  Val   — Acc: {val_metrics.get('overall_accuracy', 0):.3f} "

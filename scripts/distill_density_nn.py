@@ -30,15 +30,15 @@ torch.manual_seed(SEED)
 # --- Data loading ---
 def find_repo_root() -> Path:
     for candidate in [Path.cwd(), *Path.cwd().parents]:
-        if (candidate / "noise_training_data" / "phase_1a_data.npz").exists():
+        if (candidate / "noise_training_data" / "stage1_density_data.npz").exists():
             return candidate
     raise FileNotFoundError(
-        "Could not find repo root containing noise_training_data/phase_1a_data.npz"
+        "Could not find repo root containing noise_training_data/stage1_density_data.npz"
     )
 
 
 REPO_ROOT = find_repo_root()
-DATA_PATH = REPO_ROOT / "noise_training_data" / "phase_1a_data.npz"
+DATA_PATH = REPO_ROOT / "noise_training_data" / "stage1_density_data.npz"
 ARTIFACT_DIR = (
     REPO_ROOT / "VoxelTree" / "notebooks" / "experimental" / "artifacts" / "density_nn_shootout"
 )

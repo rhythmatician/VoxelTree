@@ -37,7 +37,7 @@ def extract_weights(checkpoint_path, output_path_bin, output_path_cpp):
     Load the PyTorch checkpoint and extract weights into SSBO binary format and C++ header.
     """
     print(f"Loading checkpoint from {checkpoint_path}...")
-    checkpoint = torch.load(checkpoint_path, map_location="cpu")
+    checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
 
     # Recreate the model
     model = TerrainShaperMLP(hidden_size=32)

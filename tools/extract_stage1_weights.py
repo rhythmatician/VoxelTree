@@ -42,13 +42,16 @@ import torch.nn as nn
 # ---------------------------------------------------------------------------
 
 INPUT_FEATURES = 12
-HIDDEN_SIZE    = 64
-OUTPUT_SIZE    = 1
+HIDDEN_SIZE = 64
+OUTPUT_SIZE = 1
 
 EXPECTED_WEIGHT_COUNT = (
-    HIDDEN_SIZE * INPUT_FEATURES + HIDDEN_SIZE +   # W1 + b1
-    HIDDEN_SIZE * HIDDEN_SIZE    + HIDDEN_SIZE +   # W2 + b2
-    OUTPUT_SIZE * HIDDEN_SIZE    + OUTPUT_SIZE      # W3 + b3
+    HIDDEN_SIZE * INPUT_FEATURES
+    + HIDDEN_SIZE  # W1 + b1
+    + HIDDEN_SIZE * HIDDEN_SIZE
+    + HIDDEN_SIZE  # W2 + b2
+    + OUTPUT_SIZE * HIDDEN_SIZE
+    + OUTPUT_SIZE  # W3 + b3
 )  # = 5057
 
 
@@ -71,18 +74,22 @@ class Stage1DensityMLP(nn.Module):
 # Extraction helpers
 # ---------------------------------------------------------------------------
 
+
 def load_checkpoint(model_dir: Path) -> dict:
     ckpt_path = model_dir / "stage1_mlp.pt"
     if not ckpt_path.exists():
         # Fall back to best checkpoint
         ckpt_path = model_dir / "stage1_mlp_best.pt"
     if not ckpt_path.exists():
-        print(f"[ERROR] No checkpoint found in {model_dir}  —  train first with "
-              f"train_stage1_density.py", file=sys.stderr)
+        print(
+            f"[ERROR] No checkpoint found in {model_dir}  —  train first with "
+            f"train_stage1_density.py",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
     print(f"[Load] Checkpoint: {ckpt_path}")
-    return torch.load(ckpt_path, map_location="cpu")
+    return torch.load(ckpt_path, map_location="cpu", weights_only=False)
 
 
 def export_flat_weights(model: Stage1DensityMLP, out_path: Path) -> None:
@@ -96,8 +103,9 @@ def export_flat_weights(model: Stage1DensityMLP, out_path: Path) -> None:
         blobs.append(lin.bias.detach().numpy().astype(np.float32))
 
     flat = np.concatenate(blobs)
-    assert len(flat) == EXPECTED_WEIGHT_COUNT, \
-        f"Weight count: {len(flat)} vs expected {EXPECTED_WEIGHT_COUNT}"
+    assert (
+        len(flat) == EXPECTED_WEIGHT_COUNT
+    ), f"Weight count: {len(flat)} vs expected {EXPECTED_WEIGHT_COUNT}"
 
     flat.tofile(str(out_path))
     print(f"[Export] Weights ({len(flat)} floats, {len(flat)*4} bytes) → {out_path}")
@@ -106,19 +114,21 @@ def export_flat_weights(model: Stage1DensityMLP, out_path: Path) -> None:
 def export_norm_stats(ckpt: dict, out_dir: Path) -> None:
     """Write input normalisation mean and std as separate float32 binary files."""
     mean_np = ckpt.get("norm_mean")
-    std_np  = ckpt.get("norm_std")
+    std_np = ckpt.get("norm_std")
 
     if mean_np is None or std_np is None:
-        print("[WARN] Checkpoint does not contain norm_mean/norm_std — "
-              "writing identity normalisation (all zeros / ones)")
+        print(
+            "[WARN] Checkpoint does not contain norm_mean/norm_std — "
+            "writing identity normalisation (all zeros / ones)"
+        )
         mean_np = np.zeros(INPUT_FEATURES, dtype=np.float32)
-        std_np  = np.ones(INPUT_FEATURES,  dtype=np.float32)
+        std_np = np.ones(INPUT_FEATURES, dtype=np.float32)
 
     mean_np = np.asarray(mean_np, dtype=np.float32)
-    std_np  = np.asarray(std_np,  dtype=np.float32)
+    std_np = np.asarray(std_np, dtype=np.float32)
 
     mean_path = out_dir / "stage1_norm_mean.bin"
-    std_path  = out_dir / "stage1_norm_std.bin"
+    std_path = out_dir / "stage1_norm_std.bin"
     mean_np.tofile(str(mean_path))
     std_np.tofile(str(std_path))
     print(f"[Export] Norm mean ({len(mean_np)*4} bytes) → {mean_path}")
@@ -126,9 +136,18 @@ def export_norm_stats(ckpt: dict, out_dir: Path) -> None:
 
     # Human-readable summary
     feature_names = [
-        "offset", "factor", "jaggedness", "depth", "sloped_cheese",
-        "y", "entrances", "cheese_caves", "spaghetti_2d",
-        "roughness", "noodle", "base_3d_noise",
+        "offset",
+        "factor",
+        "jaggedness",
+        "depth",
+        "sloped_cheese",
+        "y",
+        "entrances",
+        "cheese_caves",
+        "spaghetti_2d",
+        "roughness",
+        "noodle",
+        "base_3d_noise",
     ]
     print("\n  Feature normalisation:")
     print(f"  {'Feature':22s}  {'Mean':>10s}  {'Std':>10s}")
@@ -140,7 +159,7 @@ def export_norm_stats(ckpt: dict, out_dir: Path) -> None:
 def verify_model(model: Stage1DensityMLP, ckpt: dict) -> None:
     """Report model quality metrics from the checkpoint."""
     val_mse = ckpt.get("val_mse")
-    epoch   = ckpt.get("epoch", "?")
+    epoch = ckpt.get("epoch", "?")
 
     print(f"\n[Model] Trained for {epoch} epochs")
     if val_mse is not None:
@@ -150,7 +169,7 @@ def verify_model(model: Stage1DensityMLP, ckpt: dict) -> None:
 
     # Spot-check: all-zero input
     with torch.no_grad():
-        zero_in  = torch.zeros(1, INPUT_FEATURES)
+        zero_in = torch.zeros(1, INPUT_FEATURES)
         zero_out = model(zero_in).item()
         print(f"[Model] Forward check — zeros → {zero_out:.6f}")
 
@@ -173,23 +192,29 @@ def copy_to_lodiffusion(files: list[tuple[Path, str]], lodiffusion_models: Path)
 # Main
 # ---------------------------------------------------------------------------
 
+
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
         description="Extract Stage 1 MLP weights and deploy to LODiffusion."
     )
-    p.add_argument("--model-dir", default="stage1_model",
-                   help="Directory containing stage1_mlp.pt  (default: stage1_model)")
-    p.add_argument("--out-dir",   default=None,
-                   help="Where to write .bin files  (default: same as --model-dir)")
-    p.add_argument("--no-deploy", action="store_true",
-                   help="Skip copying files to LODiffusion resources")
+    p.add_argument(
+        "--model-dir",
+        default="stage1_model",
+        help="Directory containing stage1_mlp.pt  (default: stage1_model)",
+    )
+    p.add_argument(
+        "--out-dir", default=None, help="Where to write .bin files  (default: same as --model-dir)"
+    )
+    p.add_argument(
+        "--no-deploy", action="store_true", help="Skip copying files to LODiffusion resources"
+    )
     return p.parse_args()
 
 
 def main() -> None:
     args = parse_args()
     model_dir = Path(args.model_dir)
-    out_dir   = Path(args.out_dir) if args.out_dir else model_dir
+    out_dir = Path(args.out_dir) if args.out_dir else model_dir
 
     print("=" * 64)
     print("  Stage 1 Density MLP — weight extraction  (WS-4.2a)")
@@ -219,13 +244,17 @@ def main() -> None:
         lodiffusion_models = (
             Path(__file__).resolve().parent.parent.parent
             / "LODiffusion"
-            / "src" / "main" / "resources"
-            / "assets" / "lodiffusion" / "models"
+            / "src"
+            / "main"
+            / "resources"
+            / "assets"
+            / "lodiffusion"
+            / "models"
         )
         to_copy = [
-            (out_dir / "stage1_mlp_weights.bin",  "stage1_mlp_weights.bin"),
-            (out_dir / "stage1_norm_mean.bin",     "stage1_norm_mean.bin"),
-            (out_dir / "stage1_norm_std.bin",      "stage1_norm_std.bin"),
+            (out_dir / "stage1_mlp_weights.bin", "stage1_mlp_weights.bin"),
+            (out_dir / "stage1_norm_mean.bin", "stage1_norm_mean.bin"),
+            (out_dir / "stage1_norm_std.bin", "stage1_norm_std.bin"),
         ]
         # Also copy ONNX if present
         onnx_src = model_dir / "stage1_mlp.onnx"

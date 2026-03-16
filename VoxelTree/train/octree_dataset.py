@@ -209,6 +209,18 @@ class OctreeDataset(Dataset[Dict[str, Any]]):
         self._levels: np.ndarray = data["level"]  # [N]
         self._non_empty_children: np.ndarray = data["non_empty_children"]  # [N]
 
+        # parent_octant16: native 16³ Voxy octant — authoritative target for
+        # the consistency loss.  Present in caches built after the refactor;
+        # for legacy caches we derive it from parent_labels32 via stride-2
+        # (mathematically equivalent since that field was built by NN-repeating
+        # the same octant, but rebuild the cache for true Voxy native data).
+        if "parent_octant16" in data.files:
+            self._parent_octant16: np.ndarray = data["parent_octant16"]  # [N, 16, 16, 16]
+        else:
+            # Legacy fallback: reverse the 2× NN-repeat stored in parent_labels32.
+            # Equivalent values, but rebuild the cache to use native Voxy data.
+            self._parent_octant16 = self._parent_labels32[:, ::2, ::2, ::2].astype(np.int32)
+
         self._n_samples = len(self._labels32)
         elapsed = time.time() - t0
         print(f"  Loaded {self._n_samples:,} samples in {elapsed:.1f}s")
@@ -257,9 +269,12 @@ class OctreeDataset(Dataset[Dict[str, Any]]):
         # Parent context (zeros for init model, real data for refine/leaf)
         if model_type in ("refine", "leaf"):
             sample["parent_labels32"] = torch.from_numpy(self._parent_labels32[i].astype(np.int64))
+            # Native 16³ Voxy octant — used directly by the consistency loss.
+            sample["parent_octant16"] = torch.from_numpy(self._parent_octant16[i].astype(np.int64))
         else:
             # Init model (L4): parent is zeros — placeholder for uniform collation
             sample["parent_labels32"] = torch.zeros(32, 32, 32, dtype=torch.long)
+            sample["parent_octant16"] = torch.zeros(16, 16, 16, dtype=torch.long)
 
         return sample
 
@@ -272,6 +287,7 @@ def _stack_group(samples: List[Dict[str, Any]], model_type: str) -> Dict[str, An
     batch: Dict[str, Any] = {
         "labels32": torch.stack([s["labels32"] for s in samples]),
         "parent_labels32": torch.stack([s["parent_labels32"] for s in samples]),
+        "parent_octant16": torch.stack([s["parent_octant16"] for s in samples]),
         "heightmap32": torch.stack([s["heightmap32"] for s in samples]),
         "biome32": torch.stack([s["biome32"] for s in samples]),
         "y_position": torch.stack([s["y_position"] for s in samples]),

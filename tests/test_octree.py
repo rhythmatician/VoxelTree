@@ -18,18 +18,63 @@ Covers:
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 from typing import Any, Dict
+
+# Ensure we import the correct inner package even when running tests from repo root.
+# The repo structure is: <repo>/VoxelTree/VoxelTree (package) and tests live in <repo>/VoxelTree/tests.
+ROOT = Path(__file__).resolve().parents[1]
+INTERNAL_PKG = ROOT / "VoxelTree"
+if str(INTERNAL_PKG) not in sys.path:
+    sys.path.insert(0, str(INTERNAL_PKG))
+
+# If VoxelTree is loaded as a namespace package pointing to the outer folder,
+# patch its __path__ to include the real package directory so submodules can be found.
+import VoxelTree as _VT
+
+if hasattr(_VT, "__path__"):
+    pkg_path = str(INTERNAL_PKG)
+    if pkg_path not in _VT.__path__:
+        _VT.__path__ = list(_VT.__path__) + [pkg_path]
+
+# Also ensure the `VoxelTree.scripts` namespace includes the inner scripts folder.
+inner_scripts = INTERNAL_PKG / "scripts"
+if hasattr(_VT, "scripts") and hasattr(_VT.scripts, "__path__"):
+    script_path = str(inner_scripts)
+    if script_path not in _VT.scripts.__path__:
+        _VT.scripts.__path__ = list(_VT.scripts.__path__) + [script_path]
 
 import numpy as np
 import pytest
 import torch
 
-from VoxelTree.scripts.build_octree_pairs import (
-    build_section_index,
-    child_coords_from_parent,
-    extract_octant_and_upsample,
-    parent_coords_and_octant,
+try:
+    from VoxelTree.scripts.build_octree_pairs import (
+        build_section_index,
+        child_coords_from_parent,
+        extract_octant,
+        extract_octant_and_upsample,
+        parent_coords_and_octant,
+    )
+except ImportError:
+    # Fall back to loading the script directly by path, which is useful when
+    # running tests in environments where `VoxelTree.scripts` is not importable.
+    import importlib.util
+
+    bp_path = INTERNAL_PKG / "scripts" / "build_octree_pairs.py"
+    spec = importlib.util.spec_from_file_location("build_octree_pairs", str(bp_path))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    build_section_index = mod.build_section_index
+    child_coords_from_parent = mod.child_coords_from_parent
+    extract_octant = mod.extract_octant
+    extract_octant_and_upsample = mod.extract_octant_and_upsample
+    parent_coords_and_octant = mod.parent_coords_and_octant
+from VoxelTree.scripts.sparse_octree_targets import (
+    build_sparse_octree_targets,
+    child_occupancy_mask,
+    iter_sparse_octree_nodes,
 )
 from VoxelTree.train.octree_dataset import (
     OctreeDataset,
@@ -51,6 +96,18 @@ from VoxelTree.train.train_octree import (
     _prepare_targets,
     compute_octree_metrics,
 )
+
+# Optional path to extracted Voxy octree data (used by integration-style tests).
+# These tests are skipped when the data is not present (e.g. in CI/fresh clone).
+_DATA_DIR = Path(__file__).resolve().parents[1] / "data" / "voxy_octree"
+
+
+def _skip_if_no_data(path: Path) -> None:
+    """Skip the test if *path* does not exist."""
+
+    if not path.exists():
+        pytest.skip(f"Data not present: {path}")
+
 
 # ===========================================================================
 # Shared helpers & fixtures
@@ -103,6 +160,7 @@ def _write_pair_cache(path: Path, n: int = 20, vocab: int = 32) -> None:
         path,
         labels32=rng.randint(0, vocab, (n, 32, 32, 32), dtype=np.int32),
         parent_labels32=rng.randint(0, vocab, (n, 32, 32, 32), dtype=np.int32),
+        parent_octant16=rng.randint(0, vocab, (n, 16, 16, 16), dtype=np.int32),
         heightmap32=rng.randn(n, 5, 32, 32).astype(np.float32),
         biome32=rng.randint(0, 16, (n, 32, 32), dtype=np.int32),
         y_position=rng.randint(0, 24, n).astype(np.int64),
@@ -201,6 +259,91 @@ class TestExtractOctantAndUpsample:
         out = extract_octant_and_upsample(labels, 0)
         assert (out > 0).sum() == 8  # 2³ = 8
 
+    def test_extract_octant_matches_downsampled_child_in_real_voxy_data(self) -> None:
+        """Validate extract_octant against real extracted Voxy octree data.
+
+        Uses a real L4 section and its eight L3 children (a single vanilla subchunk)
+        to ensure the octant extraction aligns with the hierarchical resolution.
+        """
+        _skip_if_no_data(_DATA_DIR)
+
+        parent_index = build_section_index(_DATA_DIR, level=4)
+        child_index = build_section_index(_DATA_DIR, level=3)
+
+        # Prefer a deterministic example (vanilla subchunk) when available.
+        # Validate that the coordinate mapping between L4 parent and its 8 L3 children exists.
+        parent_coords = (0, 0, 0)
+        parent_path = _DATA_DIR / "level_4" / "voxy_L4_x0_y0_z0.npz"
+
+        if parent_path.exists():
+            parent_labels = np.load(parent_path)["labels32"]
+
+            # Ensure `extract_octant` matches explicit slicing on real data.
+            for octant in range(8):
+                expected = extract_octant(parent_labels, octant)
+                dy = (octant >> 2) & 1
+                dz = (octant >> 1) & 1
+                dx = octant & 1
+                y_slice = slice(dy * 16, (dy + 1) * 16)
+                z_slice = slice(dz * 16, (dz + 1) * 16)
+                x_slice = slice(dx * 16, (dx + 1) * 16)
+                assert np.array_equal(
+                    expected, parent_labels[y_slice, z_slice, x_slice]
+                ), f"extract_octant mismatch on real data for octant {octant}"
+
+            # Ensure the expected L3 child sections exist for this L4 parent.
+            existing_children: list[int] = []
+            for octant in range(8):
+                child_coords = child_coords_from_parent(*parent_coords, octant)
+                child_path = (
+                    _DATA_DIR
+                    / "level_3"
+                    / f"voxy_L3_x{child_coords[0]}_y{child_coords[1]}_z{child_coords[2]}.npz"
+                )
+                if child_path.exists():
+                    existing_children.append(octant)
+
+            assert existing_children, (
+                "Expected at least one L3 child to exist for the vanilla subchunk "
+                f"parent {parent_path.name}"
+            )
+            return
+
+        # Fallback: locate any L4 parent that has at least one L3 child.
+        selected_parent: tuple[tuple[int, int, int], Path] | None = None
+        selected_children: dict[int, Path] | None = None
+        for parent_coords, parent_path in parent_index.items():
+            available_children = {}
+            for octant in range(8):
+                cx, cy, cz = child_coords_from_parent(*parent_coords, octant)
+                if (cx, cy, cz) in child_index:
+                    available_children[octant] = child_index[(cx, cy, cz)]
+
+            if available_children:
+                selected_parent = (parent_coords, parent_path)
+                selected_children = available_children
+                break
+
+        if selected_parent is None or selected_children is None:
+            pytest.skip("No L4 parent section with any L3 child found")
+
+        (px, py, pz), parent_path = selected_parent
+        parent_labels = np.load(parent_path)["labels32"]
+
+        for octant, child_path in selected_children.items():
+            child_labels = np.load(child_path)["labels32"]
+
+            # Downsample the high-resolution child section to match the 16³ parent octant.
+            downsampled = child_labels[::2, ::2, ::2]
+            expected = extract_octant(parent_labels, octant)
+            assert np.array_equal(
+                downsampled,
+                expected,
+            ), (
+                f"Mismatch between parent octant and downsampled child: "
+                f"{parent_path.name} octant {octant} vs {child_path.name}"
+            )
+
 
 # ===========================================================================
 # 3. Section Index Builder
@@ -232,6 +375,53 @@ class TestBuildSectionIndex:
         assert (1, 0, 0) in idx
 
 
+# ===========================================================================
+# 4. Sparse Octree Targets
+# ===========================================================================
+
+
+class TestSparseOctreeTargets:
+    def test_uniform_subchunk_becomes_single_leaf_root(self) -> None:
+        blocks = np.full((16, 16, 16), 5, dtype=np.int32)
+        targets = build_sparse_octree_targets(blocks)
+
+        assert targets[4].labels.shape == (1, 1, 1)
+        assert int(targets[4].labels[0, 0, 0]) == 5
+        assert bool(targets[4].is_leaf[0, 0, 0]) is True
+        assert int(targets[4].child_mask[0, 0, 0]) == 0
+
+    def test_single_voxel_produces_active_path(self) -> None:
+        blocks = np.zeros((16, 16, 16), dtype=np.int32)
+        blocks[15, 15, 15] = 9  # far corner -> octant 7 at every split level
+        targets = build_sparse_octree_targets(blocks)
+
+        assert bool(targets[4].is_leaf[0, 0, 0]) is False
+        assert bool(targets[3].is_leaf[1, 1, 1]) is False
+        assert bool(targets[2].is_leaf[3, 3, 3]) is False
+        assert bool(targets[1].is_leaf[7, 7, 7]) is False
+
+        assert int(targets[4].child_mask[0, 0, 0]) == 0b10000000
+        assert int(targets[3].child_mask[1, 1, 1]) == 0b10000000
+        assert int(targets[2].child_mask[3, 3, 3]) == 0b10000000
+        assert int(targets[1].child_mask[7, 7, 7]) == 0b10000000
+        assert int(targets[0].labels[15, 15, 15]) == 9
+        assert bool(targets[0].is_leaf[15, 15, 15]) is True
+
+    def test_child_occupancy_mask_uses_repo_octant_bit_order(self) -> None:
+        cube = np.zeros((2, 2, 2), dtype=np.int32)
+        cube[0, 0, 1] = 1  # x=1, z=0, y=0 -> octant bit 001
+        cube[1, 1, 0] = 1  # x=0, z=1, y=1 -> octant bit 110
+        mask = child_occupancy_mask(cube, air_id=0)
+        assert int(mask) == ((1 << 0b001) | (1 << 0b110))
+
+    def test_iter_sparse_nodes_skips_empty_air_leaves(self) -> None:
+        blocks = np.zeros((16, 16, 16), dtype=np.int32)
+        blocks[0, 0, 0] = 4
+        nodes = list(iter_sparse_octree_nodes(build_sparse_octree_targets(blocks)))
+        assert any(node.level == 0 and node.label == 4 for node in nodes)
+        assert not any(node.is_leaf and node.label == 0 for node in nodes)
+
+
 class TestStackAndSave:
     """Ensure the pair cache writer behaves as expected, including console output."""
 
@@ -239,6 +429,7 @@ class TestStackAndSave:
         return {
             "labels32": np.zeros((32, 32, 32), dtype=np.int32),
             "parent_labels32": np.zeros((32, 32, 32), dtype=np.int32),
+            "parent_octant16": np.zeros((16, 16, 16), dtype=np.int32),
             "heightmap32": np.zeros((5, 32, 32), dtype=np.float32),
             "biome32": np.zeros((32, 32), dtype=np.int32),
             "y_position": 0,
@@ -287,6 +478,7 @@ class TestBuildFunctionOutput:
                 {
                     "labels32": np.zeros((32, 32, 32), dtype=np.int32),
                     "parent_labels32": np.zeros((32, 32, 32), dtype=np.int32),
+                    "parent_octant16": np.zeros((16, 16, 16), dtype=np.int32),
                     "heightmap32": np.zeros((5, 32, 32), dtype=np.float32),
                     "biome32": np.zeros((32, 32), dtype=np.int32),
                     "y_position": 0,
@@ -318,6 +510,43 @@ class TestBuildFunctionOutput:
         assert "<-" in captured.out
         assert "\u2190" not in captured.out
         assert "←" not in captured.out
+
+    def test_build_creates_sparse_root_pairs(self, tmp_path: Path) -> None:
+        """build() should produce a sparse_root_pairs.npz with expected keys/shapes."""
+        from VoxelTree.scripts.build_octree_pairs import build
+
+        data_dir = tmp_path / "data"
+        out_dir = tmp_path / "out"
+        (data_dir / "level_4").mkdir(parents=True)
+
+        # Minimal section NPZ required by build_pairs_for_level
+        section = data_dir / "level_4" / "voxy_L4_x0_y0_z0.npz"
+        np.savez_compressed(
+            section,
+            labels32=np.zeros((32, 32, 32), dtype=np.int32),
+            biome32=np.zeros((32, 32), dtype=np.int32),
+            non_empty_children=np.uint8(0),
+            section_y=np.int64(0),
+        )
+
+        build(data_dir, out_dir, model_type="all", clean=True, sparse_root=True)
+
+        out_file = out_dir / "sparse_root_pairs.npz"
+        assert out_file.exists(), "Expected sparse_root_pairs.npz to be created"
+
+        with np.load(out_file) as out:
+            assert set(out.files) == {
+                "subchunk16",
+                "octant",
+                "level",
+                "y_position",
+                "root_features",
+            }
+            assert out["subchunk16"].shape == (8, 16, 16, 16)
+            assert out["octant"].shape == (8,)
+            assert out["level"].shape == (8,)
+            assert out["y_position"].shape == (8,)
+            assert out["root_features"].shape == (8, 16)
 
 
 # ===========================================================================

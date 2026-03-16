@@ -98,16 +98,18 @@ def parent_coords_and_octant(cx: int, cy: int, cz: int) -> tuple[int, int, int, 
     return px, py, pz, octant
 
 
-def extract_octant_and_upsample(
+def extract_octant(
     parent_labels: npt.NDArray[np.int32],
     octant: int,
 ) -> npt.NDArray[np.int32]:
-    """Extract a 16³ octant from parent's 32³ grid and upsample 2× to 32³.
+    """Extract the 16³ octant from a parent's 32³ grid at native Voxy resolution.
 
     The parent_labels array is (32, 32, 32) in (y, z, x) order.
     Octant bits: bit0 = x, bit1 = z, bit2 = y
 
-    Returns (32, 32, 32) int32 — nearest-neighbor upsampled parent context.
+    Returns (16, 16, 16) int32 — the octant voxels exactly as Voxy stores them,
+    with no upsampling applied.  This is the authoritative comparison target
+    for the hierarchical consistency loss.
     """
     dx = octant & 1
     dz = (octant >> 1) & 1
@@ -117,8 +119,22 @@ def extract_octant_and_upsample(
     z_slice = slice(dz * 16, (dz + 1) * 16)
     x_slice = slice(dx * 16, (dx + 1) * 16)
 
-    sub = parent_labels[y_slice, z_slice, x_slice]  # (16, 16, 16)
+    return parent_labels[y_slice, z_slice, x_slice].astype(np.int32)
 
+
+def extract_octant_and_upsample(
+    parent_labels: npt.NDArray[np.int32],
+    octant: int,
+) -> npt.NDArray[np.int32]:
+    """Extract a 16³ octant from parent's 32³ grid and upsample 2× to 32³.
+
+    The parent_labels array is (32, 32, 32) in (y, z, x) order.
+    Octant bits: bit0 = x, bit1 = z, bit2 = y
+
+    Returns (32, 32, 32) int32 — nearest-neighbor upsampled parent context
+    suitable for use as the model's 32³ input feature.
+    """
+    sub = extract_octant(parent_labels, octant)  # (16, 16, 16)
     # Nearest-neighbor upsample 2×: repeat each voxel in all 3 dimensions
     upsampled = np.repeat(np.repeat(np.repeat(sub, 2, axis=0), 2, axis=1), 2, axis=2)
     return upsampled.astype(np.int32)
@@ -216,7 +232,9 @@ def build_pairs_for_level(
     desc = f"L{child_level}" + (f"<-L{parent_level}" if not is_init else " (init)")
 
     total_items = len(items)
-    for idx, ((cx, cy, cz), child_path) in enumerate(tqdm(items, desc=f"  Pairs {desc}", unit="sect")):
+    for idx, ((cx, cy, cz), child_path) in enumerate(
+        tqdm(items, desc=f"  Pairs {desc}", unit="sect")
+    ):
         _report_progress(idx, total_items)
         # Load child data
         child_data = load_section_npz(child_path)
@@ -241,6 +259,7 @@ def build_pairs_for_level(
         if is_init:
             # L4 init model: no parent context
             parent_labels = np.zeros((32, 32, 32), dtype=np.int32)
+            parent_octant16 = np.zeros((16, 16, 16), dtype=np.int32)  # placeholder
             # NEC for L4 is irrelevant for training the init model, but we
             # still include it so the dataset schema stays uniform.
             nec = nec_stored
@@ -254,7 +273,12 @@ def build_pairs_for_level(
             parent_data = load_section_npz(parent_index[(px, py, pz)])
             parent_full = parent_data["labels32"]  # (32,32,32)
 
-            parent_labels = extract_octant_and_upsample(parent_full, octant)
+            # Native 16³ Voxy octant — used by the consistency loss directly.
+            parent_octant16 = extract_octant(parent_full, octant)  # (16,16,16)
+            # NN-upsampled 32³ context — used as model input feature.
+            parent_labels = np.repeat(
+                np.repeat(np.repeat(parent_octant16, 2, axis=0), 2, axis=1), 2, axis=2
+            ).astype(np.int32)
 
             # Compute true NEC by inspecting the next-lower level index.
             # This ensures the target matches our dataset rather than the
@@ -270,6 +294,7 @@ def build_pairs_for_level(
             {
                 "labels32": child_labels,
                 "parent_labels32": parent_labels,
+                "parent_octant16": parent_octant16,
                 "heightmap32": heightmap,
                 "biome32": biome,
                 "y_position": np.int64(y_pos),  # shifted +4 for embedding
@@ -331,6 +356,7 @@ def stack_and_save(pairs: list[dict[str, Any]], cache_path: Path) -> int:
     n = len(pairs)
     all_labels = np.stack([p["labels32"] for p in pairs])  # (N,32,32,32)
     all_parents = np.stack([p["parent_labels32"] for p in pairs])  # (N,32,32,32)
+    all_octant16 = np.stack([p["parent_octant16"] for p in pairs])  # (N,16,16,16)
     all_heightmaps = np.stack([p["heightmap32"] for p in pairs])  # (N,5,32,32)
     all_biomes = np.stack([p["biome32"] for p in pairs])  # (N,32,32)
     all_y_pos = np.array([p["y_position"] for p in pairs], np.int64)  # (N,)
@@ -341,6 +367,7 @@ def stack_and_save(pairs: list[dict[str, Any]], cache_path: Path) -> int:
         cache_path,
         labels32=all_labels,
         parent_labels32=all_parents,
+        parent_octant16=all_octant16,
         heightmap32=all_heightmaps,
         biome32=all_biomes,
         y_position=all_y_pos,
@@ -351,6 +378,74 @@ def stack_and_save(pairs: list[dict[str, Any]], cache_path: Path) -> int:
     size_mb = cache_path.stat().st_size / (1024 * 1024)
     # Use ASCII arrow to avoid UnicodeEncodeError on Windows consoles.
     print(f"  Saved {n:,} pairs -> {cache_path}  ({size_mb:.1f} MB)")
+    return n
+
+
+def compute_root_features(blocks16: npt.NDArray[np.int32]) -> np.ndarray:
+    """Compute a fixed-length root feature vector for a 16³ subchunk.
+
+    Features (length 16):
+      [air_frac, nonair_frac, unique_frac, top8_nonair_freqs..., padding]
+    """
+
+    flat = blocks16.ravel()
+    total = float(flat.size)
+    air_mask = flat == 0
+    air_frac = float(np.count_nonzero(air_mask) / total)
+    nonair_frac = 1.0 - air_frac
+
+    unique_frac = float(len(np.unique(flat)) / total)
+
+    nonair = flat[~air_mask]
+    if nonair.size > 0:
+        labels, counts = np.unique(nonair, return_counts=True)
+        order = np.argsort(counts)[::-1]
+        top_counts = counts[order][:8]
+        top_freqs = top_counts.astype(np.float32) / total
+        if top_freqs.size < 8:
+            top_freqs = np.pad(top_freqs, (0, 8 - top_freqs.size), constant_values=0.0)
+    else:
+        top_freqs = np.zeros(8, dtype=np.float32)
+
+    feats = np.concatenate(
+        (
+            np.array([air_frac, nonair_frac, unique_frac], dtype=np.float32),
+            top_freqs.astype(np.float32),
+        )
+    )
+
+    if feats.size < 16:
+        feats = np.pad(feats, (0, 16 - feats.size), constant_values=0.0)
+
+    return feats
+
+
+def stack_and_save_sparse_root(pairs: list[dict[str, Any]], cache_path: Path) -> int:
+    """Stack and save sparse-root pairs as a compressed NPZ."""
+    if not pairs:
+        print(f"  WARNING: No sparse-root pairs to save for {cache_path.name}")
+        return 0
+
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+
+    n = len(pairs)
+    all_subchunks = np.stack([p["subchunk16"] for p in pairs])  # (N,16,16,16)
+    all_octants = np.array([p["octant"] for p in pairs], np.int64)  # (N,)
+    all_levels = np.array([p["level"] for p in pairs], np.int64)  # (N,)
+    all_y_pos = np.array([p["y_position"] for p in pairs], np.int64)  # (N,)
+    all_root_feats = np.stack([p["root_features"] for p in pairs]).astype(np.float32)  # (N,16)
+
+    np.savez_compressed(
+        cache_path,
+        subchunk16=all_subchunks,
+        octant=all_octants,
+        level=all_levels,
+        y_position=all_y_pos,
+        root_features=all_root_feats,
+    )
+
+    size_mb = cache_path.stat().st_size / (1024 * 1024)
+    print(f"  Saved {n:,} sparse-root pairs -> {cache_path}  ({size_mb:.1f} MB)")
     return n
 
 
@@ -375,6 +470,8 @@ def build(
     val_split: float = 0.1,
     clean: bool = False,
     model_type: str = "all",
+    sparse_root: bool = False,
+    sparse_root_output: Path | None = None,
 ) -> tuple[int, int]:
     """Build octree training pair caches.
 
@@ -386,6 +483,9 @@ def build(
         model_type: Which model's pairs to build: ``"all"``, ``"init"``,
             ``"refine"``, or ``"leaf"``.  Non-``"all"`` values produce
             ``{model_type}_train_octree_pairs.npz`` output files.
+        sparse_root: If True, generate an additional sparse-root cache.
+        sparse_root_output: Output path for sparse-root cache (default:
+            ``<output_dir>/sparse_root_pairs.npz``).
 
     Returns (n_train_pairs, n_val_pairs).
     """
@@ -395,6 +495,9 @@ def build(
 
     # Output filename prefix: empty for legacy "all", else "{model_type}_"
     prefix = "" if model_type == "all" else f"{model_type}_"
+
+    # Determine sparse-root cache path (can be overridden when writing).
+    sparse_root_cache = sparse_root_output or (output_dir / "sparse_root_pairs.npz")
 
     if clean:
         if model_type == "all":
@@ -407,6 +510,10 @@ def build(
                 if cache_file.exists():
                     print(f"  Removing stale cache: {cache_file.name}")
                     cache_file.unlink()
+
+        if sparse_root and sparse_root_cache.exists():
+            print(f"  Removing stale cache: {sparse_root_cache.name}")
+            sparse_root_cache.unlink()
 
     # Build indices for all levels
     print("Building section indices...")
@@ -497,6 +604,33 @@ def build(
     n_train = stack_and_save(train_pairs, output_dir / f"{prefix}train_octree_pairs.npz")
     n_val = stack_and_save(val_pairs, output_dir / f"{prefix}val_octree_pairs.npz")
 
+    sparse_root_count = 0
+    if sparse_root:
+        print(
+            """
+  Building sparse-root pairs (from all sections)...
+"""
+        )
+        sparse_pairs: list[dict[str, Any]] = []
+        for p in all_pairs:
+            labels = p["labels32"]
+            y_pos = int(p["y_position"])
+            level = int(p["level"])
+            for octant in range(8):
+                subchunk = extract_octant(labels, octant)
+                sparse_pairs.append(
+                    {
+                        "subchunk16": subchunk.astype(np.int32),
+                        "octant": np.int64(octant),
+                        "level": np.int64(level),
+                        "y_position": np.int64(y_pos),
+                        "root_features": compute_root_features(subchunk),
+                    }
+                )
+        sparse_root_count = stack_and_save_sparse_root(sparse_pairs, sparse_root_cache)
+        print(f"  Sparse-root pairs: {sparse_root_count:,} (from {len(all_pairs):,} sections)")
+        print()
+
     # Write completion marker
     marker_name = f".{prefix}build_octree_pairs_done" if prefix else ".build_octree_pairs_done"
     marker = output_dir / marker_name
@@ -505,6 +639,7 @@ def build(
         f"model_type: {model_type}\n"
         f"train_pairs: {n_train}\n"
         f"val_pairs: {n_val}\n"
+        f"sparse_root_pairs: {sparse_root_count}\n"
     )
 
     # Summary
@@ -571,6 +706,18 @@ def main(argv: list[str] | None = None) -> None:
             "Non-'all' values write '{TYPE}_train/val_octree_pairs.npz'."
         ),
     )
+    parser.add_argument(
+        "--sparse-root",
+        action="store_true",
+        help="Generate an additional sparse-root pair cache.",
+    )
+    parser.add_argument(
+        "--sparse-root-output",
+        type=Path,
+        default=None,
+        metavar="PATH",
+        help="Output path for sparse-root cache (default: <output_dir>/sparse_root_pairs.npz).",
+    )
     args = parser.parse_args(argv)
 
     output_dir = args.output_dir or args.data_dir
@@ -581,9 +728,10 @@ def main(argv: list[str] | None = None) -> None:
         val_split=args.val_split,
         clean=args.clean,
         model_type=args.model_type,
+        sparse_root=args.sparse_root,
+        sparse_root_output=args.sparse_root_output,
     )
 
 
 if __name__ == "__main__":
-    main()
     main()
