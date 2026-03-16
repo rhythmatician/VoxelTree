@@ -288,9 +288,7 @@ VoxelTree/                            (Python ML training — offline)
 ├── tools/
 │   ├── train_terrain_shaper.py              ← Stage 0 trainer (done)
 │   ├── extract_terrain_shaper_weights.py    ← Stage 0 weight export (done)
-│   ├── phase_1_data_extraction.py           ← density field extractor (framework)
-│   ├── phase_1_train_macro_shape.py         ← macro-shape trainer (framework)
-│   └── phase_1_train_climate.py             ← climate trainer (framework)
+│   ├── (legacy) phase 1A/B/C training scripts removed from repository
 ├── docs/
 │   ├── PROJECT_PLAN.md                      ← master plan
 │   ├── pipeline.mdd                         ← full pipeline DAG (Mermaid)

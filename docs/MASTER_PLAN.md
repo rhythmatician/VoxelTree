@@ -9,6 +9,14 @@
 > Each phase builds on the previous one: parallel feature extraction →
 > density combination → spatial upscaling → end-to-end fine-tuning.
 
+### Current status (March 2026)
+
+- The active pipeline is now centered around a **sparse-octree model** ("sparse_root") that replaces the legacy init/refine/leaf octree training strategy.
+- The system supports a **GPU "shadow router" compute path** (GLSL + SSBO + Voxy request queue) for fast LOD generation, while retaining the option for CPU ONNX inference.
+- The data pipeline is now: **dumpnoise → NPZ cache → training/distillation → ONNX export → runtime inference**. This flow is implemented between `LODiffusion` and `VoxelTree` via the new `dumpnoise sparse_root` exporter, Python training scripts, and the ONNX runtime decoder.
+
+---
+
 ---
 
 ## Table of Contents
@@ -125,8 +133,8 @@ this — they learn **cell-level** density, not per-block predictions.
 | Component | Grid | Points / Chunk | Resolution |
 |-----------|------|----------------|------------|
 | Raw Perlin octaves | varies | varies | Input noise |
-| Phase 1A/1C networks | 4 × 48 × 4 | 768 | Cell-level (XY plane + full Y) |
-| Phase 1B network | 4 × 4 × 4 | 64 | Cell-level (reduced Y — climate is XZ-dominant) |
+| Legacy feature networks (deprecated) | 4 × 48 × 4 | 768 | Cell-level (XY plane + full Y) |
+| Legacy climate network (deprecated) | 4 × 4 × 4 | 64 | Cell-level (reduced Y — climate is XZ-dominant) |
 | Phase 2 combiner | 4 × 48 × 4 | 768 | Cell-level |
 | Phase 3 upscaler | 16 × 384 × 16 | 98,304 | Block-level |
 | OGN octree models | 32 × 32 × 32 | 32,768 | Voxy WorldSection |
@@ -143,283 +151,132 @@ this — they learn **cell-level** density, not per-block predictions.
                          ▼
 ┌──────────────────────────────────────────────────────────────┐
 │                    Training Data (NPZ)                       │
-│  phase_1a_data.npz    inputs: (N, 4, 48, 4, 11)             │
-│                       outputs: (N, 4, 48, 4, 3)             │
-│  phase_1b_data.npz    inputs: (N, 4,  4, 4, 8)              │
-│                       outputs: (N, 4,  4, 4, 4)             │
-│  phase_1c_data.npz    inputs: (N, 4, 48, 4, 13)             │
-│                       outputs: (N, 4, 48, 4, 4)             │
-│  phase_2_data.npz     inputs: concat(1A_out, 1B_out, 1C_out)│
-│                       outputs: (N, 4, 48, 4, 1) finalDensity│
-│  phase_3_data.npz     inputs: (N, 4, 48, 4, 1) cell density │
-│                       outputs: (N,16,384,16, 1) block density│
+│  stage1_density_data.npz  inputs: (N, 4, 48, 4, 11)         │
+│                           outputs: (N, 4, 48, 4, 1)         │
 └──────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## 3. Phase 1 — Parallel Feature Networks
+## 3. Legacy Phase 1 Feature Network Pipeline (Deprecated)
 
-**Goal:** Train three independent, shallow Conv3D networks that each learn
-one semantic subsystem of the NoiseRouter. Because they have no
-cross-dependencies, all three can train **simultaneously** on separate
-GPUs (or sequentially on a single device).
+The original **Phase 1A/B/C** parallel feature extraction pipeline (macro-shape, climate/biome, and subtractive carving networks) is considered obsolete and is no longer used in the active training pipeline.
 
-**Analogy:** These are "feature extractors." Once grokked, their weights
-are frozen and they become hidden layers for Phase 2.
+The current strategy focuses on learning the final density function directly (Stage 1 density model), which provides a single, stable target and simplifies the training and inference flow.
 
-### 3.1 Phase 1A — Macro-Shape Net
+--
 
-**What it learns:** `Perlin octaves → continentalness, erosion, ridges`  
-These three density functions determine the large-scale terrain shape:
-continent vs ocean, flat plains vs mountains, peak height and valley
-depth.
+## 4. Phase 2 — finalDensity Combiner
 
-#### Input Tensor
+**Goal:** Given the frozen outputs of Phase 1A, 1B, and 1C, learn the
+**combination function** that produces Minecraft's `finalDensity` scalar.
+
+**Why this is a separate phase:** In vanilla Minecraft, `finalDensity` is
+computed by a deeply nested DAG that blends continentalness, erosion,
+ridges, depth, factor, slopedCheese, and cave/aquifer masks. Rather than
+training the entire graph end-to-end (difficult optimisation surface), we
+let Phase 1 networks first learn each sub-function perfectly, then train
+a small combiner that learns only the blending rules.
+
+### 4.1 Architecture
 
 ```
-Name:     perlin_input_macrofeatures
-Shape:    (batch, grid_x=4, grid_y=48, grid_z=4, channels=11)
+┌──────────────────────────────────────────────────────────────┐
+│                    Phase 2 Network                           │
+│                                                              │
+│  Phase 1A output (frozen)  ──→ (B, 4, 48, 4, 3)             │
+│  Phase 1B output (frozen)  ──→ (B, 4,  4, 4, 4) ── Upsample │
+│                                   Y to 48 via      │        │
+│                                  nearest repeat   ──┘        │
+│  Phase 1C output (frozen)  ──→ (B, 4, 48, 4, 4)             │
+│                                                              │
+│        [Concatenate along channel axis]                      │
+│              ↓                                               │
+│        (B, 4, 48, 4, 11)    ← 3 + 4 + 4 = 11 channels       │
+│              ↓                                               │
+│  Conv3D(11 → 64, 3³) + ReLU                                 │
+│              ↓                                               │
+│  Conv3D(64 → 128, 3³) + ReLU                                │
+│              ↓                                               │
+│  Conv3D(128 → 64, 3³) + ReLU                                │
+│              ↓                                               │
+│  Conv3D(64 → 1, 3³)          ← linear output                │
+│              ↓                                               │
+│        (B, 4, 48, 4, 1)     ← finalDensity at cell level    │
+│              ↓                                               │
+│  Threshold: > 0 = solid, ≤ 0 = air/fluid                    │
+└──────────────────────────────────────────────────────────────┘
+```
+
+**Y-dimension handling for Phase 1B:** The climate network outputs
+(B, 4, 4, 4, 4) with only 4 Y-samples. Before concatenation, repeat
+each Y-level 12× along the Y axis to produce (B, 4, 48, 4, 4). This
+is justified because climate barely varies with altitude.
+
+### 4.2 Input Tensor
+
+```
+Shape:    (batch, 4, 48, 4, 11)
 dtype:    float32
 ```
 
-| Ch | Name | Source | Range | Purpose |
-|----|------|--------|-------|---------|
-| 0 | `norm_cell_x` | cellX / 4 | [0, 1] | Horizontal position within chunk |
-| 1 | `norm_cell_z` | cellZ / 4 | [0, 1] | Horizontal position within chunk |
-| 2 | `norm_cell_y` | cellY / 48 | [0, 1] | Vertical position within chunk |
-| 3 | `perlin_continents_o0` | Scale 43 blocks | [-1, 1] | Continent noise — 1st octave |
-| 4 | `perlin_continents_o1` | Scale 21.5 blocks | [-1, 1] | Continent noise — 2nd octave |
-| 5 | `perlin_erosion_o0` | Scale 52 blocks | [-1, 1] | Erosion noise — 1st octave |
-| 6 | `perlin_erosion_o1` | Scale 26 blocks | [-1, 1] | Erosion noise — 2nd octave |
-| 7 | `perlin_erosion_o2` | Scale 13 blocks | [-1, 1] | Erosion noise — 3rd octave |
-| 8 | `perlin_ridges_o0` | Scale 32 blocks | [-1, 1] | Ridge/weirdness — 1st octave |
-| 9 | `perlin_ridges_o1` | Scale 16 blocks | [-1, 1] | Ridge/weirdness — 2nd octave |
-| 10 | `world_seed_feature` | hash_to_float(seed, x, y, z) | [0, 1] | Seed-dependent randomness |
+| Channels | Source | Description |
+|----------|--------|-------------|
+| 0–2 | Phase 1A (frozen) | continentalness, erosion, ridges |
+| 3–6 | Phase 1B (frozen, Y-upsampled) | temperature, vegetation, depth, biome_confidence |
+| 7–10 | Phase 1C (frozen) | air_prob, water_prob, cave_uncertainty, carver_influence |
 
-#### Output Tensor
+### 4.3 Output Tensor
 
 ```
-Name:     macro_predictions
-Shape:    (batch, 4, 48, 4, 3)
+Shape:    (batch, 4, 48, 4, 1)
 dtype:    float32
-Range:    [-1, 1]
+Range:    unbounded (~-2 to +2 typical)
 ```
 
-| Ch | Target | Ground Truth Source |
-|----|--------|-------------------|
-| 0 | `continentalness` | `router.continents().compute(ctx)` |
-| 1 | `erosion` | `router.erosion().compute(ctx)` |
-| 2 | `ridges` | `router.ridges().compute(ctx)` |
+| Ch | Target | Ground Truth |
+|----|--------|-------------|
+| 0 | `finalDensity` | `router.finalDensity().compute(ctx)` |
 
-#### Network Architecture
-
-```
-Input: (B, 4, 48, 4, 11)
-  │
-  ├─ [Optional] PositionalEncoder on channels 0-2
-  │   n_freqs=8 → replaces 3 coord channels with 48 periodic features
-  │   New input width: 11 - 3 + 48 = 56 channels
-  │
-  ▼
-Conv3D(in → 32, kernel=3³, padding=1) + ReLU
-  ▼
-Conv3D(32 → 64, kernel=3³, padding=1) + ReLU
-  ▼
-Conv3D(64 → 3, kernel=3³, padding=1)          ← linear output
-  ▼
-Output: (B, 4, 48, 4, 3)
-```
-
-Parameters: ~100 K–200 K (intentionally tiny).
-
-#### Training Configuration
+### 4.4 Training Configuration
 
 | Parameter | Value | Notes |
 |-----------|-------|-------|
 | Loss | MSE | Continuous regression |
-| Optimizer | Adam | β₁=0.9, β₂=0.999 |
-| Learning rate | 1e-3 | ReduceLROnPlateau (patience 3, factor 0.5) |
-| Batch size | 128 | ~35 MB GPU memory per batch |
-| Epochs | 20–50 | Early stopping at MSE < 0.001 |
-| Precision | Float16 (mixed) | 2× memory reduction, ~15% speedup |
+| Optimizer | Adam | |
+| Learning rate | 5e-4 | Lower than Phase 1 — smaller network, fine blending |
+| Batch size | 128 | |
+| Epochs | 20–40 | Early stopping at MSE < 0.0005 |
+| Phase 1 weights | **Frozen** | `requires_grad = False` for all Phase 1 params |
+| New parameters | ~50 K | Only the combiner layers are trainable |
 
-#### Grok Criteria
+### 4.5 Grok Criteria
 
 | Metric | Threshold | Interpretation |
 |--------|-----------|----------------|
-| MSE | < 0.001 | Outputs match ground truth to ±0.03 on [-1, 1] |
-| MAE | < 0.05 | Average absolute error |
-| R² | > 0.99 | Explains > 99% of variance |
+| MSE | < 0.0005 | Tighter than Phase 1 — compound error budget |
+| Binary accuracy | > 99.5% | Correct solid/air classification at threshold 0 |
+| Surface MSE | < 0.0002 | Measured only at cells near the density=0 surface |
 
-**When grokked:** Freeze all weights (`requires_grad = False`), save
-`checkpoints/phase_1a_best.pt`.
+**Surface MSE** is the most important metric. A small error deep
+underground or high in the air is invisible; a small error at the terrain
+surface creates visible misplacement. We compute it by masking to cells
+where |finalDensity| < 0.1.
 
----
+### 4.6 Why Phase 2 Is Fast
 
-### 3.2 Phase 1B — Climate & Biome Net
+- **Only ~50 K trainable parameters** (Phase 1's ~500 K are frozen)
+- **Pre-learned features**: The combiner doesn't need to discover what
+  "erosion" or "cave" means — those concepts are already represented
+  as clean scalar outputs from Phase 1.
+- **Expected convergence:** 2–5 hours on GPU, 10–20 hours on CPU.
+- **Lower overfitting risk:** Fewer parameters + rich features →
+  better generalisation.
 
-**What it learns:** `Perlin octaves → temperature, vegetation, depth, biome_confidence`  
-Climate determines biome assignment. These vary primarily in the XZ plane —
-temperature and vegetation barely change with altitude — so we sample only
-**4 Y-levels** instead of 48, yielding ~12× fewer parameters.
-
-#### Input Tensor
-
-```
-Name:     perlin_input_climate
-Shape:    (batch, grid_x=4, grid_y=4, grid_z=4, channels=8)
-dtype:    float32
-```
-
-| Ch | Name | Source | Range |
-|----|------|--------|-------|
-| 0 | `norm_cell_x` | cellX / 4 | [0, 1] |
-| 1 | `norm_cell_z` | cellZ / 4 | [0, 1] |
-| 2 | `norm_cell_y` | Sampled at Y = 0, 96, 192, 288 | [0, 1] |
-| 3-4 | `perlin_temperature_o[0:2]` | Temperature octaves | [-1, 1] |
-| 5-6 | `perlin_vegetation_o[0:2]` | Vegetation octaves | [-1, 1] |
-| 7 | `precombined_continents` | Reused from Phase 1A output | [-1, 1] |
-
-#### Output Tensor
+### 4.7 Integration Code Pattern
 
 ```
-Shape:    (batch, 4, 4, 4, 4)
-dtype:    float32
-```
 
-| Ch | Target | Ground Truth |
-|----|--------|-------------|
-| 0 | `temperature_factor` | `router.temperature().compute(ctx)` |
-| 1 | `vegetation_factor` | `router.vegetation().compute(ctx)` |
-| 2 | `depth_factor` | `router.depth().compute(ctx)` |
-| 3 | `biome_confidence` | Derived from proximity to biome cluster centers |
-
-#### Network Architecture
-
-```
-Input: (B, 4, 4, 4, 8)
-  ▼
-Conv3D(8 → 32, kernel=3³, padding=1) + ReLU
-  ▼
-Conv3D(32 → 64, kernel=3³, padding=1) + ReLU
-  ▼
-Conv3D(64 → 4, kernel=3³, padding=1)           ← linear + softmax(ch3)
-  ▼
-Output: (B, 4, 4, 4, 4)
-```
-
-Parameters: ~30 K (smallest network — simple mapping, reduced Y).
-
-#### Training Configuration
-
-| Parameter | Value |
-|-----------|-------|
-| Loss | MSE (channels 0-2) + CrossEntropy (biome classification) |
-| Optimizer | Adam |
-| Learning rate | 1e-3 |
-| Batch size | 256 (smaller tensors → larger batches) |
-| Epochs | 10–20 |
-
-#### Grok Criteria
-
-| Metric | Threshold |
-|--------|-----------|
-| MSE (climate) | < 0.005 |
-| Biome accuracy | > 95% |
-| R² | > 0.99 |
-
----
-
-### 3.3 Phase 1C — Subtractive Net
-
-**What it learns:** `cave/aquifer Perlin octaves → 3D probability of emptiness`  
-Caves and aquifers *remove* material from the terrain — they are subtractive
-operations on the density field. This network must learn genuinely 3D
-patterns (large caves span many Y-levels), so it uses the full 4×48×4 grid
-and a slightly deeper architecture.
-
-#### Input Tensor
-
-```
-Name:     perlin_input_carvers
-Shape:    (batch, grid_x=4, grid_y=48, grid_z=4, channels=13)
-dtype:    float32
-```
-
-| Ch | Name | Source | Range |
-|----|------|--------|-------|
-| 0-2 | `norm_cell_x/y/z` | Normalised cell coords | [0, 1] |
-| 3 | `depth_gradient` | (cellY × 8 − minY) / height | [0, 1] |
-| 4-6 | `perlin_cave_large_o[0:3]` | Scales 64, 32, 16 blocks | [-1, 1] |
-| 7-9 | `perlin_cave_small_o[0:3]` | Scales 16, 8, 4 blocks | [-1, 1] |
-| 10-11 | `perlin_aquifer_o[0:2]` | Scales 52, 26 blocks | [-1, 1] |
-| 12 | `seaLevel_relative_y` | (cellY × 8 − seaLevel) / 10 | [-6.4, 25.6] |
-
-#### Output Tensor
-
-```
-Shape:    (batch, 4, 48, 4, 4)
-dtype:    float32
-Range:    [0, 1] (probabilities via sigmoid)
-```
-
-| Ch | Target | Ground Truth |
-|----|--------|-------------|
-| 0 | `air_probability` | 1 if cell is air, 0 if solid |
-| 1 | `water_probability` | 1 if cell is water |
-| 2 | `cave_uncertainty` | Variance in ensemble predictions |
-| 3 | `carver_influence` | From ConfiguredWorldCarver simulation |
-
-#### Network Architecture
-
-```
-Input: (B, 4, 48, 4, 13)
-  ▼
-Conv3D(13 → 64, kernel=3³, padding=1) + ReLU
-  ▼
-Conv3D(64 → 128, kernel=3³, padding=1) + ReLU
-  ▼
-Conv3D(128 → 4, kernel=3³, padding=1) + Sigmoid   ← probability output
-  ▼
-Output: (B, 4, 48, 4, 4)
-```
-
-Parameters: ~200 K–400 K (deeper than 1A/1B for 3D pattern complexity).
-
-#### Training Configuration
-
-| Parameter | Value | Notes |
-|-----------|-------|-------|
-| Loss | `CombinedLoss(α=0.5, β=0.5)` | Weighted BCE (pos_weight=9.0) + Dice |
-| Optimizer | Adam + ReduceLROnPlateau | |
-| Learning rate | 5e-4 | Lower than 1A/1B for probability calibration |
-| Batch size | 64 | Larger tensors → smaller batches |
-| Epochs | 30–50 | Early stopping at IoU > 0.75 |
-
-**Why weighted BCE?** Caves occupy ~10% of total volume. Without
-`pos_weight=9.0` the network converges to "predict solid everywhere"
-which trivially achieves 90% accuracy but 0% recall on caves.
-
-**Why Dice Loss?** Dice directly optimises the IoU-like F1 metric, which
-is the grok criterion. Combining it with weighted BCE prevents the
-gradient from vanishing on the sparse positive class.
-
-#### Grok Criteria
-
-| Metric | Threshold |
-|--------|-----------|
-| IoU (cave volume) | > 0.75 |
-| Dice coefficient | > 0.80 |
-
----
-
-### 3.4 Parallel Execution Strategy
-
-Because Phase 1A, 1B, and 1C share **no weights, no data dependencies, and
-no gradient flow** between them, they can train fully in parallel:
-
-```
 Wall-Clock Timeline (GPU)
 
  Hour │  GPU #0 (1A)     GPU #1 (1B)      GPU #2 (1C)
@@ -768,9 +625,9 @@ No new layers are added. The entire pipeline from Phase 1 inputs to
 Phase 3 output is treated as a single end-to-end model:
 
 ```
-Phase 1A ──┐
-Phase 1B ──┼──→ Phase 2 Combiner ──→ Phase 3 Upscaler ──→ block_density
-Phase 1C ──┘
+Legacy Feature Net A ──┐
+Legacy Feature Net B ──┼──→ Phase 2 Combiner ──→ Phase 3 Upscaler ──→ block_density
+Legacy Feature Net C ──┘
 
 All weights unfrozen. All gradients flow.
 ```
@@ -794,9 +651,9 @@ use **per-layer-group learning rates**:
 
 ```python
 optimizer = torch.optim.Adam([
-    {"params": model.phase_1a.parameters(), "lr": 1e-6},  # Barely touch
-    {"params": model.phase_1b.parameters(), "lr": 1e-6},  # Barely touch
-    {"params": model.phase_1c.parameters(), "lr": 1e-6},  # Barely touch
+    {"params": model.feature_net_a.parameters(), "lr": 1e-6},  # Barely touch
+    {"params": model.feature_net_b.parameters(), "lr": 1e-6},  # Barely touch
+    {"params": model.feature_net_c.parameters(), "lr": 1e-6},  # Barely touch
     {"params": model.phase_2.parameters(),  "lr": 5e-6},  # Small tweaks
     {"params": model.phase_3.parameters(),  "lr": 1e-5},  # Most adjustment here
 ])
@@ -825,7 +682,7 @@ trilinear approximation.
 | Block-level MSE | < 0.0001 | Combined pipeline accuracy |
 | Surface MAE (blocks) | < 0.5 | Average surface height error < half a block |
 | Biome-boundary IoU | > 0.90 | Terrain transitions match vanilla at biome edges |
-| Phase 1A MSE | < 0.002 | No catastrophic forgetting on macro features |
+| Legacy feature MSE | < 0.002 | No catastrophic forgetting on legacy feature extractors |
 
 ### 6.7 Output
 
@@ -834,14 +691,14 @@ After Phase 4 training, the complete pipeline is exported to ONNX:
 ```python
 # Export the full pipeline
 full_model = Phase4EndToEnd(
-    phase_1a, phase_1b, phase_1c,
+    legacy_feature_a, legacy_feature_b, legacy_feature_c,
     phase_2_combiner,
     phase_3_upscaler
 )
 
 torch.onnx.export(
     full_model,
-    (dummy_inputs_1a, dummy_inputs_1b, dummy_inputs_1c),
+    (dummy_inputs_a, dummy_inputs_b, dummy_inputs_c),
     "terrain_backbone.onnx",
     opset_version=17,
     input_names=["perlin_macro", "perlin_climate", "perlin_carvers"],
@@ -864,7 +721,7 @@ produce the final Voxy-compatible `WorldSection` predictions.
 Phase 1–4 Backbone                 OGN Octree Pipeline
 ─────────────────                  ────────────────────
 Perlin octaves →                   
-  Phase 1A/1B/1C →                 
+  Legacy feature nets →             
     Phase 2 combiner →             
       Phase 3 upscaler →           
         block_density (16×384×16)  →  octree_init (L4)
@@ -933,15 +790,13 @@ runtime).
               Raw per-cell noise + ground truth
                             │
                             ▼
-              phase_1_data_extraction.py
+              stage1_data_extraction.py
               JSON → NPZ conversion + tensor assembly
                             │
                             ▼
-              ┌─────────────┬─────────────┐
-              ▼             ▼             ▼
-     phase_1a_data.npz  phase_1b_data.npz  phase_1c_data.npz
-     (N, 4,48,4,11)→    (N,4,4,4,8)→      (N,4,48,4,13)→
-     (N, 4,48,4,3)      (N,4,4,4,4)       (N,4,48,4,4)
+              stage1_density_data.npz
+              (N, 4, 48, 4, 11) inputs
+              (N, 4, 48, 4, 1)  finalDensity
 ```
 
 ### 8.2 Supplementary Data (OGN Training)
@@ -963,12 +818,10 @@ data/voxy/<world>_<coords>.npz
 
 ### 8.3 Data Requirements
 
-| Phase | Samples | Disk | Generation Time |
+| Stage | Samples | Disk | Generation Time |
 |-------|---------|------|-----------------|
-| 1A | 1,000–10,000 chunks | ~150–1500 MB | ~30 min |
-| 1B | Same chunks (different extraction) | ~50–500 MB | ~10 min |
-| 1C | Same chunks (cave simulation) | ~200–2000 MB | ~45 min |
-| 2 | Same chunks (finalDensity labels) | ~100–1000 MB | ~20 min |
+| Stage 1 (legacy feature extraction) | 1,000–10,000 chunks | ~150–1500 MB | ~30–60 min |
+| Stage 2 (finalDensity combiner) | Same chunks (finalDensity labels) | ~100–1000 MB | ~20 min |
 | 3 | Same chunks (trilinear expansion) | ~500–5000 MB | ~1 h |
 | OGN | 53,000+ sub-blocks from Voxy | ~5 GB | ~2 h |
 
@@ -1046,7 +899,7 @@ Day 3
 
 | # | Risk | Impact | Mitigation |
 |---|------|--------|------------|
-| 1 | **Parity failure** — our Perlin implementation doesn't match Minecraft's | Phase 1 trains on wrong data → garbage | BLOCKING gate: `PHASE_1_PARITY_CHECK.py` must pass error < 1e-6 on 3+ seeds before any training |
+| 1 | **Parity failure** — our Perlin implementation doesn't match Minecraft's | Legacy training data mismatch → garbage | BLOCKING gate: Ensure the training data matches vanilla noise outputs before training |
 | 2 | **Phase 1A won't converge** — MSE stuck above 0.001 after 50 epochs | Surface terrain is wrong | Increase depth (+1–2 Conv3D layers), verify input normalisation, try different LR schedules |
 | 3 | **Phase 1C cave recall too low** — network predicts "all solid" | No caves in generated terrain | Increase `pos_weight` (try 15.0, 20.0), add more cave examples to training set, try focal loss |
 | 4 | **Phase 2 compound error** — small Phase 1 errors amplify in combination | finalDensity is off, surface shifts | Tighten Phase 1 grok thresholds (MSE < 0.0005), add surface-priority loss weighting |
@@ -1091,13 +944,7 @@ Day 3
 
 | Document | Purpose |
 |----------|---------|
-| [PHASE_1_STRATEGIC_MASTER_PLAN.md](PHASE_1_STRATEGIC_MASTER_PLAN.md) | Detailed Phase 1 execution plan with code samples |
-| [PHASE_1_TENSOR_ARCHITECTURE.md](PHASE_1_TENSOR_ARCHITECTURE.md) | Complete tensor shape specifications for all Phase 1 networks |
-| [PHASE_1_REFINEMENTS.md](PHASE_1_REFINEMENTS.md) | Float16, positional encoding, weighted loss, early stopping |
-| [PHASE_1_PARITY_VERIFICATION.md](PHASE_1_PARITY_VERIFICATION.md) | Noise parity check procedure (Phase 0 blocking gate) |
-| [PHASE_1_THROUGH_4.md](PHASE_1_THROUGH_4.md) | Original high-level 4-phase overview |
 | [NOISE-DESIGN.md](NOISE-DESIGN.md) | Why router6 was dropped; per-LOD conditioning |
-| [OGN_DUAL_HEAD_REDESIGN.md](OGN_DUAL_HEAD_REDESIGN.md) | Density field + material classification dual-head |
 | [MODEL-CONTRACT.md](MODEL-CONTRACT.md) | ONNX tensor contracts for `lodiffusion.v5.octree` |
 | [OCTREE-GENERATION-DESIGN.md](OCTREE-GENERATION-DESIGN.md) | OGN pipeline architecture (L4 → L0 traversal) |
 | [TRAINING-OVERVIEW.md](TRAINING-OVERVIEW.md) | Progressive octree refinement training loop |

@@ -240,13 +240,13 @@ FINAL OUTPUT: ChunkAccess (or ProtoChunk)
 | Component | Vanilla | Our Approach | Rationale |
 |-----------|---------|--------------|-----------|
 | **World Seed** | RandomState | Keep identical | Reproducibility |
-| **Biome Sampling** | MultiNoiseBiomeSource (Perlin) | **ML Phase 1B** | Cheaper than 2D Perlin |
+| **Biome Sampling** | MultiNoiseBiomeSource (Perlin) | **ML (legacy)** | Cheaper than 2D Perlin |
 | **Height Sampling** | preliminarySurfaceLevel | **Cached from Phase 1B** | Same output as biome |
-| **Noise Sampling (2D)** | continents/erosion/ridges/temp/veg | **ML Phase 1A + 1B** | Faster than Perlin |
+| **Noise Sampling (2D)** | continents/erosion/ridges/temp/veg | **ML (legacy)** | Faster than Perlin |
 | **Interpolation** | Trilinear 3D lerp | **Implicit in ONNX** | Models learn spatial coherence |
 | **Block Selection** | SurfaceRules → BlockState | **OGN Init/Refine/Leaf models** | Direct 32³ block prediction |
 | **Carving** | Cave carvers (procedural) | **Keep vanilla** | Expensive; low visual impact at distance |
-| **Aquifer** | 3D density thresholding | **Keep vanilla or ML Phase 1C** | Either fast ML or fallback vanilla |
+| **Aquifer** | 3D density thresholding | **Keep vanilla** | Preferred for stability; ML variants are deprecated |
 | **Surface Layer** | SurfaceSystem rule application | **Implicit in ONNX** | Models can learn surface patterns |
 
 ### 2.2 Phase 0: GPU TerrainShaperSpline MLP
