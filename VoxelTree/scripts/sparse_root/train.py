@@ -59,6 +59,18 @@ def main(argv=None):
         help="Learning rate.",
     )
     parser.add_argument(
+        "--split-weight",
+        type=float,
+        default=1.0,
+        help="Global lambda for split BCE loss.",
+    )
+    parser.add_argument(
+        "--label-weight",
+        type=float,
+        default=0.35,
+        help="Global lambda for leaf-only material CE loss.",
+    )
+    parser.add_argument(
         "--device",
         type=str,
         default="cpu",
@@ -91,7 +103,13 @@ def main(argv=None):
     args = parser.parse_args(argv)
 
     def _progress(epoch, total, metrics):
-        print(f"[{epoch}/{total}] loss={metrics['loss']:.6f}")
+        print(
+            f"[{epoch}/{total}] "
+            f"loss={metrics['loss']:.6f} "
+            f"split_f1={metrics['split_f1']:.4f} "
+            f"leaf_acc={metrics['leaf_acc']:.4f} "
+            f"leaf_ratio={metrics['leaf_node_ratio']:.3f}"
+        )
 
     result = train_sparse_root(
         data_path=args.data,
@@ -99,6 +117,8 @@ def main(argv=None):
         epochs=args.epochs,
         batch_size=args.batch_size,
         lr=args.lr,
+        split_weight=args.split_weight,
+        label_weight=args.label_weight,
         hidden=args.hidden,
         device=args.device,
         num_classes=args.num_classes,

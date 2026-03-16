@@ -39,6 +39,20 @@ The `calibrate*.py` scripts are for spatial pruning threshold tuning. Use to bal
 - Detail retention (pruning thresholds)
 - Runtime performance
 
+## Split-first training defaults
+
+The sparse-root objective is intentionally biased toward structural sparsity.
+
+- Global lambda defaults: `split_weight=1.0`, `label_weight=0.35`
+- Material CE is leaf-masked: label loss is only computed where `split_target == 0`
+- Suggested first-pass acceptance gates:
+  - `split_f1 >= 0.90`
+  - `split_under_rate <= 0.05`
+  - `leaf_node_ratio` (pred/gt) in `[0.95, 1.10]`
+  - `leaf_acc >= 0.75`
+
+Use `train.py --split-weight ... --label-weight ...` to sweep these values.
+
 ## References
 - Training pairs from octree-derived targets (VoxelTree.core.sparse_octree_targets)
 - Checkpoints needed: prior octree checkpoint
