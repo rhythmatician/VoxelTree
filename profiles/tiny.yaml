@@ -1,0 +1,32 @@
+name: tiny
+description: "Quick test profile — minimal data for rapid iteration"
+
+world:
+  radius: 512
+  save_name: "tiny_world"
+  voxy_save_name: "tiny_world/" # Voxy's name for this world — used in /voxy import world "..."
+
+rcon:
+  timeout: 300
+
+data:
+  voxy_dir: "../LODiffusion/run/saves"
+  data_dir: "data/voxy_octree"
+  max_sections: 100
+  min_solid: 0.02
+  val_split: 0.1
+  noise_dump_dir: "tools/fabric-server/runtime/noise_dumps"
+
+train:
+  output_dir: "models/test"
+  max_samples: 1000
+  epochs: 5
+  batch_size: 4
+  lr: 0.0001
+  device: "auto"
+
+export:
+  output_dir: "production/test"
+
+deploy:
+  target_dir: "../LODiffusion/run/config/lodiffusion"

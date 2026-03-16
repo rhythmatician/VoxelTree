@@ -1,0 +1,75 @@
+# Profile: v13_large
+# ─────────────────────────────────────────────────────────────────────────────
+# 4096-block radius world (4× the area of v12).
+#
+# RADIUS ALIGNMENT
+# ─────────────────
+# Both Chunky and /dumpnoise receive the same `world.radius` value (in blocks).
+# For the pair (Chunky-loaded chunk) → (noise dump) to cover every chunk:
+#
+#   Chunky corners:    (-R, -R) → (R-1, R-1) blocks
+#                      chunk range per axis: [-R/16, R/16 - 1]   (R/16 chunks/half)
+#
+#   /dumpnoise:        chunk_radius = (R + 15) // 16
+#                      For R a multiple of 16: chunk_radius = R/16
+#                      chunk range per axis: [-R/16, +R/16]       (R/16 + 1 chunks/half)
+#
+# dumpnoise always over-covers Chunky by exactly 1 outer ring of chunks, so
+# every pregened chunk is guaranteed a noise dump.
+#
+# REQUIREMENT: radius MUST be a multiple of 16 for clean chunk boundaries.
+#   4096 = 256 × 16  ✓
+#
+# COVERAGE NUMBERS (radius = 4096):
+#   Chunky:    512 × 512  =   262,144 chunk columns (fully pre-generated)
+#   Dumpnoise: 513 × 513  =   263,169 chunks × 24 sections = ~6.3 M training samples
+#   Stage1:    ~263 K chunks  (one JSON per chunk column)
+#   SparseRoot: ~6.3 M sections (one JSON per 16-block-tall section slice)
+#
+# RUNTIME ESTIMATES (vs radius=2048 baseline):
+#   Pregen:    ~4× longer  (4× the area)     ≈ 1–2 h depending on hardware
+#   Dumpnoise: ~4× longer                    ≈ 2–4 h
+#   rcon.timeout covers the longest individual RCON wait; increase if needed.
+# ─────────────────────────────────────────────────────────────────────────────
+
+name: v13_large
+description: >
+  Large-area training profile (radius 4096 blocks, 512×512 chunks).
+  Generates ~6.3 M (noise, voxy) section pairs — 4× the coverage of v12.
+
+world:
+  # Block radius for both Chunky pregen and /dumpnoise.
+  # Must be a multiple of 16 to align chunk boundaries.
+  # 4096 = 256 chunks per half-axis → 512×512 = 262,144 total chunk columns.
+  radius: 4096
+  save_name: world
+
+rcon:
+  # Allow up to 3 h for the noise dump (stage1 + sparse_root, ~6.3 M sections).
+  # The RCON connection stays open for the full dump duration.
+  timeout: 10800
+
+data:
+  # Voxy server-connection DB is auto-detected from %APPDATA%\ModrinthApp\...
+  # Override here only if the auto-detection fails on your machine.
+  voxy_dir: null
+  data_dir: data/voxy_octree
+  noise_dump_dir: tools/fabric-server/runtime/noise_dumps
+  max_sections: null # use all available sections
+  min_solid: 0.02 # skip trivially empty sections (< 2 % solid blocks)
+  val_split: 0.1
+
+train:
+  output_dir: models/v13_large
+  epochs: 30 # larger dataset converges faster per epoch
+  batch_size: 16
+  lr: 0.0001
+  max_samples: null # use all ~6.3 M samples
+  device: auto
+  target_mse: 0.0008 # tighter target for larger, more diverse dataset
+
+export:
+  output_dir: production/v13_large
+
+deploy:
+  target_dir: ../LODiffusion/run/config/lodiffusion

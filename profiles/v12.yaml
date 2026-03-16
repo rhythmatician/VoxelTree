@@ -1,0 +1,29 @@
+data:
+  data_dir: data/voxy_octree
+  max_sections: null
+  min_solid: 0.02
+  noise_dump_dir: tools/fabric-server/runtime/noise_dumps
+  val_split: 0.1
+  # Voxy server-connection DB: %APPDATA%\ModrinthApp\profiles\LODiffusion dependencies\.voxy\saves\localhost_25565
+  # The code auto-detects this path via DEFAULT_MODRINTH_VOXY_DIR; override here only if needed.
+  voxy_dir: null
+deploy:
+  target_dir: ../LODiffusion/run/config/lodiffusion
+description: Production v12 model — latest iteration with full voxy_octree data
+export:
+  output_dir: production/v12
+name: v12
+rcon:
+  timeout: 600
+train:
+  batch_size: 8
+  device: auto
+  epochs: 50
+  lr: 0.0001
+  max_samples: null
+  output_dir: models/v12
+  target_mse: 0.001
+world:
+  radius: 2048
+  save_name: world
+  voxy_save_name: "New World/" # Voxy's name for this world — used in /voxy import world "..."

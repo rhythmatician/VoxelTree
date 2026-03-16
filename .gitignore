@@ -48,8 +48,7 @@ session.lock
 data/test_world/region/*
 *.mca
 
-# Training profiles and pipeline intermediates (generated, can be regenerated)
-profiles/
+# Pipeline run state (generated)
 runs/
 data/*
 training_run.txt
