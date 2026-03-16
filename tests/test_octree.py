@@ -138,6 +138,7 @@ def _make_batch(B: int, level: int = 2, vocab: int = 32) -> Dict[str, Any]:
     return {
         "labels32": torch.randint(0, vocab, (B, 32, 32, 32)),
         "parent_labels32": torch.randint(0, vocab, (B, 32, 32, 32)),
+        "parent_octant16": torch.randint(0, vocab, (B, 16, 16, 16)),
         "heightmap32": torch.randn(B, 5, 32, 32),
         "biome32": torch.randint(0, 16, (B, 32, 32)),
         "y_position": torch.randint(0, 24, (B,)),
@@ -468,7 +469,7 @@ class TestBuildFunctionOutput:
 
         # fake section indices always non-empty
         monkeypatch.setattr(
-            "VoxelTree.scripts.build_octree_pairs.build_section_index",
+            "VoxelTree.scripts.octree.build_octree_pairs.build_section_index",
             lambda data_dir, level: {0: 1},
         )
 
@@ -488,13 +489,13 @@ class TestBuildFunctionOutput:
             ]
 
         monkeypatch.setattr(
-            "VoxelTree.scripts.build_octree_pairs.build_pairs_for_level",
+            "VoxelTree.scripts.octree.build_octree_pairs.build_pairs_for_level",
             fake_build_pairs_for_level,
         )
 
         # bypass actual NPZ writing
         monkeypatch.setattr(
-            "VoxelTree.scripts.build_octree_pairs.stack_and_save",
+            "VoxelTree.scripts.octree.build_octree_pairs.stack_and_save",
             lambda pairs, path: len(pairs),
         )
 
@@ -814,6 +815,7 @@ class TestOctreeDataset:
         expected = {
             "labels32",
             "parent_labels32",
+            "parent_octant16",
             "heightmap32",
             "biome32",
             "y_position",
@@ -882,6 +884,7 @@ class TestCollateOctreeBatch:
         return {
             "labels32": torch.randint(0, vocab, (32, 32, 32)),
             "parent_labels32": torch.randint(0, vocab, (32, 32, 32)),
+            "parent_octant16": torch.randint(0, vocab, (16, 16, 16)),
             "heightmap32": torch.randn(5, 32, 32),
             "biome32": torch.randint(0, 16, (32, 32)),
             "y_position": torch.tensor(5, dtype=torch.long),
