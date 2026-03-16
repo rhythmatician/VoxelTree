@@ -75,7 +75,7 @@ def _compute_dag_layout(
         if tid in steps_by_track:
             band_start[tid] = cur
             cur += band_height[tid]
-    for tid in steps_by_track:          # tracks not in TRACK_ORDER go at the end
+    for tid in steps_by_track:  # tracks not in TRACK_ORDER go at the end
         if tid not in band_start:
             band_start[tid] = cur
             cur += band_height.get(tid, 1)
@@ -91,8 +91,7 @@ def _compute_dag_layout(
         positions[s.id] = (col, band_start[tid] + sr)
 
     band_info: dict[str, tuple[int, int]] = {
-        tid: (band_start[tid], band_height[tid])
-        for tid in band_start
+        tid: (band_start[tid], band_height[tid]) for tid in band_start
     }
     return positions, band_info
 
@@ -279,7 +278,7 @@ class _NodesWidget(QWidget):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._step_positions: dict[str, tuple[int, int]] = {}  # step_id → (col, row)
-        self._band_info: dict[str, tuple[int, int]] = {}       # track_id → (start_row, height)
+        self._band_info: dict[str, tuple[int, int]] = {}  # track_id → (start_row, height)
         self._node_widgets: dict[str, StepNodeWidget] = {}
         self._active_ids: set[str] = set()
         self._steps: list[StepDef] = []  # stored for paintEvent
