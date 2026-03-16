@@ -49,7 +49,9 @@ def _vt_root() -> Path:
 
 def _pregen_cmd(p: dict) -> list[str]:
     world = p.get("world", {})
-    rcon = p.get("rcon", {})
+    from VoxelTree.gui.server_manager import get_rcon_settings  # noqa: PLC0415
+
+    rcon = get_rcon_settings()
     cmd = [
         _python(),
         "-m",
@@ -58,18 +60,22 @@ def _pregen_cmd(p: dict) -> list[str]:
         "--radius",
         str(world.get("radius", 2048)),
         "--password",
-        str(rcon.get("password", "")),
+        str(rcon["password"]),
         "--host",
-        str(rcon.get("host", "localhost")),
+        str(rcon["host"]),
         "--port",
-        str(rcon.get("port", 25575)),
+        str(rcon["port"]),
     ]
     return cmd
 
 
 def _voxy_import_cmd(p: dict) -> list[str]:
     world = p.get("world", {})
-    rcon = p.get("rcon", {})
+    from VoxelTree.gui.server_manager import get_rcon_settings  # noqa: PLC0415
+
+    rcon = get_rcon_settings()
+    # timeout is still profile-level (it's not a server property)
+    rcon_timeout = p.get("rcon", {}).get("timeout", 300)
     return [
         _python(),
         "-m",
@@ -78,19 +84,21 @@ def _voxy_import_cmd(p: dict) -> list[str]:
         "--world-name",
         str(world.get("save_name", "New World")),
         "--password",
-        str(rcon.get("password", "")),
+        str(rcon["password"]),
         "--host",
-        str(rcon.get("host", "localhost")),
+        str(rcon["host"]),
         "--port",
-        str(rcon.get("port", 25575)),
+        str(rcon["port"]),
         "--timeout",
-        str(rcon.get("timeout", 300)),
+        str(rcon_timeout),
     ]
 
 
 def _dumpnoise_cmd(p: dict) -> list[str]:
     world = p.get("world", {})
-    rcon = p.get("rcon", {})
+    from VoxelTree.gui.server_manager import get_rcon_settings  # noqa: PLC0415
+
+    rcon = get_rcon_settings()
     return [
         _python(),
         "-m",
@@ -99,11 +107,11 @@ def _dumpnoise_cmd(p: dict) -> list[str]:
         "--radius",
         str(world.get("radius", 2048)),
         "--password",
-        str(rcon.get("password", "")),
+        str(rcon["password"]),
         "--host",
-        str(rcon.get("host", "localhost")),
+        str(rcon["host"]),
         "--port",
-        str(rcon.get("port", 25575)),
+        str(rcon["port"]),
     ]
 
 
@@ -340,11 +348,17 @@ def _train_stage1_density_cmd(p: dict) -> list[str]:
         cmd += ["--batch-size", str(train["batch_size"])]
     if train.get("lr") is not None:
         cmd += ["--lr", str(train["lr"])]
+    if train.get("target_mse") is not None:
+        cmd += ["--target-mse", str(train["target_mse"])]
     return cmd
 
 
+def _train_terrain_shaper_cmd(_: dict) -> list[str]:
+    """Run the terrain shaper trainer script (uses fixed internal settings)."""
+    return [_python(), "tools/train_terrain_shaper.py"]
+
+
 def _extract_stage1_weights_cmd(p: dict) -> list[str]:
-    data = p.get("data", {})
     train = p.get("train", {})
     extract = p.get("extract", {})
     cmd = [_python(), "tools/extract_stage1_weights.py"]
@@ -434,6 +448,12 @@ PIPELINE_STEPS: list[StepDef] = [
         label="Distill",
         prereqs=["train_stage1_density"],
         cmd_factory=_distill_density_cmd,
+    ),
+    StepDef(
+        id="train_terrain_shaper",
+        label="T Shaper",
+        prereqs=["distill_density"],
+        cmd_factory=_train_terrain_shaper_cmd,
     ),
     StepDef(
         id="extract_octree",

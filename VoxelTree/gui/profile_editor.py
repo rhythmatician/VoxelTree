@@ -54,9 +54,6 @@ _DEFAULT_PROFILE: dict = {
         "save_name": "New World",
     },
     "rcon": {
-        "host": "localhost",
-        "port": 25575,
-        "password": "",
         "timeout": 300,
     },
     "data": {
@@ -73,6 +70,7 @@ _DEFAULT_PROFILE: dict = {
         "epochs": 20,
         "batch_size": 4,
         "lr": 0.0001,
+        "target_mse": 0.001,
         "device": "auto",
     },
     "export": {
@@ -307,15 +305,19 @@ class ProfileEditorDialog(QDialog):
         self._add_str(w_form, "world.save_name", "Save Name", world.get("save_name", "New World"))
         form_layout.addWidget(w_box)
 
-        # ── RCON ──
-        rcon = self._data.get("rcon", {})
-        r_box = self._group("RCON")
-        r_form = QFormLayout(r_box)
-        self._add_str(r_form, "rcon.host", "Host", rcon.get("host", "localhost"))
-        self._add_int(r_form, "rcon.port", "Port", rcon.get("port", 25575), 1, 65535)
-        self._add_str(r_form, "rcon.password", "Password", rcon.get("password", ""))
-        self._add_int(r_form, "rcon.timeout", "Timeout (s)", rcon.get("timeout", 300), 10, 3600)
-        form_layout.addWidget(r_box)
+        # ── Server (read-only — values come from server.properties) ──
+        from VoxelTree.gui.server_manager import get_rcon_settings  # noqa: PLC0415
+
+        srv = get_rcon_settings()
+        s_box = self._group("Server (from server.properties)")
+        s_form = QFormLayout(s_box)
+        for key, label in [("host", "Host"), ("port", "Port"), ("password", "Password")]:
+            lbl = QLabel(str(srv[key]))
+            lbl.setStyleSheet("color:#888;")
+            s_form.addRow(label, lbl)
+        rcon_timeout = self._data.get("rcon", {}).get("timeout", 300)
+        self._add_int(s_form, "rcon.timeout", "Timeout (s)", rcon_timeout, 10, 3600)
+        form_layout.addWidget(s_box)
 
         # ── Data ──
         data = self._data.get("data", {})
@@ -344,6 +346,15 @@ class ProfileEditorDialog(QDialog):
         self._add_int(t_form, "train.batch_size", "Batch Size", train.get("batch_size", 4), 1, 512)
         self._add_float(
             t_form, "train.lr", "Learning Rate", train.get("lr", 0.0001), 1e-6, 0.1, decimals=6
+        )
+        self._add_float(
+            t_form,
+            "train.target_mse",
+            "Target MSE",
+            train.get("target_mse", 0.001),
+            0.0,
+            1.0,
+            decimals=6,
         )
         self._add_str(t_form, "train.device", "Device", train.get("device", "auto"))
         form_layout.addWidget(t_box)
@@ -529,6 +540,11 @@ class ProfileEditorDialog(QDialog):
                     _set(self._data, key, None)
                 else:
                     _set(self._data, key, widget._spin.value())  # type: ignore[attr-defined]
+
+        # Strip legacy RCON keys — they now live in server.properties
+        rcon = self._data.get("rcon", {})
+        for legacy_key in ("host", "port", "password"):
+            rcon.pop(legacy_key, None)
 
     def profile_name(self) -> str:
         return str(self._data.get("name", ""))

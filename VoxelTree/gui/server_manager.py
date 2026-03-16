@@ -4,11 +4,17 @@ Manages the server JVM subprocess using Qt's QProcess for proper signal-safe
 stdout/stderr capture.  Detects startup completion via RCON port polling
 (no log-line parsing needed — works regardless of RCON credential changes).
 
+The single source of truth for RCON credentials (host, port, password) is
+``tools/fabric-server/runtime/server.properties``.  When a profile is activated
+the manager patches ``server.properties`` to match the profile's world seed,
+level-name, and RCON password before (re)starting the server.
+
 Usage
 -----
-    mgr = ServerManager(rcon_host="localhost", rcon_port=25575)
+    mgr = ServerManager()
     mgr.log_line.connect(print)
     mgr.status_changed.connect(lambda s: print("Status:", s))
+    mgr.configure_for_profile(profile_dict)
     mgr.start()
     # ... later ...
     mgr.stop()
@@ -43,6 +49,7 @@ def _find_fabric_tools_dir() -> Path:
 
 _TOOLS_DIR = _find_fabric_tools_dir()
 _RUNTIME_DIR = _TOOLS_DIR / "runtime"
+_SERVER_PROPERTIES = _RUNTIME_DIR / "server.properties"
 
 # Locate the server JAR in tools/fabric-server (not inside runtime/)
 _JAR_CANDIDATES = list(_TOOLS_DIR.glob("*.jar"))
@@ -55,6 +62,9 @@ _STARTUP_POLL_MS = 2_000
 # Max startup wait before giving up (ms)
 _STARTUP_TIMEOUT_MS = 120_000
 
+# Default RCON password baked into server.properties when no profile overrides it
+_DEFAULT_RCON_PASSWORD = "voxeltree"
+
 
 def _rcon_ping(host: str, port: int) -> bool:
     """Return True if something is accepting TCP connections on host:port."""
@@ -63,6 +73,73 @@ def _rcon_ping(host: str, port: int) -> bool:
             return True
     except OSError:
         return False
+
+
+# ------------------------------------------------------------------
+# server.properties helpers
+# ------------------------------------------------------------------
+
+
+def read_server_property(key: str, default: str = "") -> str:
+    """Read a single property from the runtime server.properties file."""
+    try:
+        text = _SERVER_PROPERTIES.read_text(encoding="utf-8")
+    except Exception:
+        return default
+
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in stripped:
+            continue
+        k, v = stripped.split("=", 1)
+        if k.strip() == key:
+            return v.strip()
+    return default
+
+
+def _patch_server_properties(patches: dict[str, str]) -> None:
+    """Update specific key=value pairs in server.properties, preserving comments/order.
+
+    Keys not already present are appended at the end.
+    """
+    try:
+        text = _SERVER_PROPERTIES.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        text = ""
+
+    remaining = dict(patches)
+    new_lines: list[str] = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped and not stripped.startswith("#") and "=" in stripped:
+            key = stripped.split("=", 1)[0].strip()
+            if key in remaining:
+                new_lines.append(f"{key}={remaining.pop(key)}")
+                continue
+        new_lines.append(line)
+
+    # Append any keys that weren't found in the original file
+    for key, value in remaining.items():
+        new_lines.append(f"{key}={value}")
+
+    _SERVER_PROPERTIES.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
+
+
+def get_rcon_settings() -> dict[str, str | int]:
+    """Return the current RCON settings from server.properties.
+
+    This is the canonical way for step command factories to obtain RCON
+    credentials — profiles no longer store them.
+
+    Returns
+    -------
+    dict with keys ``host``, ``port``, ``password``.
+    """
+    return {
+        "host": read_server_property("server-ip", "localhost") or "localhost",
+        "port": int(read_server_property("rcon.port", "25575")),
+        "password": read_server_property("rcon.password", _DEFAULT_RCON_PASSWORD),
+    }
 
 
 class ServerManager(QObject):
@@ -84,16 +161,8 @@ class ServerManager(QObject):
     status_changed: Signal = Signal(str)
     log_line: Signal = Signal(str)
 
-    def __init__(
-        self,
-        rcon_host: str = "localhost",
-        rcon_port: int = 25575,
-        parent: QObject | None = None,
-    ) -> None:
+    def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
-        self._rcon_host = rcon_host
-        self._rcon_port = rcon_port
-        self._rcon_password: str = ""
         self._status = "stopped"
 
         # QProcess handles stdout/stderr in a Qt-friendly way
@@ -130,15 +199,57 @@ class ServerManager(QObject):
     def is_running(self) -> bool:
         return self._status == "running"
 
-    def configure_rcon(self, host: str, port: int, password: str = "") -> None:
-        """Update RCON connection details (call before start())."""
-        self._rcon_host = host
-        self._rcon_port = port
-        self._rcon_password = password
+    def configure_for_profile(self, profile: dict) -> None:
+        """Patch server.properties to match the given profile dict.
+
+        Updates ``level-seed``, ``level-name``, and ``rcon.password`` so the
+        server will start with the correct world and RCON credentials.  Must be
+        called **before** :meth:`start` (or the server must be restarted for
+        changes to take effect).
+        """
+        world = profile.get("world", {})
+        rcon = profile.get("rcon", {})
+        patches: dict[str, str] = {}
+
+        seed = world.get("seed")
+        if seed is not None:
+            patches["level-seed"] = str(seed)
+        save_name = world.get("save_name")
+        if save_name:
+            patches["level-name"] = save_name
+
+        # RCON password — profiles MAY still carry a legacy ``rcon.password``
+        # key; if present we honour it, otherwise keep whatever is already in
+        # server.properties.
+        pw = rcon.get("password")
+        if pw:
+            patches["rcon.password"] = pw
+
+        if patches:
+            _patch_server_properties(patches)
+            self.log_line.emit(
+                f"[Server] Patched server.properties: {', '.join(f'{k}={v}' for k, v in patches.items())}"
+            )
+
+    # Legacy shim — old callers may still call configure_rcon(); this now
+    # reads/writes server.properties instead of storing state in-memory.
+    def configure_rcon(self, host: str, port: int, password: str = "") -> None:  # noqa: D401
+        """Deprecated — prefer :meth:`configure_for_profile`.
+
+        Kept for backward compatibility.  Updates server.properties directly.
+        """
+        patches: dict[str, str] = {}
+        if password:
+            patches["rcon.password"] = password
+        if port != 25575:
+            patches["rcon.port"] = str(port)
+        if patches:
+            _patch_server_properties(patches)
 
     def ping(self) -> bool:
         """Check whether the RCON port is currently accepting connections."""
-        return _rcon_ping(self._rcon_host, self._rcon_port)
+        rcon = get_rcon_settings()
+        return _rcon_ping(str(rcon["host"]), int(rcon["port"]))
 
     def start(self) -> None:
         """Launch the Fabric server subprocess."""
@@ -181,17 +292,22 @@ class ServerManager(QObject):
         self._startup_poll.stop()
         self._startup_timeout.stop()
 
-        # Try RCON /stop first
+        # Always read credentials from server.properties — the single source of truth.
+        rcon = get_rcon_settings()
+        host = str(rcon["host"])
+        port = int(rcon["port"])
+        password = str(rcon["password"])
+
         try:
             from VoxelTree.preprocessing.rcon import RconClient  # noqa: PLC0415
 
-            with RconClient(
-                self._rcon_host, self._rcon_port, self._rcon_password, timeout=3.0
-            ) as rcon:
-                rcon.command("stop")
+            with RconClient(host, port, password, timeout=3.0) as rc:
+                rc.command("stop")
             self.log_line.emit("[Server] Sent /stop via RCON — waiting for shutdown…")
         except Exception as exc:
-            self.log_line.emit(f"[Server] RCON /stop failed ({exc}); waiting for process to exit…")
+            self.log_line.emit(
+                f"[Server] RCON /stop failed ({exc}); waiting for process to exit…"
+            )
 
         self._stop_timer.start()
 
@@ -258,7 +374,8 @@ class ServerManager(QObject):
 
     @Slot()
     def _check_rcon_ready(self) -> None:
-        if _rcon_ping(self._rcon_host, self._rcon_port):
+        rcon = get_rcon_settings()
+        if _rcon_ping(str(rcon["host"]), int(rcon["port"])):
             self._startup_poll.stop()
             self._startup_timeout.stop()
             self._set_status("running")

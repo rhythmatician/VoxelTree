@@ -152,6 +152,14 @@ class MainWindow(QMainWindow):
             self._detail.load_profile(profile_name, registry)
             self._detail.show()
             self.resizeDocks([self._detail], [360], Qt.Orientation.Horizontal)
+
+        # Patch server.properties so the server uses this profile's world/RCON
+        # settings.  The server must be (re)started for seed/level-name changes
+        # to take effect; RCON password is used immediately by stop().
+        profile = self._profiles.get(profile_name)
+        if profile:
+            self._server.configure_for_profile(profile)
+
         self._server_bar.set_active_profile(profile_name)
 
     @Slot()
@@ -245,6 +253,11 @@ class MainWindow(QMainWindow):
         if profile_name not in self._profiles:
             return
 
+        # Patch server.properties to match the active profile (seed, world name,
+        # RCON password) before starting the server.
+        profile = self._profiles[profile_name]
+        self._server.configure_for_profile(profile)
+
         # Ensure the Fabric server is running
         self._server.start()
 
@@ -259,7 +272,9 @@ class MainWindow(QMainWindow):
             self._step_queue.extend((profile_name, step_id) for step_id in _SERVER_SESSION_STEPS)
 
         # Keep only steps for this profile (ignore others) and flatten to ids.
-        self._server_session_queue = [step_id for p, step_id in self._step_queue if p == profile_name]
+        self._server_session_queue = [
+            step_id for p, step_id in self._step_queue if p == profile_name
+        ]
         self._step_queue.clear()
         self._dashboard.set_step_queue(self._step_queue)
 
