@@ -7,7 +7,7 @@ computational cost.
 
 Usage
 -----
-  python VoxelTree/tools/calibrate_split_threshold.py \\
+  python VoxelTree/scripts/sparse_root/calibrate_split_threshold.py \\
       --data noise_training_data/sparse_root_pairs.npz \\
       --model LODiffusion/run/models/sparse_root_fast80/sparse_root.onnx \\
       [--samples 500] [--target-expand-rate 0.5]

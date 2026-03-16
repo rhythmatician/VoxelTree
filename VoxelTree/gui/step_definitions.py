@@ -400,7 +400,7 @@ def _deploy_leaf_cmd(p: dict) -> list[str]:
 def _train_stage1_density_cmd(p: dict) -> list[str]:
     data = p.get("data", {})
     train = p.get("train", {})
-    cmd = [_python(), "tools/train_stage1_density.py"]
+    cmd = [_python(), "scripts/stage1/train_stage1_density.py"]
     if data.get("stage1_dump_dir"):
         cmd += ["--data-dir", str(data["stage1_dump_dir"])]
     if train.get("output_dir"):
@@ -419,7 +419,7 @@ def _train_stage1_density_cmd(p: dict) -> list[str]:
 def _extract_stage1_weights_cmd(p: dict) -> list[str]:
     train = p.get("train", {})
     extract = p.get("extract", {})
-    cmd = [_python(), "tools/extract_stage1_weights.py"]
+    cmd = [_python(), "scripts/stage1/extract_stage1_weights.py"]
     model_dir = train.get("output_dir")
     if model_dir:
         cmd += ["--model-dir", str(model_dir)]
@@ -432,7 +432,7 @@ def _distill_density_cmd(p: dict) -> list[str]:
     train = p.get("train", {})
     distill = p.get("distill", {})
     return [
-        _python(), "scripts/distill_density_nn.py",
+        _python(), "scripts/stage1/distill_density_nn.py",
         "--teacher", str(distill.get("teacher", "unet")),
         "--student", str(distill.get("student", "sep")),
         "--epochs", str(distill.get("epochs", 120)),
@@ -444,7 +444,7 @@ def _distill_density_cmd(p: dict) -> list[str]:
 
 def _train_terrain_shaper_cmd(_: dict) -> list[str]:
     """Train the TerrainShaper spline-approximation MLP (fixed internal settings)."""
-    return [_python(), "tools/train_terrain_shaper.py"]
+    return [_python(), "scripts/stage1/train_terrain_shaper.py"]
 
 
 # ---------------------------------------------------------------------------
@@ -470,7 +470,7 @@ def _train_sparse_root_cmd(p: dict) -> list[str]:
     train = p.get("train", {})
     data_dir = data.get("data_dir", "noise_training_data")
     cmd = [
-        _python(), "tools/train_sparse_root.py",
+        _python(), "scripts/sparse_root/train_sparse_root.py",
         "--data", str(Path(data_dir) / "sparse_root_pairs.npz"),
         "--model-variant", str(train.get("sparse_root_variant", "fast")),
         "--hidden", str(train.get("sparse_root_hidden", 80)),
@@ -490,7 +490,7 @@ def _distill_sparse_root_cmd(p: dict) -> list[str]:
     data_dir = data.get("data_dir", "noise_training_data")
     teacher_dir = train.get("output_dir", ".")
     return [
-        _python(), "tools/distill_sparse_root.py",
+        _python(), "scripts/sparse_root/distill_sparse_root.py",
         "--teacher-checkpoint", str(Path(teacher_dir) / "sparse_root_model.pt"),
         "--data", str(Path(data_dir) / "sparse_root_pairs.npz"),
         "--student-variant", str(train.get("sparse_root_variant", "fast")),
@@ -557,7 +557,7 @@ MODEL_TRACKS: list[ModelTrack] = [
     ),
     # ── Sparse Root ───────────────────────────────────────────────────────
     # export and deploy are stubs until scripts exist:
-    #   TODO export: write tools/export_sparse_root.py
+    #   TODO export: write scripts/sparse_root/export_sparse_root.py
     #   TODO deploy: extend VoxelTree/scripts/deploy_models.py for sparse_root
     ModelTrack(
         track_id="sparse_root",

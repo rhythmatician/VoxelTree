@@ -9,7 +9,7 @@ Checks:
 
 Usage
 -----
-  python VoxelTree/tools/diagnose_sparse_root_data.py \\
+  python VoxelTree/scripts/sparse_root/diagnose_sparse_root_data.py \\
       --data noise_training_data/sparse_root_pairs.npz \\
       [--samples 50] [--verbose]
 """

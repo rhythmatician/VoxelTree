@@ -7,9 +7,9 @@ load time, shaving 5–15% off model startup latency.  Applies ORT_ENABLE_ALL
 execution-provider-specific layout transforms.
 
 Usage:
-    python tools/optimize_onnx.py                         # default: production/
-    python tools/optimize_onnx.py --model-dir runs/v42    # custom dir
-    python tools/optimize_onnx.py --validate              # also run inference check
+    python scripts/octree/optimize_onnx.py                         # default: production/
+    python scripts/octree/optimize_onnx.py --model-dir runs/v42    # custom dir
+    python scripts/octree/optimize_onnx.py --validate              # also run inference check
 
 Requirements:
     pip install onnxruntime          # CPU-only is fine for optimization

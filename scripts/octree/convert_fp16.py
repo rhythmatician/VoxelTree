@@ -6,9 +6,9 @@ UHD 770 (Xe LP) via DirectML, expect 1.2–1.6× inference speedup without any
 retraining, calibration data, or Java-side changes (I/O stays FP32).
 
 Usage:
-    python tools/convert_fp16.py                          # default: production/
-    python tools/convert_fp16.py --model-dir runs/v42     # custom dir
-    python tools/convert_fp16.py --validate               # also run shape check
+    python scripts/octree/convert_fp16.py                          # default: production/
+    python scripts/octree/convert_fp16.py --model-dir runs/v42     # custom dir
+    python scripts/octree/convert_fp16.py --validate               # also run shape check
 
 Requirements:
     pip install onnx onnxconverter-common

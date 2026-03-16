@@ -13,7 +13,7 @@ except ImportError:
 
 # Path to the sparse_root_dumps directory
 DUMPS_DIR = os.path.abspath(
-    os.path.join(os.path.dirname(__file__), "../tools/fabric-server/runtime/sparse_root_dumps")
+    os.path.join(os.path.dirname(__file__), "../../tools/fabric-server/runtime/sparse_root_dumps")
 )
 
 biome_counter = Counter()
