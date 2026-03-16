@@ -51,6 +51,7 @@ VoxelTree/train/prior_init.py
 VoxelTree/train/train_octree.py
 VoxelTree/utils/progress.py
 tests/test_export_octree.py
+tests/test_gui_model_coverage.py
 tests/test_gui_progress.py
 tests/test_octree.py
 tests/test_run_registry.py

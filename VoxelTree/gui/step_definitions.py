@@ -151,9 +151,11 @@ class ModelTrack:
             StepDef(
                 id=bp,
                 label=f"P·{short}",
-                prereqs=self.build_pairs_prereqs
-                if self.build_pairs_prereqs is not None
-                else ["column_heights"],
+                prereqs=(
+                    self.build_pairs_prereqs
+                    if self.build_pairs_prereqs is not None
+                    else ["column_heights"]
+                ),
                 cmd_factory=self.build_pairs_factory or _stub_cmd,
                 enabled=self.build_pairs_factory is not None,
                 track=self.track_id,
@@ -221,11 +223,18 @@ def _pregen_cmd(p: dict) -> list[str]:
 
     rcon = get_rcon_settings()
     return [
-        _python(), "-m", "VoxelTree", "pregen",
-        "--radius", str(world.get("radius", 2048)),
-        "--password", str(rcon["password"]),
-        "--host", str(rcon["host"]),
-        "--port", str(rcon["port"]),
+        _python(),
+        "-m",
+        "VoxelTree",
+        "pregen",
+        "--radius",
+        str(world.get("radius", 2048)),
+        "--password",
+        str(rcon["password"]),
+        "--host",
+        str(rcon["host"]),
+        "--port",
+        str(rcon["port"]),
     ]
 
 
@@ -236,12 +245,20 @@ def _voxy_import_cmd(p: dict) -> list[str]:
     rcon = get_rcon_settings()
     rcon_timeout = p.get("rcon", {}).get("timeout", 300)
     return [
-        _python(), "-m", "VoxelTree", "voxy-import",
-        "--world-name", str(world.get("save_name", "New World")),
-        "--password", str(rcon["password"]),
-        "--host", str(rcon["host"]),
-        "--port", str(rcon["port"]),
-        "--timeout", str(rcon_timeout),
+        _python(),
+        "-m",
+        "VoxelTree",
+        "voxy-import",
+        "--world-name",
+        str(world.get("save_name", "New World")),
+        "--password",
+        str(rcon["password"]),
+        "--host",
+        str(rcon["host"]),
+        "--port",
+        str(rcon["port"]),
+        "--timeout",
+        str(rcon_timeout),
     ]
 
 
@@ -253,21 +270,34 @@ def _dumpnoise_cmd(p: dict) -> list[str]:
     # Use profile rcon.timeout so large-radius dumps do not time out.
     rcon_timeout = p.get("rcon", {}).get("timeout", 3600)
     return [
-        _python(), "-m", "VoxelTree", "dumpnoise",
-        "--radius", str(world.get("radius", 2048)),
-        "--password", str(rcon["password"]),
-        "--host", str(rcon["host"]),
-        "--port", str(rcon["port"]),
-        "--timeout", str(rcon_timeout),
+        _python(),
+        "-m",
+        "VoxelTree",
+        "dumpnoise",
+        "--radius",
+        str(world.get("radius", 2048)),
+        "--password",
+        str(rcon["password"]),
+        "--host",
+        str(rcon["host"]),
+        "--port",
+        str(rcon["port"]),
+        "--timeout",
+        str(rcon_timeout),
     ]
 
 
 def _extract_octree_cmd(p: dict) -> list[str]:
     data = p.get("data", {})
     cmd = [
-        _python(), "-m", "VoxelTree", "dataprep",
-        "--from-step", "extract-octree",
-        "--voxy-dir", str(data.get("voxy_dir", "../LODiffusion/run/saves")),
+        _python(),
+        "-m",
+        "VoxelTree",
+        "dataprep",
+        "--from-step",
+        "extract-octree",
+        "--voxy-dir",
+        str(data.get("voxy_dir", "../LODiffusion/run/saves")),
     ]
     if data.get("data_dir"):
         cmd += ["--data-dir", str(data["data_dir"])]
@@ -281,8 +311,12 @@ def _extract_octree_cmd(p: dict) -> list[str]:
 def _column_heights_cmd(p: dict) -> list[str]:
     data = p.get("data", {})
     cmd = [
-        _python(), "-m", "VoxelTree", "dataprep",
-        "--from-step", "column-heights-octree",
+        _python(),
+        "-m",
+        "VoxelTree",
+        "dataprep",
+        "--from-step",
+        "column-heights-octree",
     ]
     if data.get("data_dir"):
         cmd += ["--data-dir", str(data["data_dir"])]
@@ -299,9 +333,14 @@ def _column_heights_cmd(p: dict) -> list[str]:
 def _build_pairs_model_cmd(p: dict, model_type: str) -> list[str]:
     data = p.get("data", {})
     cmd = [
-        _python(), "-m", "VoxelTree", "build-pairs",
-        "--model-type", model_type,
-        "--val-split", str(data.get("val_split", 0.1)),
+        _python(),
+        "-m",
+        "VoxelTree",
+        "build-pairs",
+        "--model-type",
+        model_type,
+        "--val-split",
+        str(data.get("val_split", 0.1)),
     ]
     if data.get("data_dir"):
         cmd += ["--data-dir", str(data["data_dir"])]
@@ -312,12 +351,20 @@ def _train_model_cmd(p: dict, model_type: str) -> list[str]:
     data = p.get("data", {})
     train = p.get("train", {})
     cmd = [
-        _python(), "-m", "VoxelTree", "train",
-        "--models", model_type,
-        "--epochs", str(train.get("epochs", 20)),
-        "--batch-size", str(train.get("batch_size", 4)),
-        "--lr", str(train.get("lr", 1e-4)),
-        "--device", str(train.get("device", "auto")),
+        _python(),
+        "-m",
+        "VoxelTree",
+        "train",
+        "--models",
+        model_type,
+        "--epochs",
+        str(train.get("epochs", 20)),
+        "--batch-size",
+        str(train.get("batch_size", 4)),
+        "--lr",
+        str(train.get("lr", 1e-4)),
+        "--device",
+        str(train.get("device", "auto")),
     ]
     if data.get("data_dir"):
         cmd += ["--data-dir", str(data["data_dir"])]
@@ -331,9 +378,15 @@ def _export_model_cmd(p: dict, model_type: str) -> list[str]:
     export = p.get("export", {})
     model_dir = train.get("output_dir", "models/voxy_octree")
     cmd = [
-        _python(), "-m", "VoxelTree", "pipeline", "export",
-        "--checkpoint-dir", str(model_dir),
-        "--models", model_type,
+        _python(),
+        "-m",
+        "VoxelTree",
+        "pipeline",
+        "export",
+        "--checkpoint-dir",
+        str(model_dir),
+        "--models",
+        model_type,
     ]
     if export.get("output_dir"):
         cmd += ["--export-dir", str(export["output_dir"])]
@@ -345,8 +398,14 @@ def _deploy_model_cmd(p: dict, model_type: str) -> list[str]:
     deploy = p.get("deploy", {})
     export_dir = export.get("output_dir", "production")
     cmd = [
-        _python(), "-m", "VoxelTree", "pipeline", "deploy", str(export_dir),
-        "--models", model_type,
+        _python(),
+        "-m",
+        "VoxelTree",
+        "pipeline",
+        "deploy",
+        str(export_dir),
+        "--models",
+        model_type,
     ]
     if deploy.get("target_dir"):
         cmd += ["--dest", str(deploy["target_dir"])]
@@ -356,11 +415,14 @@ def _deploy_model_cmd(p: dict, model_type: str) -> list[str]:
 def _build_pairs_init_cmd(p: dict) -> list[str]:
     return _build_pairs_model_cmd(p, "init")
 
+
 def _train_init_cmd(p: dict) -> list[str]:
     return _train_model_cmd(p, "init")
 
+
 def _export_init_cmd(p: dict) -> list[str]:
     return _export_model_cmd(p, "init")
+
 
 def _deploy_init_cmd(p: dict) -> list[str]:
     return _deploy_model_cmd(p, "init")
@@ -369,11 +431,14 @@ def _deploy_init_cmd(p: dict) -> list[str]:
 def _build_pairs_refine_cmd(p: dict) -> list[str]:
     return _build_pairs_model_cmd(p, "refine")
 
+
 def _train_refine_cmd(p: dict) -> list[str]:
     return _train_model_cmd(p, "refine")
 
+
 def _export_refine_cmd(p: dict) -> list[str]:
     return _export_model_cmd(p, "refine")
+
 
 def _deploy_refine_cmd(p: dict) -> list[str]:
     return _deploy_model_cmd(p, "refine")
@@ -382,11 +447,14 @@ def _deploy_refine_cmd(p: dict) -> list[str]:
 def _build_pairs_leaf_cmd(p: dict) -> list[str]:
     return _build_pairs_model_cmd(p, "leaf")
 
+
 def _train_leaf_cmd(p: dict) -> list[str]:
     return _train_model_cmd(p, "leaf")
 
+
 def _export_leaf_cmd(p: dict) -> list[str]:
     return _export_model_cmd(p, "leaf")
+
 
 def _deploy_leaf_cmd(p: dict) -> list[str]:
     return _deploy_model_cmd(p, "leaf")
@@ -432,13 +500,20 @@ def _distill_density_cmd(p: dict) -> list[str]:
     train = p.get("train", {})
     distill = p.get("distill", {})
     return [
-        _python(), "scripts/stage1/distill_density.py",
-        "--teacher", str(distill.get("teacher", "unet")),
-        "--student", str(distill.get("student", "sep")),
-        "--epochs", str(distill.get("epochs", 120)),
-        "--alpha", str(distill.get("alpha", 0.5)),
-        "--lr", str(distill.get("lr", 2e-3)),
-        "--device", str(train.get("device", "auto")),
+        _python(),
+        "scripts/stage1/distill_density.py",
+        "--teacher",
+        str(distill.get("teacher", "unet")),
+        "--student",
+        str(distill.get("student", "sep")),
+        "--epochs",
+        str(distill.get("epochs", 120)),
+        "--alpha",
+        str(distill.get("alpha", 0.5)),
+        "--lr",
+        str(distill.get("lr", 2e-3)),
+        "--device",
+        str(train.get("device", "auto")),
     ]
 
 
@@ -458,7 +533,8 @@ def _build_pairs_sparse_root_cmd(p: dict) -> list[str]:
         _python(),
         str(_vt_root() / "VoxelTree" / "scripts" / "build_octree_pairs.py"),
         "--sparse-root",
-        "--val-split", str(data.get("val_split", 0.1)),
+        "--val-split",
+        str(data.get("val_split", 0.1)),
     ]
     if data.get("data_dir"):
         cmd += ["--data-dir", str(data["data_dir"])]
@@ -470,14 +546,22 @@ def _train_sparse_root_cmd(p: dict) -> list[str]:
     train = p.get("train", {})
     data_dir = data.get("data_dir", "noise_training_data")
     cmd = [
-        _python(), "scripts/sparse_root/train.py",
-        "--data", str(Path(data_dir) / "sparse_root_pairs.npz"),
-        "--model-variant", str(train.get("sparse_root_variant", "fast")),
-        "--hidden", str(train.get("sparse_root_hidden", 80)),
-        "--epochs", str(train.get("epochs", 20)),
-        "--batch-size", str(train.get("batch_size", 4)),
-        "--lr", str(train.get("lr", 1e-4)),
-        "--device", str(train.get("device", "auto")),
+        _python(),
+        "scripts/sparse_root/train.py",
+        "--data",
+        str(Path(data_dir) / "sparse_root_pairs.npz"),
+        "--model-variant",
+        str(train.get("sparse_root_variant", "fast")),
+        "--hidden",
+        str(train.get("sparse_root_hidden", 80)),
+        "--epochs",
+        str(train.get("epochs", 20)),
+        "--batch-size",
+        str(train.get("batch_size", 4)),
+        "--lr",
+        str(train.get("lr", 1e-4)),
+        "--device",
+        str(train.get("device", "auto")),
     ]
     if train.get("output_dir"):
         cmd += ["--out", str(Path(train["output_dir"]) / "sparse_root_model.pt")]
@@ -490,11 +574,16 @@ def _distill_sparse_root_cmd(p: dict) -> list[str]:
     data_dir = data.get("data_dir", "noise_training_data")
     teacher_dir = train.get("output_dir", ".")
     return [
-        _python(), "scripts/sparse_root/distill.py",
-        "--teacher-checkpoint", str(Path(teacher_dir) / "sparse_root_model.pt"),
-        "--data", str(Path(data_dir) / "sparse_root_pairs.npz"),
-        "--student-variant", str(train.get("sparse_root_variant", "fast")),
-        "--student-hidden", str(train.get("sparse_root_hidden", 80)),
+        _python(),
+        "scripts/sparse_root/distill.py",
+        "--teacher-checkpoint",
+        str(Path(teacher_dir) / "sparse_root_model.pt"),
+        "--data",
+        str(Path(data_dir) / "sparse_root_pairs.npz"),
+        "--student-variant",
+        str(train.get("sparse_root_variant", "fast")),
+        "--student-hidden",
+        str(train.get("sparse_root_hidden", 80)),
     ]
 
 
