@@ -27,6 +27,9 @@ from pathlib import Path
 
 from PySide6.QtCore import QObject, QProcess, QTimer, Signal, Slot
 
+from VoxelTree.preprocessing.cli import FREEZE_COMMANDS
+from VoxelTree.preprocessing.rcon import RconClient
+
 
 def _find_fabric_tools_dir() -> Path:
     """Find the repository's tools/fabric-server directory.
@@ -360,6 +363,20 @@ class ServerManager(QObject):
             self._startup_timeout.stop()
             self._set_status("running")
             self.log_line.emit("[Server] RCON is accepting connections — server is ready!")
+            self._auto_freeze(rcon)
+
+    def _auto_freeze(self, rcon: dict) -> None:
+        """Send freeze commands immediately after server becomes ready."""
+        self.log_line.emit("[Server] Auto-freezing world state...")
+        try:
+            with RconClient(str(rcon["host"]), int(rcon["port"]), str(rcon["password"])) as client:
+                for cmd, desc in FREEZE_COMMANDS:
+                    client.command(cmd.lstrip("/"))
+                    self.log_line.emit(f"[Server]   ✓ {desc}")
+        except Exception as exc:  # noqa: BLE001
+            self.log_line.emit(f"[Server] WARNING: auto-freeze failed: {exc}")
+        else:
+            self.log_line.emit("[Server] World is frozen and ready for data capture.")
 
     @Slot()
     def _on_startup_timeout(self) -> None:

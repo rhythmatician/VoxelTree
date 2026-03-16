@@ -7,7 +7,7 @@ column-height enrichment, and octree pair cache building.
 
 Canonical pipeline steps (run all, or start from any step):
   1) pregen              — RCON: freeze world + Chunky chunk generation
-  2) voxy-import         — MANUAL: connect client + run /voxy import world "<save>/"
+  2) voxy-import         — MANUAL: connect Modrinth client; Voxy auto-populates server LOD DB
   3) dumpnoise           — RCON: /dumpnoise stage1 + sparse_root → all training formats
   4) extract-octree      — Voxy RocksDB → data/voxy_octree/level_N/*.npz
   5) column-heights-octree — Merge vanilla heightmaps from dumpnoise JSON into NPZs
@@ -72,6 +72,7 @@ Enabling RCON in server.properties
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 import textwrap
 import time
@@ -104,7 +105,26 @@ _REPO_ROOT = _PKG_DIR.parent  # repo root
 
 VOXY_VOCAB_PATH = _PKG_DIR / "config" / "voxy_vocab.json"
 DEFAULT_DATA_DIR = _REPO_ROOT / "data" / "voxy_octree"
-DEFAULT_VOXY_DIR = _REPO_ROOT.parent / "LODiffusion" / "run" / "saves"
+
+# Voxy stores server-connection databases under:
+#   %APPDATA%\ModrinthApp\profiles\<profile>\.voxy\saves\<host_port>\<hash>\storage
+# Singleplayer worlds use:
+#   <minecraft-saves>\<world>\voxy\<hash>\storage
+#
+# We detect the Modrinth profile path at import time and prefer it if present.
+_APPDATA = Path(os.environ.get("APPDATA", Path.home() / "AppData" / "Roaming"))
+_MODRINTH_VOXY_SAVES = (
+    _APPDATA / "ModrinthApp" / "profiles" / "LODiffusion dependencies" / ".voxy" / "saves"
+)
+DEFAULT_VOXY_SERVER = "localhost_25565"  # Voxy's directory name for a local server connection
+DEFAULT_MODRINTH_VOXY_DIR = _MODRINTH_VOXY_SAVES / DEFAULT_VOXY_SERVER
+
+# Fall back to LODiffusion dev saves if the Modrinth profile isn't present.
+DEFAULT_VOXY_DIR = (
+    DEFAULT_MODRINTH_VOXY_DIR
+    if DEFAULT_MODRINTH_VOXY_DIR.is_dir()
+    else _REPO_ROOT.parent / "LODiffusion" / "run" / "saves"
+)
 
 #: Ordered list of dataprep steps.
 DATAPREP_STEPS = [
@@ -226,7 +246,7 @@ def build_pregen_commands(cfg: PipelineConfig) -> list[tuple[str, str]]:
         (f"chunky world {cfg.world}", f"Target world: {cfg.world}"),
         (
             f"chunky corners {x1} {z1} {x2} {z2}",
-            f"Square: {chunk_side}\u00d7{chunk_side} chunks  ({x1},{z1}) \u2192 ({x2},{z2})",
+            f"Square: {chunk_side}x{chunk_side} chunks  ({x1},{z1}) -> ({x2},{z2})",
         ),
         ("chunky start", "Start pregeneration"),
     ]
@@ -282,51 +302,54 @@ def cmd_pregen(cfg: PipelineConfig) -> None:
         print("  Run 'status' to check progress, or 'cancel' in-game via /chunky cancel.")
     if not cfg.dry_run:
         print(
-            "\n  Next step: import into Voxy, then extract training data:\n"
-            '    1) python data-cli.py voxy-import --world-name "<world_name>" ...\n'
-            "    2) python pipeline.py extract"
+            "\n  Next step: connect your Minecraft client so Voxy can scan the"
+            " pre-generated chunks, then extract training data:\n"
+            "    1) Connect client to localhost:25565 — Voxy auto-populates its DB\n"
+            "    2) python data-cli.py voxy-import  (polls for DB to appear)\n"
+            "    3) python data-cli.py dataprep --from-step extract-octree"
         )
 
 
 def cmd_voxy_import(cfg: PipelineConfig) -> None:
-    """Print in-game instructions for the Voxy world import, then poll the disk.
+    """Wait for the Voxy server-connection database to be populated.
 
-    Voxy is a **client-only** mod — its import command cannot be driven via RCON.
-    This step prints the exact in-game command the player must run, then polls
-    ``DEFAULT_VOXY_DIR`` every 10 s until the Voxy RocksDB storage directory
-    appears, signalling that the import has completed.
+    When a Minecraft client connects to the server, Voxy automatically builds
+    LOD data for every chunk it receives and stores it in::
 
-    The Voxy client command format is::
+        %APPDATA%\\ModrinthApp\\profiles\\<profile>\\.voxy\\saves\\localhost_25565\\<hash>\\storage\\
 
-        /voxy import world "<save-folder>/"
+    No in-game command is required for server worlds \u2014 Voxy simply needs a
+    connected client.  This step:
 
-    where ``<save-folder>`` is the world folder name as Voxy lists it
-    (e.g. ``New World/`` for a singleplayer world named "New World").
+    1. Prints connection instructions.
+    2. Polls ``DEFAULT_VOXY_DIR`` every 10 s until the RocksDB storage appears,
+       then returns so the pipeline can continue to extraction.
+
+    .. note::
+        ``/voxy import world "<name>/"`` imports FROM a singleplayer save INTO
+        Voxy \u2014 the wrong direction for server-based training data.  Do **not**
+        run that command when using a dedicated server.
     """
-    world_name: str = cfg.voxy_import_world or "New World/"
     voxy_base = Path(DEFAULT_VOXY_DIR)
 
     sep = "-" * 60
     print(f"\n{sep}")
-    print("  MANUAL STEP — Voxy world import")
+    print("  MANUAL STEP -- Voxy server-connection database")
     print(sep)
-    print("  Voxy is a client-only mod; it cannot be driven via RCON.")
+    print("  Voxy auto-populates its LOD database as you observe chunks.")
     print()
-    print("  1. Launch Minecraft and connect to the server:")
-    print("       localhost:25565")
+    print("  1. Make sure the Fabric server is running (seed 3628800).")
+    print("  2. Launch Minecraft (Modrinth: LODiffusion dependencies profile).")
+    print("  3. Connect to:  localhost:25565")
+    print("  4. Once connected, Voxy will scan all pre-generated chunks.")
+    print("     Teleport around to make sure you cover the pre-generated area:")
+    print("       /tp 0 100 0")
     print()
-    print("  2. Once in-game, open chat and run:")
-    print(f'       /voxy import world "{world_name}"')
-    print()
-    print("  3. Wait for Voxy to finish importing (watch the in-game progress bar).")
-    print("  4. This script will automatically continue once the Voxy DB appears.")
+    print(f"  Voxy DB location: {voxy_base}")
     print(sep)
 
     if cfg.dry_run:
-        print(
-            f"\n  [DRY-RUN] Would poll for:\n"
-            f"    {voxy_base / world_name / 'voxy' / '*' / 'storage'}"
-        )
+        print(f"\n  [DRY-RUN] Would poll: {voxy_base}")
         return
 
     timeout = cfg.voxy_import_timeout
@@ -337,18 +360,19 @@ def cmd_voxy_import(cfg: PipelineConfig) -> None:
         time.sleep(interval)
         elapsed = int(time.time() - start)
 
-        # Voxy stores: <saves>/<world_name>/voxy/<hash>/storage/
-        storage_dirs = list(voxy_base.glob(f"{world_name}/voxy/*/storage"))
-        if storage_dirs:
-            print(f"\n  [{elapsed:>4}s] Voxy DB found: {storage_dirs[0]}")
-            print("  Voxy import complete!")
+        dbs = _find_voxy_databases(voxy_base)
+        if dbs:
+            print(f"\n  [{elapsed:>4}s] Voxy DB found ({len(dbs)} dimension(s)):")
+            for db in dbs:
+                print(f"              {db}")
+            print("  Voxy DB ready!")
             return
 
-        print(f"  [{elapsed:>4}s] Waiting for Voxy DB under {voxy_base / world_name / 'voxy'}...")
+        print(f"  [{elapsed:>4}s] Waiting for Voxy DB under {voxy_base}...")
 
     print(
-        f"\n  Timed out after {timeout}s. The import may still be running on the client."
-        "\n  Once Voxy finishes, re-run: dataprep --from-step extract-octree"
+        f"\n  Timed out after {timeout}s."
+        "\n  Once Voxy has data, re-run: dataprep --from-step extract-octree"
     )
 
 
@@ -369,14 +393,21 @@ def cmd_dumpnoise(cfg: PipelineConfig) -> None:
 
     if cfg.dry_run:
         print("\n  [DRY-RUN] Would send:")
+        print("    (freeze commands — see 'freeze' subcommand for full list)")
+        print("    /kill @e[type=!player]  # clear spawn-bloat mobs before dump")
         print(f"    /dumpnoise stage1 {chunk_radius}")
         print(f"    /dumpnoise sparse_root {chunk_radius}")
-        print(f"  (block radius {cfg.radius} → chunk radius {chunk_radius})")
+        print(f"  (block radius {cfg.radius} -> chunk radius {chunk_radius})")
         return
 
     if not cfg.password:
         print("ERROR: --password required (or use --dry-run to preview).")
         sys.exit(1)
+
+    # Freeze world state. FREEZE_COMMANDS is idempotent — safe to run even
+    # if a prior pregen step already applied it, and critical when dumpnoise
+    # is executed standalone (otherwise mobs tick and lava flows during dump).
+    _run_commands(FREEZE_COMMANDS, cfg, "Freeze world before noise dump")
 
     total_chunks = (2 * chunk_radius + 1) ** 2
     total_sections = total_chunks * 24  # 24 sections per chunk column
@@ -388,6 +419,29 @@ def cmd_dumpnoise(cfg: PipelineConfig) -> None:
     interval = 5
 
     with RconClient(cfg.host, cfg.port, cfg.password) as rcon:
+        # Kill all non-player entities before dumping.
+        #
+        # Chunky pregen loads 128 K+ chunks, each of which auto-spawns mobs.
+        # This can produce 100 K+ live entity objects in the JVM heap.  When
+        # the 4 concurrent Stage1Dumper-Worker threads start making 8 MB
+        # allocations, the GC cannot evacuate fast enough (GCLocker thrash)
+        # and the server crashes with OutOfMemoryError: Java heap space —
+        # even with a 16 GB heap.
+        #
+        # Killing all mobs now and sleeping briefly lets G1GC reclaim that
+        # memory before the allocation-intensive dump begins.
+        print("\n  Killing all entities to reduce heap pressure...")
+        kill_resp = rcon.command("kill @e[type=!player]")
+        kill_text = kill_resp.strip() or "(no response)"
+        try:
+            enc = getattr(sys.stdout, "encoding", None) or "utf-8"
+            kill_text = kill_text.encode(enc, errors="replace").decode(enc)
+        except Exception:
+            kill_text = kill_text.encode("utf-8", errors="replace").decode("utf-8")
+        print(f"  Server: {kill_text}")
+        print("  Sleeping 5 s for GC to reclaim freed entity memory...")
+        time.sleep(5)
+
         # ── Stage 1 dump ────────────────────────────────────────────────────
         print("\n  [1/2] Dumping Stage1 noise...")
         cmd_str = f"dumpnoise stage1 {chunk_radius}"
@@ -442,6 +496,78 @@ def cmd_dumpnoise(cfg: PipelineConfig) -> None:
     print("\n  Noise consolidation complete:")
     print(f"    [OK] Stage1:    <game_dir>/stage1_dumps/ ({total_chunks:,} files)")
     print(f"    [OK] SparseRoot: <game_dir>/sparse_root_dumps/ ({total_sections:,} files)")
+
+
+# ---------------------------------------------------------------------------
+# Freeze-on-load datapack
+# ---------------------------------------------------------------------------
+
+# Minecraft #minecraft:load functions run every time the world is loaded,
+# meaning these commands fire before the first server tick and before Chunky
+# is even started.  The gamerules persist in level.dat, so re-running them
+# each load is harmless and guarantees a fresh world can never accumulate
+# mobs between server start and the RCON freeze sent by "pregen" / "dumpnoise".
+
+_FREEZE_DATAPACK_FILES: dict[str, str] = {
+    "pack.mcmeta": '{\n  "pack": {\n    "pack_format": 61,\n    "supported_formats": [26, 9999],\n    "description": "Auto-freeze world on load (VoxelTree data pipeline)"\n  }\n}\n',
+    "data/minecraft/tags/functions/load.json": '{\n  "values": ["voxeltree:freeze_on_load"]\n}\n',
+    "data/voxeltree/functions/freeze_on_load.mcfunction": (
+        "# VoxelTree auto-freeze: runs on every world load via #minecraft:load\n"
+        "# Carpet tick freeze  - stops all game ticks (lava, fluid, block updates)\n"
+        "tick freeze\n"
+        "# Carpet gamerule overrides\n"
+        "carpet randomTickSpeed 0\n"
+        "# Vanilla gamerules (persist in level.dat)\n"
+        "gamerule doFireTick false\n"
+        "gamerule mobGriefing false\n"
+        "gamerule doMobSpawning false\n"
+        "gamerule doDaylightCycle false\n"
+        "gamerule doWeatherCycle false\n"
+        "gamerule randomTickSpeed 0\n"
+    ),
+}
+
+
+def _install_freeze_datapack(world_dir: Path, *, verbose: bool = True) -> None:
+    """Write the freeze-on-load datapack into ``<world_dir>/datapacks/``.
+
+    Safe to call on an existing world — only writes/overwrites the three
+    datapack files; nothing else in the world directory is touched.
+    """
+    dp_root = world_dir / "datapacks" / "freeze_on_load"
+    for rel, content in _FREEZE_DATAPACK_FILES.items():
+        dest = dp_root / Path(rel)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_text(content, encoding="utf-8")
+    if verbose:
+        print(f"  Installed freeze datapack -> {dp_root}")
+
+
+def cmd_install_datapack(args: argparse.Namespace) -> None:
+    """Install (or reinstall) the freeze-on-load datapack into the server world.
+
+    The datapack runs ``#minecraft:load`` functions every time the world
+    loads, applying all freeze gamerules before the first server tick.  This
+    prevents mobs accumulating in pre-generated chunks and stops lava from
+    spreading between server start and the RCON freeze sent by *pregen* or
+    *dumpnoise*.
+
+    Safe to run on a live world — the datapack only becomes active after the
+    next server restart.
+    """
+    server_dir: Path = getattr(args, "server_dir", None) or DEFAULT_SERVER_DIR
+    server_props = server_dir / "server.properties"
+
+    level_name = "world"
+    if server_props.is_file():
+        for line in server_props.read_text(encoding="utf-8").splitlines():
+            if line.startswith("level-name="):
+                level_name = line.split("=", 1)[1].strip()
+                break
+
+    world_dir = server_dir / level_name
+    _install_freeze_datapack(world_dir, verbose=True)
+    print("  Restart the server to activate the datapack.")
 
 
 def cmd_purge(args: argparse.Namespace) -> None:
@@ -534,6 +660,13 @@ def cmd_purge(args: argparse.Namespace) -> None:
     print("\nPurge complete.")
     if new_seed:
         print(f"  New seed : {new_seed}")
+
+    # Pre-install the freeze datapack so the very first server tick after
+    # restarting already has doMobSpawning=false, doFireTick=false, etc.
+    # Minecraft will find world/datapacks/ even when the rest of the world
+    # directory is created fresh on first boot.
+    _install_freeze_datapack(world_dir, verbose=True)
+
     print("  ACTION REQUIRED: Restart the Fabric server before running 'pregen'.")
 
 
@@ -585,9 +718,35 @@ def cmd_info(cfg: PipelineConfig) -> None:  # noqa: ARG001
 
 
 def _find_voxy_databases(saves_dir: Path) -> list[Path]:
-    """Discover Voxy storage directories under a Minecraft saves folder."""
-    dbs = sorted(saves_dir.glob("*/voxy/*/storage"))
-    return [d for d in dbs if d.is_dir()]
+    """Discover Voxy RocksDB storage directories under *saves_dir*.
+
+    Handles two directory layouts:
+
+    **Server-connection layout** (Modrinth / multiplayer):
+        ``<saves_dir>/<hash>/storage/``
+        Voxy creates one hash-named subdirectory per dimension when connected
+        to a server.  ``saves_dir`` is typically the per-server directory:
+        ``%APPDATA%/ModrinthApp/profiles/<profile>/.voxy/saves/localhost_25565``
+
+    **Singleplayer / dev-client layout**:
+        ``<saves_dir>/<world>/voxy/<hash>/storage/``
+        Voxy embeds data inside the world's save folder.
+    """
+    found: list[Path] = []
+
+    # Layout 1: server-connection — <hash>/storage directly under saves_dir
+    direct = [d for d in sorted(saves_dir.glob("*/storage")) if d.is_dir()]
+    # Only accept these if they look like RocksDB (have a CURRENT or *.sst file)
+    for d in direct:
+        if any(d.glob("CURRENT")) or any(d.glob("*.sst")):
+            found.append(d)
+
+    # Layout 2: singleplayer — <world>/voxy/<hash>/storage
+    for d in sorted(saves_dir.glob("*/voxy/*/storage")):
+        if d.is_dir() and d not in found:
+            found.append(d)
+
+    return found
 
 
 def _count_source_npz(data_dir: Path) -> int:
@@ -642,10 +801,7 @@ def _check_prerequisites(from_step: str, args: argparse.Namespace) -> bool:
 
     # extract-octree → evidence that voxy-import ran: Voxy databases exist
     if from_step == "extract-octree":
-        voxy_dir: Path | None = getattr(args, "voxy_dir", None)
-        if voxy_dir is None:
-            print("ERROR: --voxy-dir is required when starting at '%s'" % from_step)
-            return False
+        voxy_dir: Path | None = getattr(args, "voxy_dir", None) or DEFAULT_VOXY_DIR
         dbs = _find_voxy_databases(voxy_dir)
         if not dbs:
             print(f"ERROR: No Voxy databases found under {voxy_dir}")
@@ -736,7 +892,7 @@ def _step_extract_octree(args: argparse.Namespace) -> bool:
     print("=" * 70)
     print()
 
-    voxy_dir = args.voxy_dir
+    voxy_dir: Path = getattr(args, "voxy_dir", None) or DEFAULT_VOXY_DIR
     dbs = _find_voxy_databases(voxy_dir)
     if not dbs:
         print(f"ERROR: No Voxy databases found under {voxy_dir}")
@@ -1037,6 +1193,17 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Skip the confirmation prompt",
     )
+    p_idp = sub.add_parser(
+        "install-datapack",
+        help="Install the freeze-on-load datapack into the server world (re-run after manual world wipe)",
+    )
+    p_idp.add_argument(
+        "--server-dir",
+        type=Path,
+        default=None,
+        metavar="DIR",
+        help="Fabric server runtime directory (auto-detected from repo layout by default)",
+    )
     sub.add_parser("status", parents=[shared], help="Query Chunky pregeneration progress")
     sub.add_parser(
         "dumpnoise",
@@ -1166,9 +1333,12 @@ def main(argv: list[str] | None = None) -> None:
         cmd_dataprep(args)
         return
 
-    # purge uses args directly (no RCON/PipelineConfig needed)
+    # purge / install-datapack use args directly (no RCON/PipelineConfig needed)
     if args.subcommand == "purge":
         cmd_purge(args)
+        return
+    if args.subcommand == "install-datapack":
+        cmd_install_datapack(args)
         return
 
     cfg = PipelineConfig(
