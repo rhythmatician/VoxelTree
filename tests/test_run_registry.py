@@ -107,7 +107,7 @@ def test_phase_export_and_deploy_args(monkeypatch, tmp_path):
 
     # patch the underlying script entrypoints that phase3_export/phase4_deploy
     # import dynamically
-    monkeypatch.setattr("VoxelTree.scripts.export_octree.main", fake_export_main)
+    monkeypatch.setattr("VoxelTree.scripts.octree.export_octree.main", fake_export_main)
     monkeypatch.setattr("VoxelTree.scripts.deploy_models.main", fake_deploy_main)
 
     phase3 = __import__(
@@ -158,7 +158,16 @@ def test_reconcile_marks_early_steps(tmp_path: Path, monkeypatch: pytest.MonkeyP
         non_empty_children=np.uint8(0),
     )
 
-    profile = {"data": {"data_dir": str(tmp_path / "data" / "voxy_octree")}}
+    dump_dir = tmp_path / "noise_dumps"
+    dump_dir.mkdir()
+    (dump_dir / "dummy.txt").write_text("x")
+
+    profile = {
+        "data": {
+            "data_dir": str(tmp_path / "data" / "voxy_octree"),
+            "noise_dump_dir": str(dump_dir),
+        }
+    }
     # make sure the registry writes into our temp tree
     monkeypatch.setattr(run_registry, "_RUNS_ROOT", tmp_path)
     reg = RunRegistry("foo")

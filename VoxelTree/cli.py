@@ -96,7 +96,7 @@ def main(argv: list[str] | None = None) -> None:
         _main(rest)
 
     elif cmd == "export-onnx":
-        from VoxelTree.scripts.export_octree import main as _main
+        from VoxelTree.scripts.octree.export_octree import main as _main
 
         _main(rest)
 
