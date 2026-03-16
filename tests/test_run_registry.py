@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 from VoxelTree.gui import run_registry
+
 # we only need the constant for the server‑session test
 from VoxelTree.gui.main_window import _SERVER_SESSION_STEPS
 from VoxelTree.gui.run_registry import RunRegistry
@@ -62,12 +63,14 @@ def test_run_registry_persistence(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
 
 def test_command_factories_include_models_flag() -> None:
     """Per-model export/deploy factories should emit the --models argument."""
-    from VoxelTree.gui.step_definitions import (_deploy_init_cmd,
-                                                _deploy_leaf_cmd,
-                                                _deploy_refine_cmd,
-                                                _export_init_cmd,
-                                                _export_leaf_cmd,
-                                                _export_refine_cmd)
+    from VoxelTree.gui.step_definitions import (
+        _deploy_init_cmd,
+        _deploy_leaf_cmd,
+        _deploy_refine_cmd,
+        _export_init_cmd,
+        _export_leaf_cmd,
+        _export_refine_cmd,
+    )
 
     # simple check that the generated command strings include the right model
     cmd_init = _export_init_cmd({})
@@ -93,48 +96,47 @@ def test_command_factories_include_models_flag() -> None:
 
 
 def test_phase_export_and_deploy_args(monkeypatch, tmp_path):
-    """phase3_export/phase4_deploy should forward the models argument.
-    """
+    """phase3_export/phase4_deploy should forward the models argument."""
     called = {}
 
     def fake_export_main(arglist):
-        called['export'] = arglist
+        called["export"] = arglist
 
     def fake_deploy_main(arglist):
-        called['deploy'] = arglist
+        called["deploy"] = arglist
 
     # patch the underlying script entrypoints that phase3_export/phase4_deploy
     # import dynamically
-    monkeypatch.setattr(
-        "VoxelTree.scripts.export_octree.main", fake_export_main
-    )
-    monkeypatch.setattr(
-        "VoxelTree.scripts.deploy_models.main", fake_deploy_main
-    )
+    monkeypatch.setattr("VoxelTree.scripts.export_octree.main", fake_export_main)
+    monkeypatch.setattr("VoxelTree.scripts.deploy_models.main", fake_deploy_main)
 
-    phase3 = __import__("VoxelTree.preprocessing.pipeline", fromlist=["phase3_export"]).phase3_export
-    phase4 = __import__("VoxelTree.preprocessing.pipeline", fromlist=["phase4_deploy"]).phase4_deploy
+    phase3 = __import__(
+        "VoxelTree.preprocessing.pipeline", fromlist=["phase3_export"]
+    ).phase3_export
+    phase4 = __import__(
+        "VoxelTree.preprocessing.pipeline", fromlist=["phase4_deploy"]
+    ).phase4_deploy
 
     # call export with filtering
     chk = tmp_path / "best.pt"
     chk.write_text("x")
     phase3(chk, tmp_path, models=["init", "leaf"])
-    assert "--models" in called['export']
-    assert "init" in called['export'] and "leaf" in called['export']
+    assert "--models" in called["export"]
+    assert "init" in called["export"] and "leaf" in called["export"]
 
     # ensure checkpoint-dir is passed when provided
     called.clear()
     dirpath = tmp_path / "ckdir"
     dirpath.mkdir()
     phase3(None, tmp_path, checkpoint_dir=dirpath, models=["refine"])
-    assert "--checkpoint-dir" in called['export']
-    assert str(dirpath) in called['export']
-    assert "refine" in called['export']
+    assert "--checkpoint-dir" in called["export"]
+    assert str(dirpath) in called["export"]
+    assert "refine" in called["export"]
 
     # call deploy with filtering
     phase4(tmp_path, tmp_path / "dest", models=["refine"])
-    assert "--models" in called['deploy']
-    assert "refine" in called['deploy']
+    assert "--models" in called["deploy"]
+    assert "refine" in called["deploy"]
 
 
 def test_reconcile_marks_early_steps(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
@@ -147,7 +149,14 @@ def test_reconcile_marks_early_steps(tmp_path: Path, monkeypatch: pytest.MonkeyP
     npz_path = data_dir / "voxy_L0_x0_y0_z0.npz"
     import numpy as np
 
-    np.savez_compressed(npz_path, labels32=np.zeros((32, 32, 32), dtype=np.int32), heightmap32=np.zeros((5, 32, 32), dtype=np.float32), biome32=np.zeros((32, 32), dtype=np.int32), section_y=np.int64(0), non_empty_children=np.uint8(0))
+    np.savez_compressed(
+        npz_path,
+        labels32=np.zeros((32, 32, 32), dtype=np.int32),
+        heightmap32=np.zeros((5, 32, 32), dtype=np.float32),
+        biome32=np.zeros((32, 32), dtype=np.int32),
+        section_y=np.int64(0),
+        non_empty_children=np.uint8(0),
+    )
 
     profile = {"data": {"data_dir": str(tmp_path / "data" / "voxy_octree")}}
     # make sure the registry writes into our temp tree
@@ -275,9 +284,7 @@ def test_server_session_queues_stale(tmp_path: Path, monkeypatch: pytest.MonkeyP
 
     assert reg.is_stale(server_step)
     pending = [
-        s
-        for s in _SERVER_SESSION_STEPS
-        if reg.get_status(s) != "success" or reg.is_stale(s)
+        s for s in _SERVER_SESSION_STEPS if reg.get_status(s) != "success" or reg.is_stale(s)
     ]
     assert server_step in pending
     assert server_step in pending

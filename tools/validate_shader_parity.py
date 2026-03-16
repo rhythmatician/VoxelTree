@@ -25,19 +25,17 @@ Exit code
 
 import argparse
 import json
-import math
 import sys
 from pathlib import Path
 from typing import Dict, List, Tuple
-
 
 # ---------------------------------------------------------------------------
 # Indexing helpers — must match shader density_out layout
 # ---------------------------------------------------------------------------
 #   flat index = (lx + 16*lz) * 384 + (by + 64)
-Y_MIN    =  -64
-Y_MAX    =   320
-Y_LEVELS =   384   # Y_MAX - Y_MIN
+Y_MIN = -64
+Y_MAX = 320
+Y_LEVELS = 384  # Y_MAX - Y_MIN
 
 
 def flat_index(lx: int, lz: int, by: int) -> int:
@@ -47,6 +45,7 @@ def flat_index(lx: int, lz: int, by: int) -> int:
 # ---------------------------------------------------------------------------
 # Loading
 # ---------------------------------------------------------------------------
+
 
 def load_density(path: Path, label: str) -> List[float]:
     if not path.exists():
@@ -65,12 +64,13 @@ def load_density(path: Path, label: str) -> List[float]:
         )
         sys.exit(2)
 
-    meta = {k: data[k] for k in ("chunk_x", "chunk_z", "source", "y_min", "y_levels")
-            if k in data}
-    print(f"  Loaded {label}: chunk ({meta.get('chunk_x',0)},{meta.get('chunk_z',0)})"
-          f"  source={meta.get('source','?')}"
-          f"  y_min={meta.get('y_min',Y_MIN)}"
-          f"  elements={len(density)}")
+    meta = {k: data[k] for k in ("chunk_x", "chunk_z", "source", "y_min", "y_levels") if k in data}
+    print(
+        f"  Loaded {label}: chunk ({meta.get('chunk_x',0)},{meta.get('chunk_z',0)})"
+        f"  source={meta.get('source','?')}"
+        f"  y_min={meta.get('y_min',Y_MIN)}"
+        f"  elements={len(density)}"
+    )
     return density
 
 
@@ -78,13 +78,14 @@ def load_density(path: Path, label: str) -> List[float]:
 # Comparison
 # ---------------------------------------------------------------------------
 
+
 def compare(gpu: List[float], java: List[float], tolerance: float):
     """Return comprehensive error statistics."""
     n = len(gpu)
     assert n == len(java), "Density arrays have different length"
 
-    max_err  = 0.0
-    sum_err  = 0.0
+    max_err = 0.0
+    sum_err = 0.0
     fail_cnt = 0
     worst_block = (0, 0, 0, 0.0)  # lx, lz, by, error  (type: Tuple[int,int,int,float])
 
@@ -122,12 +123,13 @@ def compare(gpu: List[float], java: List[float], tolerance: float):
 # Pretty print
 # ---------------------------------------------------------------------------
 
+
 def print_report(stats: dict, tolerance: float, verbose: bool):
-    n          = stats["n"]
-    max_err    = stats["max_err"]
-    mean_err   = stats["mean_err"]
-    fail_cnt   = stats["fail_count"]
-    fail_frac  = stats["fail_fraction"]
+    n = stats["n"]
+    max_err = stats["max_err"]
+    mean_err = stats["mean_err"]
+    fail_cnt = stats["fail_count"]
+    fail_frac = stats["fail_fraction"]
     lx, lz, by_worst, worst_err = stats["worst_block"]
 
     passed = max_err < tolerance
@@ -150,7 +152,7 @@ def print_report(stats: dict, tolerance: float, verbose: bool):
         bad = [(lx, lz, e) for (lx, lz), e in stats["col_max_err"].items() if e >= tolerance]
         bad.sort(key=lambda t: -t[2])
         for lx, lz, e in bad[:20]:
-            bx_abs = lx   # block coords relative to chunk origin
+            bx_abs = lx  # block coords relative to chunk origin
             bz_abs = lz
             print(f"    lx={lx:2d}  lz={lz:2d}  max_col_err={e:.6f}")
         if len(bad) > 20:
@@ -168,6 +170,7 @@ def print_report(stats: dict, tolerance: float, verbose: bool):
 # ---------------------------------------------------------------------------
 # Optional visualisation
 # ---------------------------------------------------------------------------
+
 
 def plot_error_heatmap(gpu: List[float], java: List[float], by_slice: int = 63):
     try:
@@ -191,7 +194,7 @@ def plot_error_heatmap(gpu: List[float], java: List[float], by_slice: int = 63):
     ax.set_title(f"Density error heatmap at Y={by_slice} (sea level)")
     plt.tight_layout()
     plt.savefig("parity_error_Y63.png", dpi=120)
-    print(f"  Saved heatmap to parity_error_Y63.png")
+    print("  Saved heatmap to parity_error_Y63.png")
     plt.show()
 
 
@@ -199,21 +202,24 @@ def plot_error_heatmap(gpu: List[float], java: List[float], by_slice: int = 63):
 # Entry point
 # ---------------------------------------------------------------------------
 
+
 def main():
-    ap = argparse.ArgumentParser(description=__doc__,
-                                 formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--gpu",       required=True,  help="Path to gpu_chunk_*.json")
-    ap.add_argument("--java",      required=True,  help="Path to java_chunk_*.json")
-    ap.add_argument("--tolerance", type=float, default=0.01,
-                    help="Max allowed |error| per block (default 0.01)")
-    ap.add_argument("--plot",      action="store_true",
-                    help="Generate a Y=63 error heatmap with matplotlib")
-    ap.add_argument("--verbose",   action="store_true",
-                    help="List the worst offending block columns")
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    ap.add_argument("--gpu", required=True, help="Path to gpu_chunk_*.json")
+    ap.add_argument("--java", required=True, help="Path to java_chunk_*.json")
+    ap.add_argument(
+        "--tolerance", type=float, default=0.01, help="Max allowed |error| per block (default 0.01)"
+    )
+    ap.add_argument(
+        "--plot", action="store_true", help="Generate a Y=63 error heatmap with matplotlib"
+    )
+    ap.add_argument("--verbose", action="store_true", help="List the worst offending block columns")
     args = ap.parse_args()
 
-    print(f"\nLoading parity files …")
-    gpu_d  = load_density(Path(args.gpu),  "GPU")
+    print("\nLoading parity files …")
+    gpu_d = load_density(Path(args.gpu), "GPU")
     java_d = load_density(Path(args.java), "Java")
 
     print(f"\nComparing {len(gpu_d):,} density values …")

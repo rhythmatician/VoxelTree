@@ -8,6 +8,7 @@ Outputs:
     - Distilled student checkpoint (.pt)
     - Distillation summary (.json)
 """
+
 import argparse
 import copy
 import json
@@ -20,7 +21,7 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader, TensorDataset
 
 # --- Candidate architectures ---
-from density_nn_shootout import CANDIDATES, count_parameters
+from density_nn_shootout import CANDIDATES
 
 SEED = 42
 np.random.seed(SEED)

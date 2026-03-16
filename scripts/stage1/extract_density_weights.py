@@ -36,7 +36,6 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-
 # ---------------------------------------------------------------------------
 # Mirror the model architecture from train_stage1_density.py
 # ---------------------------------------------------------------------------

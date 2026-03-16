@@ -27,14 +27,20 @@ def main() -> None:
     parent_coords = (0, 0, 0)
 
     # L4 parent section
-    l4_src = src_root / "level_4" / f"voxy_L4_x{parent_coords[0]}_y{parent_coords[1]}_z{parent_coords[2]}.npz"
+    l4_src = (
+        src_root
+        / "level_4"
+        / f"voxy_L4_x{parent_coords[0]}_y{parent_coords[1]}_z{parent_coords[2]}.npz"
+    )
     l4_dst = dst_root / "level_4" / l4_src.name
     _copy_file(l4_src, l4_dst)
 
     # L3 children
     for octant in range(8):
         l3_coords = child_coords_from_parent(*parent_coords, octant)
-        l3_src = src_root / "level_3" / f"voxy_L3_x{l3_coords[0]}_y{l3_coords[1]}_z{l3_coords[2]}.npz"
+        l3_src = (
+            src_root / "level_3" / f"voxy_L3_x{l3_coords[0]}_y{l3_coords[1]}_z{l3_coords[2]}.npz"
+        )
         if not l3_src.exists():
             continue
         l3_dst = dst_root / "level_3" / l3_src.name
@@ -43,7 +49,11 @@ def main() -> None:
         # Copy any L2 children referenced by this L3 (for non_empty_children validation)
         for l2_oct in range(8):
             l2_coords = child_coords_from_parent(*l3_coords, l2_oct)
-            l2_src = src_root / "level_2" / f"voxy_L2_x{l2_coords[0]}_y{l2_coords[1]}_z{l2_coords[2]}.npz"
+            l2_src = (
+                src_root
+                / "level_2"
+                / f"voxy_L2_x{l2_coords[0]}_y{l2_coords[1]}_z{l2_coords[2]}.npz"
+            )
             if not l2_src.exists():
                 continue
             l2_dst = dst_root / "level_2" / l2_src.name

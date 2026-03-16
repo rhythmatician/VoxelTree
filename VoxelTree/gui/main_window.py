@@ -12,7 +12,6 @@ from VoxelTree.gui.dashboard_table import DashboardTable
 from VoxelTree.gui.dag_definition import ProfileDag
 from VoxelTree.gui.detail_panel import DetailPanel
 from VoxelTree.gui.profile_editor import (
-    ProfileDeleteDialog,
     ProfileEditorDialog,
     delete_profile,
     list_profiles,
@@ -21,7 +20,6 @@ from VoxelTree.gui.profile_editor import (
 from VoxelTree.gui.run_registry import RunRegistry
 from VoxelTree.gui.server_manager import ServerManager
 from VoxelTree.gui.server_status_bar import ServerStatusBar
-from VoxelTree.gui.step_definitions import STEP_BY_ID
 
 # same logic as profile_editor: we want the workspace/project root, not the
 # interior Python package folder.  ``parents[2]`` handles both development and

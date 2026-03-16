@@ -231,7 +231,7 @@ def main() -> None:
         raise FileNotFoundError(f"Data not found: {args.data}")
 
     print(f"\n{'='*70}")
-    print(f"SPARSE ROOT SPLIT THRESHOLD CALIBRATION")
+    print("SPARSE ROOT SPLIT THRESHOLD CALIBRATION")
     print(f"{'='*70}")
 
     # Load data
@@ -263,14 +263,14 @@ def main() -> None:
     print(f"\n{'='*70}")
     print(f"RESULTS (n={len(sigmoids)} sections)")
     print(f"{'='*70}")
-    print(f"Root split sigmoid distribution:")
+    print("Root split sigmoid distribution:")
     print(f"  Mean:     {results['mean_sigmoid']:.4f}")
     print(f"  Std:      {results['std_sigmoid']:.4f}")
     print(f"  Min:      {results['min_sigmoid']:.4f}")
     print(f"  Max:      {results['max_sigmoid']:.4f}")
     print(f"  Median:   {results['median_sigmoid']:.4f}")
 
-    print(f"\nPercentiles:")
+    print("\nPercentiles:")
     for p, val in results["percentiles"].items():
         print(f"  {p:3d}th:   {val:.4f}")
 
@@ -297,7 +297,7 @@ def main() -> None:
         print(f"\nResults written to {args.output}")
 
     print(f"\n{'='*70}")
-    print(f"Current runtime setting: sparseRootSplitThreshold = 0.6")
+    print("Current runtime setting: sparseRootSplitThreshold = 0.6")
     print(f"  At threshold=0.6: {results['threshold_impact'][0.6]*100:.1f}% expansion")
     print(f"{'='*70}\n")
 

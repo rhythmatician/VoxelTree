@@ -94,9 +94,7 @@ def draw_plain_layer(ax, x, n_display, true_size, color, label, y_span=Y_SPAN):
     """Standard dense layer column. Returns ys array."""
     ys = node_ys(n_display, y_span)
     for y in ys:
-        ax.add_patch(
-            plt.Circle((x, y), NODE_R, color=color, ec=color, lw=0.8, zorder=4)
-        )
+        ax.add_patch(plt.Circle((x, y), NODE_R, color=color, ec=color, lw=0.8, zorder=4))
     if true_size > n_display:
         ax.text(
             x,
@@ -149,9 +147,7 @@ def draw_concat_column(
     if n_cp == 1:
         ys_cp = np.array([top_center])
     else:
-        ys_cp = np.linspace(
-            top_center + cp_height / 2, top_center - cp_height / 2, n_cp
-        )
+        ys_cp = np.linspace(top_center + cp_height / 2, top_center - cp_height / 2, n_cp)
 
     if n_extra == 0:
         ys_extra = np.array([])
@@ -166,9 +162,7 @@ def draw_concat_column(
 
     # ── draw checkpoint nodes ──────────────────────────────────────────────
     for lbl, y in zip(cp_labels, ys_cp):
-        ax.add_patch(
-            plt.Circle((x, y), NODE_R, color=cp_color, ec=CP_EDGE, lw=2.2, zorder=4)
-        )
+        ax.add_patch(plt.Circle((x, y), NODE_R, color=cp_color, ec=CP_EDGE, lw=2.2, zorder=4))
         ax.text(
             x + NODE_R + 0.08,
             y,
@@ -234,9 +228,7 @@ def draw_concat_column(
     if extra_labels:
         for lbl, y in zip(extra_labels, ys_extra):
             ax.add_patch(
-                plt.Circle(
-                    (x, y), NODE_R, color=extra_color, ec="#ffaa44", lw=0.9, zorder=4
-                )
+                plt.Circle((x, y), NODE_R, color=extra_color, ec="#ffaa44", lw=0.9, zorder=4)
             )
             ax.text(
                 x + NODE_R + 0.08,
@@ -255,9 +247,7 @@ def draw_concat_column(
             "",
             xy=(brace_x, ys_extra[-1]),
             xytext=(brace_x, ys_extra[0]),
-            arrowprops=dict(
-                arrowstyle="<->", color=NEW_COLOR, lw=0.8, mutation_scale=6
-            ),
+            arrowprops=dict(arrowstyle="<->", color=NEW_COLOR, lw=0.8, mutation_scale=6),
             zorder=3,
         )
         ax.text(
@@ -292,9 +282,7 @@ def draw_input_layer(ax, x, labels, color, col_label, y_span=Y_SPAN):
     """Input layer with per-node labels."""
     ys = node_ys(len(labels), y_span)
     for lbl, y in zip(labels, ys):
-        ax.add_patch(
-            plt.Circle((x, y), NODE_R, color=color, ec=color, lw=0.8, zorder=4)
-        )
+        ax.add_patch(plt.Circle((x, y), NODE_R, color=color, ec=color, lw=0.8, zorder=4))
         ax.text(
             x - NODE_R - 0.08,
             y,
@@ -400,9 +388,7 @@ for i, row in enumerate(LAYERS):
 
     if is_cp:
         # Concat column
-        ys_cp, ys_all = draw_concat_column(
-            ax, x, cp_lbls, color, extra_lbls, extra_col, label
-        )
+        ys_cp, ys_all = draw_concat_column(ax, x, cp_lbls, color, extra_lbls, extra_col, label)
         col_ys[i] = ys_all  # wires TO next layer use all nodes
         col_ys_in[i] = ys_cp  # wires FROM previous layer target only cp nodes
     elif cp_lbls is not None:

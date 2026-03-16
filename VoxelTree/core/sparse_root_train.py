@@ -32,7 +32,6 @@ from torch.utils.data import DataLoader, Dataset
 from LODiffusion.models.sparse_root import SparseRootFastModel, SparseRootModel
 from .sparse_octree_targets import build_sparse_octree_targets
 
-
 # ---------------------------------------------------------------------------
 # Dataset
 # ---------------------------------------------------------------------------
@@ -208,13 +207,9 @@ def _build_model(
 ) -> nn.Module:
     variant = model_variant.lower()
     if variant == "baseline":
-        return SparseRootModel(
-            n2d=n2d, n3d=n3d, hidden=hidden, num_classes=num_classes
-        )
+        return SparseRootModel(n2d=n2d, n3d=n3d, hidden=hidden, num_classes=num_classes)
     if variant == "fast":
-        return SparseRootFastModel(
-            n2d=n2d, n3d=n3d, hidden=hidden, num_classes=num_classes
-        )
+        return SparseRootFastModel(n2d=n2d, n3d=n3d, hidden=hidden, num_classes=num_classes)
     raise ValueError(f"Unknown sparse-root model_variant={model_variant!r}")
 
 

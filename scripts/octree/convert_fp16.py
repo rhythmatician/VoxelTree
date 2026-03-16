@@ -23,7 +23,6 @@ from pathlib import Path
 import onnx
 from onnxconverter_common import float16
 
-
 STEMS = ["octree_init", "octree_refine", "octree_leaf"]
 
 

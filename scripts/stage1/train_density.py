@@ -35,7 +35,6 @@ Usage:
 
 import argparse
 import json
-import struct
 import sys
 import time
 from pathlib import Path

@@ -37,11 +37,13 @@ StepStatus = Literal["not_run", "running", "success", "failed"]
 # This keeps the GUI in sync with the CLI and other tools which all expect
 # run state to live under ``<repo_root>/runs``.
 
+
 def _find_project_root(start: Path) -> Path:
     for ancestor in [start] + list(start.parents):
         if (ancestor / "pyproject.toml").exists() or (ancestor / ".git").exists():
             return ancestor
     return start
+
 
 _RUNS_ROOT = _find_project_root(Path(__file__).resolve().parent) / "runs"
 

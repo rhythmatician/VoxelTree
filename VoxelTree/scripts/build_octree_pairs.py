@@ -606,11 +606,9 @@ def build(
 
     sparse_root_count = 0
     if sparse_root:
-        print(
-            """
+        print("""
   Building sparse-root pairs (from all sections)...
-"""
-        )
+""")
         sparse_pairs: list[dict[str, Any]] = []
         for p in all_pairs:
             labels = p["labels32"]

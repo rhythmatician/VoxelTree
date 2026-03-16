@@ -745,9 +745,7 @@ def cmd_status(cfg: PipelineConfig) -> None:
 
 def cmd_info(cfg: PipelineConfig) -> None:  # noqa: ARG001
     """Print the full pipeline plan without connecting."""
-    print(
-        textwrap.dedent(
-            f"""
+    print(textwrap.dedent(f"""
         LODiffusion Freeze + Pregen Pipeline
         =====================================
         World       : {cfg.world}
@@ -765,9 +763,7 @@ def cmd_info(cfg: PipelineConfig) -> None:  # noqa: ARG001
 
         Run with --dry-run to preview all commands.
         Run with --host / --port / --password to execute against a live server.
-    """
-        ).strip()
-    )
+    """).strip())
 
 
 # ---------------------------------------------------------------------------
@@ -1178,16 +1174,14 @@ def build_parser() -> argparse.ArgumentParser:
         prog="data-cli",
         description="LODiffusion freeze + pregen pipeline orchestrator.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog=textwrap.dedent(
-            """
+        epilog=textwrap.dedent("""
             Quickstart (development / dry-run):
               python data-cli.py info
               python data-cli.py pregen --radius 512 --dry-run
 
             Quickstart (live server with RCON):
               python data-cli.py pregen --password secret --radius 2048
-        """
-        ),
+        """),
     )
     sub = parser.add_subparsers(dest="subcommand", required=True)
 
@@ -1287,8 +1281,7 @@ def build_parser() -> argparse.ArgumentParser:
         parents=[shared, pregen_args],
         help="Run the full data-preparation pipeline (pregen → build-octree-pairs)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog=textwrap.dedent(
-            """\
+        epilog=textwrap.dedent("""\
             Pipeline steps:
               pregen                 RCON — freeze world + Chunky pregeneration
               voxy-import            RCON — /voxy import world <name>
@@ -1310,8 +1303,7 @@ def build_parser() -> argparse.ArgumentParser:
               # Just rebuild octree pairs:
               python data-cli.py dataprep --from-step build-octree-pairs \\
                      --data-dir data/voxy_octree
-            """
-        ),
+            """),
     )
     p_dp.add_argument(
         "--from-step",

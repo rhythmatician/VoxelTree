@@ -867,9 +867,7 @@ def main(argv: list[str] | None = None) -> None:
 
     # Load checkpoint(s)
     if args.checkpoint_dir is not None:
-        config, models = load_octree_checkpoints_from_dir(
-            args.checkpoint_dir, models=args.models
-        )
+        config, models = load_octree_checkpoints_from_dir(args.checkpoint_dir, models=args.models)
     else:
         config, models = load_octree_checkpoint(args.checkpoint)
 

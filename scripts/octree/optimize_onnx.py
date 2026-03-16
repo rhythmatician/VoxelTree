@@ -24,7 +24,6 @@ from pathlib import Path
 
 import onnxruntime as ort
 
-
 STEMS = ["octree_init", "octree_refine", "octree_leaf"]
 
 

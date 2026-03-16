@@ -112,6 +112,7 @@ def test_load_checkpoint_with_old_module(tmp_path: Path):
     # ensure the fake module exists in sys.modules and expose the class there
     import sys
     import types
+
     if "train.unet3d" not in sys.modules:
         sys.modules["train.unet3d"] = types.ModuleType("train.unet3d")
     setattr(sys.modules["train.unet3d"], "FakeLegacy", FakeLegacy)

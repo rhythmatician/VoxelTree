@@ -20,7 +20,6 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QDialog,
     QDialogButtonBox,
-    QHBoxLayout,
     QLabel,
     QListWidget,
     QListWidgetItem,
@@ -70,9 +69,7 @@ class DagEditorDialog(QDialog):
             # Default: all enabled steps from the registry
             self._active: set[str] = {s.id for s in PIPELINE_STEPS if s.enabled}
             self._entries: dict[str, DagStepEntry] = {
-                s.id: DagStepEntry(id=s.id, prereqs=None)
-                for s in PIPELINE_STEPS
-                if s.enabled
+                s.id: DagStepEntry(id=s.id, prereqs=None) for s in PIPELINE_STEPS if s.enabled
             }
         else:
             self._active = set(dag.active_ids)
@@ -131,7 +128,9 @@ class DagEditorDialog(QDialog):
             if not step.enabled:
                 # Future stub — shown greyed, not interactive
                 item.setForeground(Qt.GlobalColor.darkGray)
-                item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEnabled & ~Qt.ItemFlag.ItemIsUserCheckable)
+                item.setFlags(
+                    item.flags() & ~Qt.ItemFlag.ItemIsEnabled & ~Qt.ItemFlag.ItemIsUserCheckable
+                )
                 item.setCheckState(Qt.CheckState.Unchecked)
             else:
                 item.setCheckState(
@@ -157,9 +156,7 @@ class DagEditorDialog(QDialog):
 
         prereq_scroll = QScrollArea()
         prereq_scroll.setWidgetResizable(True)
-        prereq_scroll.setStyleSheet(
-            "QScrollArea { background: #252525; border: 1px solid #444; }"
-        )
+        prereq_scroll.setStyleSheet("QScrollArea { background: #252525; border: 1px solid #444; }")
         self._prereq_container = QWidget()
         self._prereq_container.setStyleSheet("background: #252525;")
         self._prereqs_layout = QVBoxLayout(self._prereq_container)
@@ -256,9 +253,7 @@ class DagEditorDialog(QDialog):
             self._prereq_title.setText(f"Prerequisites for: {step_id}  [not in registry]")
             return
 
-        self._prereq_title.setText(
-            f"Prerequisites for:  {step.label}  ({step_id})"
-        )
+        self._prereq_title.setText(f"Prerequisites for:  {step.label}  ({step_id})")
 
         # Determine currently active prereqs for this step
         entry = self._entries.get(step_id)
@@ -269,9 +264,7 @@ class DagEditorDialog(QDialog):
 
         # Candidate list: all other currently active registry steps
         candidates = [
-            s
-            for s in PIPELINE_STEPS
-            if s.id != step_id and s.id in self._active and s.enabled
+            s for s in PIPELINE_STEPS if s.id != step_id and s.id in self._active and s.enabled
         ]
 
         if not candidates:
@@ -285,8 +278,9 @@ class DagEditorDialog(QDialog):
             cb.setChecked(candidate.id in current_prereqs)
             cb.setStyleSheet("color: #cccccc; padding: 2px 0;")
             cb.toggled.connect(
-                lambda checked, sid=step_id, pid=candidate.id:
-                    self._on_prereq_toggled(sid, pid, checked)
+                lambda checked, sid=step_id, pid=candidate.id: self._on_prereq_toggled(
+                    sid, pid, checked
+                )
             )
             self._prereqs_layout.addWidget(cb)
             self._prereq_checkboxes[candidate.id] = cb
@@ -313,9 +307,7 @@ class DagEditorDialog(QDialog):
 
         id_to_label = {s.id: s.label for s in steps}
         ordered_labels = [id_to_label[nid] for nid in topo_order if nid in id_to_label]
-        self._preview_label.setText(
-            f"DAG  ({len(steps)} steps):  " + "  →  ".join(ordered_labels)
-        )
+        self._preview_label.setText(f"DAG  ({len(steps)} steps):  " + "  →  ".join(ordered_labels))
 
     # ------------------------------------------------------------------
     # Result construction
@@ -339,6 +331,7 @@ class DagEditorDialog(QDialog):
             list(TopologicalSorter(graph).static_order())
         except CycleError as exc:
             from PySide6.QtWidgets import QMessageBox
+
             QMessageBox.critical(self, "Cycle Detected", f"The DAG contains a cycle:\n{exc}")
             return
         self._result = dag
@@ -360,7 +353,5 @@ class DagEditorDialog(QDialog):
 
 def _header_label(text: str) -> QLabel:
     lbl = QLabel(text)
-    lbl.setStyleSheet(
-        "color: #8899bb; font-weight: bold; font-size: 11px; padding: 2px 0;"
-    )
+    lbl.setStyleSheet("color: #8899bb; font-weight: bold; font-size: 11px; padding: 2px 0;")
     return lbl
