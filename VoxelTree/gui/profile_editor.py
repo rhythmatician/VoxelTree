@@ -33,6 +33,7 @@ from PySide6.QtWidgets import (
 # checking out the repo, but the repo root (where ``profiles/`` and ``runs/``
 # live) is one level above that.
 
+
 def _find_project_root(start: Path) -> Path:
     for ancestor in [start] + list(start.parents):
         if (ancestor / "pyproject.toml").exists() or (ancestor / ".git").exists():
@@ -48,11 +49,6 @@ _RUNS_DIR = _PROJECT_ROOT / "runs"
 _DEFAULT_PROFILE: dict = {
     "name": "new_profile",
     "description": "",
-    "world": {
-        "seed": 12345,
-        "radius": 512,
-        "save_name": "New World",
-    },
     "rcon": {
         "timeout": 300,
     },
@@ -294,17 +290,6 @@ class ProfileEditorDialog(QDialog):
         self._add_str(meta_form, "description", "Description", self._data.get("description", ""))
         form_layout.addWidget(meta_box)
 
-        # ── World ──
-        world = self._data.get("world", {})
-        w_box = self._group("World")
-        w_form = QFormLayout(w_box)
-        self._add_int(w_form, "world.seed", "Seed", world.get("seed", 12345), 0, 2**31 - 1)
-        self._add_int(
-            w_form, "world.radius", "Radius (blocks)", world.get("radius", 512), 64, 16384
-        )
-        self._add_str(w_form, "world.save_name", "Save Name", world.get("save_name", "New World"))
-        form_layout.addWidget(w_box)
-
         # ── Server (read-only — values come from server.properties) ──
         from VoxelTree.gui.server_manager import get_rcon_settings  # noqa: PLC0415
 
@@ -540,6 +525,9 @@ class ProfileEditorDialog(QDialog):
                     _set(self._data, key, None)
                 else:
                     _set(self._data, key, widget._spin.value())  # type: ignore[attr-defined]
+
+        # Strip global server settings (now managed in server.properties, not per-profile)
+        self._data.pop("world", None)
 
         # Strip legacy RCON keys — they now live in server.properties
         rcon = self._data.get("rcon", {})

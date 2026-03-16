@@ -200,36 +200,18 @@ class ServerManager(QObject):
         return self._status == "running"
 
     def configure_for_profile(self, profile: dict) -> None:
-        """Patch server.properties to match the given profile dict.
+        """Validate profile is loaded (no server.properties patches).
 
-        Updates ``level-seed``, ``level-name``, and ``rcon.password`` so the
-        server will start with the correct world and RCON credentials.  Must be
-        called **before** :meth:`start` (or the server must be restarted for
-        changes to take effect).
+        This method is a no-op that validates the profile is a dict. The
+        server's seed, level-name, and RCON settings are now truly global
+        settings managed once at server startup, not per-profile patches.
+
+        Profile-specific settings (data paths, training params, etc.) do not
+        affect the server—only the pipeline configuration.
         """
-        world = profile.get("world", {})
-        rcon = profile.get("rcon", {})
-        patches: dict[str, str] = {}
-
-        seed = world.get("seed")
-        if seed is not None:
-            patches["level-seed"] = str(seed)
-        save_name = world.get("save_name")
-        if save_name:
-            patches["level-name"] = save_name
-
-        # RCON password — profiles MAY still carry a legacy ``rcon.password``
-        # key; if present we honour it, otherwise keep whatever is already in
-        # server.properties.
-        pw = rcon.get("password")
-        if pw:
-            patches["rcon.password"] = pw
-
-        if patches:
-            _patch_server_properties(patches)
-            self.log_line.emit(
-                f"[Server] Patched server.properties: {', '.join(f'{k}={v}' for k, v in patches.items())}"
-            )
+        # Validate profile structure for future extensibility
+        if not isinstance(profile, dict):
+            raise TypeError(f"Expected dict profile, got {type(profile)}")
 
     # Legacy shim — old callers may still call configure_rcon(); this now
     # reads/writes server.properties instead of storing state in-memory.
@@ -305,9 +287,7 @@ class ServerManager(QObject):
                 rc.command("stop")
             self.log_line.emit("[Server] Sent /stop via RCON — waiting for shutdown…")
         except Exception as exc:
-            self.log_line.emit(
-                f"[Server] RCON /stop failed ({exc}); waiting for process to exit…"
-            )
+            self.log_line.emit(f"[Server] RCON /stop failed ({exc}); waiting for process to exit…")
 
         self._stop_timer.start()
 

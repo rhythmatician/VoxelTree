@@ -153,13 +153,9 @@ class MainWindow(QMainWindow):
             self._detail.show()
             self.resizeDocks([self._detail], [360], Qt.Orientation.Horizontal)
 
-        # Patch server.properties so the server uses this profile's world/RCON
-        # settings.  The server must be (re)started for seed/level-name changes
-        # to take effect; RCON password is used immediately by stop().
-        profile = self._profiles.get(profile_name)
-        if profile:
-            self._server.configure_for_profile(profile)
-
+        # Server settings (seed, level-name, RCON password) are now global,
+        # set once in server.properties, not patched per-profile.
+        # Profiles only affect pipeline configuration.
         self._server_bar.set_active_profile(profile_name)
 
     @Slot()
@@ -253,12 +249,8 @@ class MainWindow(QMainWindow):
         if profile_name not in self._profiles:
             return
 
-        # Patch server.properties to match the active profile (seed, world name,
-        # RCON password) before starting the server.
-        profile = self._profiles[profile_name]
-        self._server.configure_for_profile(profile)
-
-        # Ensure the Fabric server is running
+        # Server settings (seed, level-name, RCON password) are global and
+        # already configured in server.properties. Just start the server.
         self._server.start()
 
         # Load the detail panel for this profile (so we can run steps).

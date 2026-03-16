@@ -10,6 +10,10 @@ VoxelTree.egg-info/entry_points.txt
 VoxelTree.egg-info/requires.txt
 VoxelTree.egg-info/top_level.txt
 VoxelTree/config/voxy_vocab.json
+VoxelTree/core/__init__.py
+VoxelTree/core/sparse_octree_targets.py
+VoxelTree/core/sparse_root_distill.py
+VoxelTree/core/sparse_root_train.py
 VoxelTree/gui/__init__.py
 VoxelTree/gui/__main__.py
 VoxelTree/gui/app.py
@@ -38,6 +42,7 @@ VoxelTree/scripts/deploy_models.py
 VoxelTree/scripts/export_octree.py
 VoxelTree/scripts/extract_octree_data.py
 VoxelTree/scripts/run_ablations.py
+VoxelTree/scripts/sparse_octree_targets.py
 VoxelTree/scripts/voxy_reader.py
 VoxelTree/train/__init__.py
 VoxelTree/train/octree_dataset.py

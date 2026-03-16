@@ -7,7 +7,7 @@ column-height enrichment, and octree pair cache building.
 
 Canonical pipeline steps (run all, or start from any step):
   1) pregen              — RCON: freeze world + Chunky chunk generation
-  2) voxy-import         — RCON: /voxy import world <name>
+  2) voxy-import         — MANUAL: connect client + run /voxy import world "<save>/"
   3) dumpnoise           — RCON: /dumpnoise stage1 + sparse_root → all training formats
   4) extract-octree      — Voxy RocksDB → data/voxy_octree/level_N/*.npz
   5) column-heights-octree — Merge vanilla heightmaps from dumpnoise JSON into NPZs
@@ -79,7 +79,7 @@ import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from VoxelTree.preprocessing.rcon import RconClient, RconError
+from VoxelTree.preprocessing.rcon import RconClient
 
 
 def _safe_unicode(char: str, fallback: str) -> str:
@@ -116,8 +116,11 @@ DATAPREP_STEPS = [
     "build-octree-pairs",
 ]
 
+#: Fabric server runtime directory (contains server.properties, world folders, etc.).
+DEFAULT_SERVER_DIR = _REPO_ROOT / "tools" / "fabric-server" / "runtime"
+
 #: Default noise-dump output directory (relative to repo root).
-DEFAULT_NOISE_DUMP_DIR = _REPO_ROOT / "tools" / "fabric-server" / "runtime" / "noise_dumps"
+DEFAULT_NOISE_DUMP_DIR = DEFAULT_SERVER_DIR / "noise_dumps"
 
 # ---------------------------------------------------------------------------
 # Command definitions
@@ -134,7 +137,6 @@ class PipelineConfig:
     center_x: int = 0
     center_z: int = 0
     radius: int = 2048
-    shape: str = "square"
     verbose: bool = False
     voxy_import_world: str = ""
     voxy_import_timeout: int = 300
@@ -142,6 +144,9 @@ class PipelineConfig:
 
 # Gamerule commands that freeze the world for deterministic data collection.
 FREEZE_COMMANDS: list[tuple[str, str]] = [
+    # Carpet: stops ALL game ticks — blocks fluid flow, lava spread, block updates.
+    # This MUST be first; gamerule commands alone do NOT stop lava from flowing.
+    ("/tick freeze", "Carpet: freeze all game ticks (stops lava, fluid flow, block updates)"),
     (
         "/carpet randomTickSpeed 0",
         "Disable random block ticks (crops, fire spread, etc.)",
@@ -155,6 +160,7 @@ FREEZE_COMMANDS: list[tuple[str, str]] = [
 ]
 
 UNFREEZE_COMMANDS: list[tuple[str, str]] = [
+    ("/tick unfreeze", "Carpet: resume normal tick execution"),
     ("/carpet randomTickSpeed 3", "Restore random tick speed"),
     ("/gamerule doFireTick true", "Re-enable fire spread"),
     ("/gamerule mobGriefing true", "Re-enable mob griefing"),
@@ -204,16 +210,25 @@ def _run_commands(
 
 
 def build_pregen_commands(cfg: PipelineConfig) -> list[tuple[str, str]]:
-    """Build the Chunky command sequence for pregeneration."""
+    """Build the Chunky command sequence for pregeneration using explicit corners.
+
+    Uses ``/chunky corners`` to define an exact square grid rather than
+    radius+shape, which avoids the ring/circle artefact that some Chunky
+    versions produce with ``/chunky shape circle`` (the default when Chunky
+    State is reset between server restarts).
+    """
+    x1 = cfg.center_x - cfg.radius
+    z1 = cfg.center_z - cfg.radius
+    x2 = cfg.center_x + cfg.radius - 1
+    z2 = cfg.center_z + cfg.radius - 1
+    chunk_side = (cfg.radius * 2 + 15) // 16
     return [
-        (f"/chunky world {cfg.world}", f"Target world: {cfg.world}"),
+        (f"chunky world {cfg.world}", f"Target world: {cfg.world}"),
         (
-            f"/chunky center {cfg.center_x} {cfg.center_z}",
-            f"Center: ({cfg.center_x}, {cfg.center_z})",
+            f"chunky corners {x1} {z1} {x2} {z2}",
+            f"Square: {chunk_side}\u00d7{chunk_side} chunks  ({x1},{z1}) \u2192 ({x2},{z2})",
         ),
-        (f"/chunky radius {cfg.radius}", f"Radius: {cfg.radius} blocks"),
-        (f"/chunky shape {cfg.shape}", f"Shape: {cfg.shape}"),
-        ("/chunky start", "Start pregeneration"),
+        ("chunky start", "Start pregeneration"),
     ]
 
 
@@ -274,85 +289,67 @@ def cmd_pregen(cfg: PipelineConfig) -> None:
 
 
 def cmd_voxy_import(cfg: PipelineConfig) -> None:
-    """Send ``/voxy import world <name>`` to import a Minecraft save into Voxy.
+    """Print in-game instructions for the Voxy world import, then poll the disk.
 
-    This bridges the gap between Chunky pregen (step 1) and extraction (step 3)
-    by automating what was previously a manual in-game command.
+    Voxy is a **client-only** mod — its import command cannot be driven via RCON.
+    This step prints the exact in-game command the player must run, then polls
+    ``DEFAULT_VOXY_DIR`` every 10 s until the Voxy RocksDB storage directory
+    appears, signalling that the import has completed.
 
-    After the command is sent, the function polls the server at 5 s intervals
-    for up to ``cfg.voxy_import_timeout`` seconds (default: 300) looking for
-    a completion signal.  Once Voxy responds with "Import complete" (or similar)
-    the function returns so the pipeline can continue to extraction.
+    The Voxy client command format is::
+
+        /voxy import world "<save-folder>/"
+
+    where ``<save-folder>`` is the world folder name as Voxy lists it
+    (e.g. ``New World/`` for a singleplayer world named "New World").
     """
-    world_name: str = cfg.voxy_import_world
-    if not world_name:
-        print("ERROR: --world-name is required for voxy-import.")
-        sys.exit(1)
+    world_name: str = cfg.voxy_import_world or "New World/"
+    voxy_base = Path(DEFAULT_VOXY_DIR)
 
-    cmd_str = f"voxy import world {world_name}"
+    sep = "-" * 60
+    print(f"\n{sep}")
+    print("  MANUAL STEP — Voxy world import")
+    print(sep)
+    print("  Voxy is a client-only mod; it cannot be driven via RCON.")
+    print()
+    print("  1. Launch Minecraft and connect to the server:")
+    print("       localhost:25565")
+    print()
+    print("  2. Once in-game, open chat and run:")
+    print(f'       /voxy import world "{world_name}"')
+    print()
+    print("  3. Wait for Voxy to finish importing (watch the in-game progress bar).")
+    print("  4. This script will automatically continue once the Voxy DB appears.")
+    print(sep)
 
     if cfg.dry_run:
-        print(f"\n  [DRY-RUN] Would send: /{cmd_str}")
+        print(
+            f"\n  [DRY-RUN] Would poll for:\n"
+            f"    {voxy_base / world_name / 'voxy' / '*' / 'storage'}"
+        )
         return
 
-    if not cfg.password:
-        print("ERROR: --password required (or use --dry-run to preview).")
-        sys.exit(1)
+    timeout = cfg.voxy_import_timeout
+    interval = 10
+    start = time.time()
 
-    print(f"\n  Importing world '{world_name}' into Voxy via RCON...")
+    while time.time() - start < timeout:
+        time.sleep(interval)
+        elapsed = int(time.time() - start)
 
-    with RconClient(cfg.host, cfg.port, cfg.password) as rcon:
-        resp = rcon.command(cmd_str)
-        resp_text = resp.strip() or "(no response)"
-        print(f"  Server response: {resp_text}")
+        # Voxy stores: <saves>/<world_name>/voxy/<hash>/storage/
+        storage_dirs = list(voxy_base.glob(f"{world_name}/voxy/*/storage"))
+        if storage_dirs:
+            print(f"\n  [{elapsed:>4}s] Voxy DB found: {storage_dirs[0]}")
+            print("  Voxy import complete!")
+            return
 
-        if "unknown or incomplete" in resp_text.lower():
-            print(
-                "\n  ERROR: 'voxy' command is not available via RCON in this Voxy version."
-                "\n  Connect your Minecraft client to the server (localhost:25565) and run:"
-                f"\n    /voxy import world {world_name}"
-                "\n  Wait for Voxy to finish importing, then re-run extract-octree from the GUI."
-            )
-            sys.exit(1)
+        print(f"  [{elapsed:>4}s] Waiting for Voxy DB under {voxy_base / world_name / 'voxy'}...")
 
-        # Poll for completion
-        timeout = cfg.voxy_import_timeout
-        interval = 5
-        start = time.time()
-        while time.time() - start < timeout:
-            time.sleep(interval)
-            try:
-                status = rcon.command("voxy import status")
-            except RconError:
-                # Voxy may not support a status query; that's okay
-                print("  (no import-status command available — assuming success)")
-                break
-            status_text = status.strip()
-            if not status_text or status_text == "(no response)":
-                continue
-            print(f"  [{time.strftime('%H:%M:%S')}] {status_text}")
-            lower = status_text.lower()
-            if any(kw in lower for kw in ("done", "finished", "imported", "100%", "import complete")):
-                print("\n  Voxy import complete!")
-                return
-            if "unknown or incomplete" in lower:
-                # RCON: voxy command not registered — must be run in-game by a player
-                print(
-                    "\n  ERROR: 'voxy' is not available via RCON in this Voxy version."
-                    "\n  Connect a Minecraft client to the server and run:"
-                    f"\n    /voxy import world {world_name}"
-                    "\n  Then re-run extract-octree from the GUI."
-                )
-                sys.exit(1)
-            if "error" in lower or "fail" in lower:
-                print("\n  ERROR: Voxy import failed — see server log.")
-                sys.exit(1)
-
-        print(
-            f"\n  Timed out after {timeout}s waiting for Voxy import to finish."
-            "\n  The import may still be running on the server."
-            "\n  Check the server log before continuing."
-        )
+    print(
+        f"\n  Timed out after {timeout}s. The import may still be running on the client."
+        "\n  Once Voxy finishes, re-run: dataprep --from-step extract-octree"
+    )
 
 
 def cmd_dumpnoise(cfg: PipelineConfig) -> None:
@@ -447,6 +444,99 @@ def cmd_dumpnoise(cfg: PipelineConfig) -> None:
     print(f"    [OK] SparseRoot: <game_dir>/sparse_root_dumps/ ({total_sections:,} files)")
 
 
+def cmd_purge(args: argparse.Namespace) -> None:
+    """Delete stale server world + training data so the pipeline can start fresh.
+
+    Removes:
+    * Server world folder (``<server-dir>/<level-name>/``)
+    * Server noise dump directory (``<server-dir>/noise_dumps/``)
+    * Optionally NPZ training data (``data/voxy_octree/``)
+
+    If ``--seed`` is given, also rewrites ``level-seed`` in server.properties.
+    The server must be **restarted** after purging so Minecraft regenerates the
+    world with the new seed.
+    """
+    import re
+    import shutil
+
+    server_dir: Path = getattr(args, "server_dir", None) or DEFAULT_SERVER_DIR
+    server_props = server_dir / "server.properties"
+    new_seed: str | None = getattr(args, "seed", None)
+    clean_data: bool = getattr(args, "clean_data", False)
+    data_dir: Path = getattr(args, "data_dir", DEFAULT_DATA_DIR)
+    yes: bool = getattr(args, "yes", False)
+
+    # Read level-name from server.properties
+    level_name = "world"
+    if server_props.is_file():
+        for line in server_props.read_text(encoding="utf-8").splitlines():
+            if line.startswith("level-name="):
+                level_name = line.split("=", 1)[1].strip()
+                break
+
+    world_dir = server_dir / level_name
+    noise_dir = server_dir / "noise_dumps"
+
+    # Build action list
+    actions: list[tuple[str, Path, str]] = []
+    if world_dir.exists():
+        actions.append(("DELETE", world_dir, f"Server world ({level_name})"))
+    else:
+        print(f"  (skip) World dir not found: {world_dir}")
+    if noise_dir.exists():
+        actions.append(("DELETE", noise_dir, "Noise dump JSON files"))
+    else:
+        print(f"  (skip) Noise dump dir not found: {noise_dir}")
+    if clean_data:
+        if data_dir.exists():
+            actions.append(("DELETE", data_dir, "NPZ octree training data"))
+        else:
+            print(f"  (skip) Data dir not found: {data_dir}")
+    if new_seed:
+        actions.append(("UPDATE", server_props, f"level-seed → {new_seed}"))
+
+    if not actions:
+        print("Nothing to purge.")
+        return
+
+    print("\nPURGE PLAN")
+    print("=" * 56)
+    for action, path, desc in actions:
+        print(f"  {action:<8}  {path}")
+        print(f"           ({desc})")
+    print("=" * 56)
+
+    if not yes:
+        try:
+            confirm = input("\nProceed? [y/N] ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            print("\nAborted.")
+            return
+        if confirm not in ("y", "yes"):
+            print("Aborted.")
+            return
+
+    for action, path, desc in actions:
+        if action == "DELETE":
+            if path.is_dir():
+                shutil.rmtree(path)
+            else:
+                path.unlink(missing_ok=True)
+            print(f"  Deleted:  {path}")
+        elif action == "UPDATE":
+            content = server_props.read_text(encoding="utf-8")
+            content = re.sub(
+                r"^level-seed=.*$", f"level-seed={new_seed}", content, flags=re.MULTILINE
+            )
+            server_props.write_text(content, encoding="utf-8")
+            print(f"  Updated:  {path}  ({desc})")
+
+    print("\nPurge complete.")
+    if new_seed:
+        print(f"  New seed : {new_seed}")
+    print("  ACTION REQUIRED: Restart the Fabric server before running 'pregen'.")
+
+
 def cmd_status(cfg: PipelineConfig) -> None:
     """Query Chunky pregeneration progress."""
     if cfg.dry_run:
@@ -472,10 +562,11 @@ def cmd_info(cfg: PipelineConfig) -> None:  # noqa: ARG001
         World       : {cfg.world}
         Center      : ({cfg.center_x}, {cfg.center_z})
         Radius      : {cfg.radius} blocks
-        Shape       : {cfg.shape}
 
-        Estimated chunks: ~{int((cfg.radius / 16) ** 2 * 3.14159):,}
-            (for a circular radius; square has ~{int((cfg.radius * 2 / 16) ** 2):,})
+        Grid: {(cfg.radius * 2 + 15) // 16}\u00d7{(cfg.radius * 2 + 15) // 16} chunks
+            = {int((cfg.radius * 2 / 16) ** 2):,} total
+            corners: ({cfg.center_x - cfg.radius},{cfg.center_z - cfg.radius})
+                  to ({cfg.center_x + cfg.radius - 1},{cfg.center_z + cfg.radius - 1})
 
         Step 1 — freeze ({len(FREEZE_COMMANDS)} gamerule commands)
         Step 2 — Chunky pregen ({len(build_pregen_commands(cfg))} Chunky commands)
@@ -764,19 +855,15 @@ def cmd_dataprep(args: argparse.Namespace) -> None:
         print()
 
     # ---- validate RCON args early if RCON steps are in the plan ----
-    rcon_needed = any(s in steps_to_run for s in ("pregen", "voxy-import", "dumpnoise"))
+    # Note: voxy-import is a MANUAL step (Voxy is client-only) — no RCON needed.
+    rcon_needed = any(s in steps_to_run for s in ("pregen", "dumpnoise"))
     dry_run = getattr(args, "dry_run", False)
     if rcon_needed and not dry_run:
         password = getattr(args, "password", "")
         if not password:
-            print("ERROR: --password is required for RCON steps (pregen, voxy-import, dumpnoise).")
+            print("ERROR: --password is required for RCON steps (pregen, dumpnoise).")
             print("  Use --dry-run to preview commands without a server.")
             sys.exit(1)
-        if "voxy-import" in steps_to_run:
-            world_name = getattr(args, "world_name", "")
-            if not world_name:
-                print("ERROR: --world-name is required when voxy-import is in the plan.")
-                sys.exit(1)
 
     # ---- build PipelineConfig for RCON steps ----
     cfg = PipelineConfig(
@@ -788,9 +875,8 @@ def cmd_dataprep(args: argparse.Namespace) -> None:
         center_x=getattr(args, "center", [0, 0])[0],
         center_z=getattr(args, "center", [0, 0])[1],
         radius=getattr(args, "radius", 2048),
-        shape=getattr(args, "shape", "square"),
         verbose=getattr(args, "verbose", False),
-        voxy_import_world=getattr(args, "world_name", ""),
+        voxy_import_world=getattr(args, "world_name", "") or "New World/",
         voxy_import_timeout=getattr(args, "timeout", 300),
     )
 
@@ -871,20 +957,8 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="R",
         help="Pregen radius in blocks (default: 2048)",
     )
-    pregen_args.add_argument(
-        "--shape",
-        default="square",
-        choices=[
-            "square",
-            "rectangle",
-            "circle",
-            "oval",
-            "diamond",
-            "triangle",
-            "star",
-        ],
-        help="Chunky selection shape (default: square)",
-    )
+    # Note: shape is no longer configurable — the pipeline always uses
+    # /chunky corners to produce an exact square grid.
 
     parser = argparse.ArgumentParser(
         prog="data-cli",
@@ -927,6 +1001,41 @@ def build_parser() -> argparse.ArgumentParser:
         default=300,
         metavar="SECS",
         help="Max seconds to wait for import completion (default: 300)",
+    )
+    p_purge = sub.add_parser(
+        "purge",
+        help="Delete stale world + training data for a clean start (see --seed to change seed)",
+    )
+    p_purge.add_argument(
+        "--server-dir",
+        type=Path,
+        default=None,
+        metavar="DIR",
+        help="Fabric server runtime directory (auto-detected from repo layout by default)",
+    )
+    p_purge.add_argument(
+        "--seed",
+        default=None,
+        metavar="SEED",
+        help="New level-seed value to write to server.properties",
+    )
+    p_purge.add_argument(
+        "--clean-data",
+        action="store_true",
+        help="Also delete the NPZ octree training data (data/voxy_octree/)",
+    )
+    p_purge.add_argument(
+        "--data-dir",
+        type=Path,
+        default=DEFAULT_DATA_DIR,
+        metavar="DIR",
+        help="NPZ data directory to clean when --clean-data is set",
+    )
+    p_purge.add_argument(
+        "--yes",
+        "-y",
+        action="store_true",
+        help="Skip the confirmation prompt",
     )
     sub.add_parser("status", parents=[shared], help="Query Chunky pregeneration progress")
     sub.add_parser(
@@ -1057,6 +1166,11 @@ def main(argv: list[str] | None = None) -> None:
         cmd_dataprep(args)
         return
 
+    # purge uses args directly (no RCON/PipelineConfig needed)
+    if args.subcommand == "purge":
+        cmd_purge(args)
+        return
+
     cfg = PipelineConfig(
         host=getattr(args, "host", "localhost"),
         port=getattr(args, "port", 25575),
@@ -1066,7 +1180,6 @@ def main(argv: list[str] | None = None) -> None:
         center_x=getattr(args, "center", [0, 0])[0],
         center_z=getattr(args, "center", [0, 0])[1],
         radius=getattr(args, "radius", 2048),
-        shape=getattr(args, "shape", "square"),
         verbose=getattr(args, "verbose", False),
         voxy_import_world=getattr(args, "world_name", ""),
         voxy_import_timeout=getattr(args, "timeout", 300),
