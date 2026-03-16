@@ -6,7 +6,7 @@ still training on the real `sparse_root_pairs.npz` supervision.
 ## Recommended command
 
 ```powershell
-c:/Users/JeffHall/git/MC/.venv/Scripts/python.exe c:/Users/JeffHall/git/MC/VoxelTree/scripts/sparse_root/distill_sparse_root.py \
+c:/Users/JeffHall/git/MC/.venv/Scripts/python.exe c:/Users/JeffHall/git/MC/VoxelTree/scripts/sparse_root/distill.py \
   --data c:/Users/JeffHall/git/MC/noise_training_data/sparse_root_pairs.npz \
   --teacher-checkpoint c:/Users/JeffHall/git/MC/tmp_real_sparse_root_model.pt \
   --out c:/Users/JeffHall/git/MC/tmp_fast80_distilled_sparse_root.pt \
