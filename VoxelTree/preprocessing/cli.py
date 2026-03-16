@@ -392,16 +392,22 @@ def cmd_voxy_import(cfg: PipelineConfig) -> None:
 
     sep = "-" * 60
     print(f"\n{sep}")
-    print("  MANUAL STEP -- Voxy server-connection database")
+    print("  VOXY IMPORT -- Voxy server-connection database")
     print(sep)
     print("  Voxy auto-populates its LOD database as you observe chunks.")
     print()
-    print("  1. Make sure the Fabric server is running (seed 3628800).")
-    print("  2. Launch Minecraft (Modrinth: LODiffusion dependencies profile).")
-    print("  3. Connect to:  localhost:25565")
-    print("  4. Once connected, Voxy will scan all pre-generated chunks.")
-    print("     Teleport around to make sure you cover the pre-generated area:")
-    print("       /tp 0 100 0")
+    print("  OPTION A — Automated (recommended):")
+    print("    1. Build & install the DataHarvester mod:")
+    print("         VoxelTree\\tools\\data-harvester\\build_and_install.bat")
+    print("    2. Run the harvest script (handles teleportation via RCON):")
+    print("         python -m VoxelTree.preprocessing.harvest --password voxeltree --radius 2048")
+    print("    3. Launch Minecraft (Modrinth: LODiffusion dependencies profile)")
+    print("       The DataHarvester mod auto-connects to localhost:25565.")
+    print()
+    print("  OPTION B — Manual:")
+    print("    1. Launch Minecraft (Modrinth: LODiffusion dependencies profile)")
+    print("    2. Connect to:  localhost:25565")
+    print("    3. Teleport around to cover the pre-generated area: /tp 0 100 0")
     print()
     print(f"  Voxy DB location: {voxy_base}")
     print(sep)
@@ -432,6 +438,17 @@ def cmd_voxy_import(cfg: PipelineConfig) -> None:
         f"\n  Timed out after {timeout}s."
         "\n  Once Voxy has data, re-run: dataprep --from-step extract-octree"
     )
+
+
+def cmd_harvest(args: argparse.Namespace) -> None:
+    """Automated Voxy import via RCON teleport spiral + DB monitoring.
+
+    Wraps :mod:`VoxelTree.preprocessing.harvest` as a CLI subcommand so the
+    full harvest pipeline can be invoked from the unified CLI.
+    """
+    from VoxelTree.preprocessing.harvest import run_harvest
+
+    run_harvest(args)
 
 
 def cmd_dumpnoise(cfg: PipelineConfig) -> None:
@@ -1263,6 +1280,72 @@ def build_parser() -> argparse.ArgumentParser:
         help="Fabric server runtime directory (auto-detected from repo layout by default)",
     )
     sub.add_parser("status", parents=[shared], help="Query Chunky pregeneration progress")
+
+    # ---- harvest (automated voxy-import via DataHarvester mod) ----
+    p_hv = sub.add_parser(
+        "harvest",
+        parents=[shared, pregen_args],
+        help="Automated Voxy import: pregen + RCON teleport spiral + DB monitoring",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=textwrap.dedent(
+            """\
+            Automates the voxy-import step by:
+              1. (Optional) Running Chunky pregeneration
+              2. Waiting for a player/bot to connect
+              3. Teleporting the player in a spiral pattern via RCON
+              4. Monitoring the Voxy RocksDB until it stabilises
+
+            Requires the DataHarvester mod installed on the client, or a
+            manually-connected player. See: VoxelTree/tools/data-harvester/
+        """
+        ),
+    )
+    p_hv.add_argument(
+        "--step",
+        type=int,
+        default=256,
+        metavar="BLOCKS",
+        help="Teleport step size in blocks (default: 256)",
+    )
+    p_hv.add_argument(
+        "--dwell",
+        type=float,
+        default=8.0,
+        metavar="SECS",
+        help="Seconds to dwell at each teleport position (default: 8)",
+    )
+    p_hv.add_argument(
+        "--stable-seconds",
+        type=int,
+        default=60,
+        metavar="SECS",
+        help="DB must be stable for this many seconds (default: 60)",
+    )
+    p_hv.add_argument(
+        "--skip-pregen",
+        action="store_true",
+        help="Skip Chunky pregeneration (chunks already exist)",
+    )
+    p_hv.add_argument(
+        "--spiral-only",
+        action="store_true",
+        help="Skip pregen + player wait; just run spiral + monitor",
+    )
+    p_hv.add_argument(
+        "--player-timeout",
+        type=int,
+        default=600,
+        metavar="SECS",
+        help="Max seconds to wait for player connection (default: 600)",
+    )
+    p_hv.add_argument(
+        "--voxy-dir",
+        type=Path,
+        default=DEFAULT_VOXY_DIR,
+        metavar="DIR",
+        help="Voxy saves directory to monitor",
+    )
+
     p_dn = sub.add_parser(
         "dumpnoise",
         parents=[shared, pregen_args],
@@ -1396,6 +1479,11 @@ def main(argv: list[str] | None = None) -> None:
     # dataprep uses args directly (it builds its own PipelineConfig for RCON)
     if args.subcommand == "dataprep":
         cmd_dataprep(args)
+        return
+
+    # harvest uses args directly (delegates to harvest.py)
+    if args.subcommand == "harvest":
+        cmd_harvest(args)
         return
 
     # purge / install-datapack use args directly (no RCON/PipelineConfig needed)
