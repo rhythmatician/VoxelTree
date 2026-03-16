@@ -308,6 +308,16 @@ class DetailPanel(QDockWidget):
                 epoch = int(m.group(1))
                 self._registry.set_metadata(step_id, "epochs_completed", epoch)
 
+            # Chunky pregeneration progress: "[Chunky] Task running ... (12.34%), ..."
+            m_chunky = re.search(r"\[Chunky\].*\((\d+\.?\d*)%\)", line)
+            if m_chunky:
+                self._registry.set_progress(step_id, float(m_chunky.group(1)) / 100.0)
+                parent = self.parent()
+                if hasattr(parent, "on_step_progress"):
+                    parent.on_step_progress(self._profile_name, step_id)
+                elif hasattr(parent, "_dashboard"):
+                    parent._dashboard.refresh_profile(self._profile_name)
+
     @Slot(str, int)
     def _on_step_finished(self, step_id: str, exit_code: int) -> None:
         assert self._registry is not None

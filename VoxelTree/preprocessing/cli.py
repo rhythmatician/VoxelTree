@@ -310,6 +310,64 @@ def cmd_pregen(cfg: PipelineConfig) -> None:
         )
 
 
+def cmd_pregen_with_callback(cfg: PipelineConfig, progress_callback=None) -> None:
+    """Configure Chunky and start pregeneration, calling callback with progress updates.
+
+    Args:
+        cfg: Pipeline configuration
+        progress_callback: Optional callback(percentage: float, status_text: str) called with
+                         progress updates extracted from Chunky response. Percentage is 0-100.
+    """
+    import re
+
+    # 1. Freeze first
+    if progress_callback:
+        progress_callback(0.0, "Freezing world state...")
+    _run_commands(FREEZE_COMMANDS, cfg, "Freeze")
+
+    # 2. Configure and start Chunky
+    if progress_callback:
+        progress_callback(5.0, "Configuring Chunky...")
+    pregen_cmds = build_pregen_commands(cfg)
+    _run_commands(pregen_cmds, cfg, "Chunky Pregen")
+
+    if cfg.dry_run:
+        if progress_callback:
+            progress_callback(100.0, "Dry run complete (no actual pregeneration)")
+        return
+
+    # 3. Poll Chunky for progress
+    if progress_callback:
+        progress_callback(10.0, "Starting pregeneration...")
+
+    try:
+        with RconClient(cfg.host, cfg.port, cfg.password) as rcon:
+            while True:
+                resp = rcon.command("chunky progress")
+                if resp:
+                    # Extract percentage from response like:
+                    # "Task running for minecraft:overworld. Processed: X chunks (Y.YY%), ..."
+                    match = re.search(r"\((\d+\.?\d*?)%\)", resp)
+                    if match:
+                        percentage = float(match.group(1))
+                        if progress_callback:
+                            # Format status text from the response
+                            status_text = resp.strip()
+                            progress_callback(
+                                max(10.0, percentage),  # Never go below 10% (freeze + config)
+                                status_text,
+                            )
+                    if "complete" in resp.lower() or "done" in resp.lower() or "100%" in resp:
+                        if progress_callback:
+                            progress_callback(100.0, "Pregeneration complete!")
+                        break
+                time.sleep(5)
+    except KeyboardInterrupt:
+        if progress_callback:
+            progress_callback(0.0, "Pregeneration cancelled by user")
+        raise
+
+
 def cmd_voxy_import(cfg: PipelineConfig) -> None:
     """Wait for the Voxy server-connection database to be populated.
 
