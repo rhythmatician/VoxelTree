@@ -57,7 +57,7 @@ from __future__ import annotations
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
 
 # ---------------------------------------------------------------------------
 # StepDef — one node in the pipeline DAG
@@ -576,6 +576,35 @@ def _train_stage1_density_cmd(p: dict) -> list[str]:
 
 
 def _extract_stage1_weights_cmd(p: dict) -> list[str]:
+    # Export weights only (do not deploy).  The deploy phase runs the same
+    # script without --no-deploy to push into LODiffusion resources.
+    train = p.get("train", {})
+    extract = p.get("extract", {})
+    cmd = [_python(), "scripts/stage1/extract_density_weights.py", "--no-deploy"]
+    model_dir = train.get("output_dir")
+    if model_dir:
+        cmd += ["--model-dir", str(model_dir)]
+    if extract.get("output_dir"):
+        cmd += ["--out-dir", str(extract["output_dir"])]
+    return cmd
+
+
+def _build_pairs_stage1_cmd(p: dict) -> list[str]:
+    """Validate that Stage1 noise dumps exist (stage1_dumps)."""
+    data = p.get("data", {})
+    dump_dir = data.get("stage1_dump_dir", "stage1_dumps")
+    # Fail fast if there are no Stage1 dumps.
+    snippet = (
+        "import pathlib,sys; "
+        "p=pathlib.Path(%r); "
+        "files=list(p.glob('chunk_*.json')); "
+        "sys.exit(0 if files else (print(f'No Stage1 dumps found in {p}', file=sys.stderr), 1)[1])"
+        % str(dump_dir)
+    )
+    return [_python(), "-c", snippet]
+
+
+def _deploy_stage1_cmd(p: dict) -> list[str]:
     train = p.get("train", {})
     extract = p.get("extract", {})
     cmd = [_python(), "scripts/stage1/extract_density_weights.py"]
@@ -587,7 +616,7 @@ def _extract_stage1_weights_cmd(p: dict) -> list[str]:
     return cmd
 
 
-def _distill_density_cmd(p: dict) -> list[str]:
+def _distill_density_cmd(p: dict[str, Any]) -> list[str]:
     train = p.get("train", {})
     distill = p.get("distill", {})
     return [
@@ -659,6 +688,39 @@ def _train_sparse_root_cmd(p: dict) -> list[str]:
     return cmd
 
 
+def _export_sparse_root_cmd(p: dict[str, Any]) -> list[str]:
+    train = p.get("train", {})
+    export = p.get("export", {})
+    checkpoint = Path(train.get("output_dir", ".")) / "sparse_root_model.pt"
+    out_dir = export.get("output_dir") or "LODiffusion/run/models"
+    return [
+        _python(),
+        "LODiffusion/models/export_sparse_root.py",
+        "--checkpoint",
+        str(checkpoint),
+        "--out-dir",
+        str(out_dir),
+    ]
+
+
+def _deploy_sparse_root_cmd(p: dict[str, Any]) -> list[str]:
+    deploy = p.get("deploy", {})
+    checkpoint = Path(p.get("train", {}).get("output_dir", ".")) / "sparse_root_model.pt"
+    out_dir = (
+        deploy.get("target_dir")
+        or p.get("export", {}).get("output_dir")
+        or "LODiffusion/run/models"
+    )
+    return [
+        _python(),
+        "LODiffusion/models/export_sparse_root.py",
+        "--checkpoint",
+        str(checkpoint),
+        "--out-dir",
+        str(out_dir),
+    ]
+
+
 def _distill_sparse_root_cmd(p: dict) -> list[str]:
     data = p.get("data", {})
     train = p.get("train", {})
@@ -683,11 +745,11 @@ def _distill_sparse_root_cmd(p: dict) -> list[str]:
 # ---------------------------------------------------------------------------
 
 
-def _reset_data_cmd(_p: dict) -> list[str]:
+def _reset_data_cmd(_p: dict[str, Any]) -> list[str]:
     return ["echo", "[loopback] reset_data not yet implemented"]
 
 
-def _new_seed_cmd(_p: dict) -> list[str]:
+def _new_seed_cmd(_p: dict[str, Any]) -> list[str]:
     return ["echo", "[loopback] new_seed not yet implemented"]
 
 
@@ -745,8 +807,8 @@ MODEL_TRACKS: list[ModelTrack] = [
         swim_lane_color="#2a1500",
         build_pairs_factory=_build_pairs_sparse_root_cmd,
         train_factory=_train_sparse_root_cmd,
-        export_factory=None,
-        deploy_factory=None,
+        export_factory=_export_sparse_root_cmd,
+        deploy_factory=_deploy_sparse_root_cmd,
         extra_steps=[
             StepDef(
                 id="distill_sparse_root",
@@ -764,15 +826,16 @@ MODEL_TRACKS: list[ModelTrack] = [
     # Predates ModelTrack; id_overrides preserve legacy run-state JSON keys.
     # build_pairs_consumes={"noise_dumps"} because the training script reads
     # the noise-dump JSONs directly — no explicit pair-building step is needed.
-    # deploy is baked into extract_stage1_weights (pass --no-deploy to skip).
+    # export is via extract_stage1_weights (uses --no-deploy).
+    # deploy runs extract_stage1_weights without --no-deploy to push into LODiffusion resources.
     ModelTrack(
         track_id="stage1",
         label="Stage 1",
         swim_lane_color="#00202a",
-        build_pairs_factory=None,
+        build_pairs_factory=_build_pairs_stage1_cmd,
         train_factory=_train_stage1_density_cmd,
         export_factory=_extract_stage1_weights_cmd,
-        deploy_factory=None,
+        deploy_factory=_deploy_stage1_cmd,
         id_overrides={
             "build_pairs": "build_pairs_stage1",
             "train": "train_stage1_density",
