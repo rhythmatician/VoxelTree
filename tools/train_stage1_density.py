@@ -53,34 +53,33 @@ from torch.utils.data import DataLoader, TensorDataset
 # ---------------------------------------------------------------------------
 # Feature layout
 #
-# Current format (continents/erosion/ridges/depth/temperature/vegetation + y_norm):
-#   7 input features — matches the phase_1a_data.npz produced by
-#   scripts/convert_noise_dumps_to_npz.py
-#
-# Future format — if /dumpnoise stage1 is updated to emit a pre-packaged
-#   "inputs" array, INPUT_FEATURES should match that array's width.
+# Stage 1 format (12 direct density inputs from /dumpnoise stage1):
+#   All 12 features are sampled at 4×48×4 cell resolution (768 per chunk).
+#   This matches vanilla Minecraft's finalDensity input signals exactly.
 # ---------------------------------------------------------------------------
-INPUT_FEATURES = 7
+INPUT_FEATURES = 12
 HIDDEN_SIZE = 64
 OUTPUT_SIZE = 1
 
 FEATURE_NAMES = [
-    "continents",
-    "erosion",
-    "ridges",
-    "depth",
-    "temperature",
-    "vegetation",
-    "y_norm",
+    "offset",  # 0: TerrainShaper output
+    "factor",  # 1: TerrainShaper output
+    "jaggedness",  # 2: TerrainShaper output
+    "depth",  # 3: router.depth() (YClampedGradient + offset)
+    "sloped_cheese",  # 4: overworld/sloped_cheese NormalNoise
+    "y",  # 5: cell-centre block Y (−64 … 316)
+    "entrances",  # 6: overworld/caves/entrances
+    "cheese_caves",  # 7: overworld/caves/pillars
+    "spaghetti_2d",  # 8: overworld/caves/spaghetti_2d
+    "roughness",  # 9: overworld/caves/spaghetti_roughness_function
+    "noodle",  # 10: overworld/caves/noodle
+    "base_3d_noise",  # 11: overworld/base_3d_noise
 ]
 
-# Surface features present in every stage1 dump (16 values per chunk = 4×4 XZ grid)
-_SURFACE_FEATURES = ["continents", "erosion", "ridges", "depth", "temperature", "vegetation"]
-_CX = 4   # noise cells per chunk in X
+# Cell grid dimensions
+_CX = 4  # noise cells per chunk in X
 _CY = 48  # noise cells per chunk in Y  (world height 384 / cell height 8)
-_CZ = 4   # noise cells per chunk in Z
-_Y_MIN = -64.0 + 0 * 8 + 4   # centre of cy=0  →  -60
-_Y_MAX = -64.0 + 47 * 8 + 4   # centre of cy=47 →  316
+_CZ = 4  # noise cells per chunk in Z
 
 
 class Stage1DensityMLP(nn.Module):
@@ -153,41 +152,22 @@ def _apply_profile(args: argparse.Namespace, profile: dict) -> None:
 
 def load_chunk_file(path: Path) -> tuple[np.ndarray, np.ndarray]:
     """
-    Parse one chunk_<cx>_<cz>.json and return (inputs[768, F], labels[768]).
+    Parse one chunk_<cx>_<cz>.json and return (inputs[768, 12], labels[768]).
 
-    Supports two JSON formats:
+    Expects the stage1 JSON format (produced by /dumpnoise stage1):
+      All 12 input features (offset, factor, jaggedness, depth, sloped_cheese, y,
+      entrances, cheese_caves, spaghetti_2d, roughness, noodle, base_3d_noise)
+      are present as flat arrays of 768 floats (4×48×4 cell grid).
+      final_density — 768 floats (training label)
 
-    **Current format** (produced by /dumpnoise stage1):
-      continents, erosion, ridges, depth, temperature, vegetation — 16 floats each
-      final_density — 768 floats (4×48×4 cell grid)
-      → builds a 7-feature input by broadcasting surface values across Y levels
-        and appending a normalised Y-coordinate channel.
+    All inputs and labels are 4×48×4 cell resolution (768 samples per chunk).
 
-    **Future format** (if the mod is updated to emit pre-packaged inputs):
-      inputs — list of 768 per-sample feature vectors
-      final_density — 768 floats
-      → used directly; INPUT_FEATURES must match the vector width.
-
-    Raises KeyError / ValueError for old heightmap-only files (no final_density).
+    Raises KeyError / ValueError if required fields are missing or malformed.
     """
     with path.open() as f:
         data = json.load(f)
 
-    # ── new pre-packaged format ──────────────────────────────────────────────
-    if "inputs" in data:
-        inputs_raw = data["inputs"]
-        label_raw = data["final_density"]
-        inputs = np.array(inputs_raw, dtype=np.float32)
-        labels = np.array(label_raw, dtype=np.float32)
-        if inputs.shape[1] != INPUT_FEATURES:
-            raise ValueError(
-                f"inputs width {inputs.shape[1]} != INPUT_FEATURES {INPUT_FEATURES}"
-            )
-        if labels.shape != (inputs.shape[0],):
-            raise ValueError("inputs/labels length mismatch")
-        return inputs, labels
-
-    # ── current surface-features format ─────────────────────────────────────
+    # ── Load final_density label ────────────────────────────────────────────────
     fd = data.get("final_density")
     if fd is None:
         raise KeyError("final_density")
@@ -197,33 +177,19 @@ def load_chunk_file(path: Path) -> tuple[np.ndarray, np.ndarray]:
         raise ValueError(f"final_density length {len(fd)} != {n_cells}")
     labels = np.array(fd, dtype=np.float32)  # (768,)
 
-    # Validate and load surface arrays (16 = 4×4 XZ each)
-    surface_arrays = []
-    for feat in _SURFACE_FEATURES:
-        vals = data.get(feat)
+    # ── Load all 12 input features from stage1 dump ─────────────────────────────
+    # Each feature is a flat array of 768 floats (4×48×4 cell grid)
+    input_channels = []
+    for feat_name in FEATURE_NAMES:
+        vals = data.get(feat_name)
         if vals is None:
-            raise KeyError(feat)
-        if len(vals) != _CX * _CZ:
-            raise ValueError(f"{feat} length {len(vals)} != {_CX * _CZ}")
-        surface_arrays.append(np.array(vals, dtype=np.float32).reshape(_CX, _CZ))
+            raise KeyError(f"Missing feature: {feat_name}")
+        if len(vals) != n_cells:
+            raise ValueError(f"{feat_name} length {len(vals)} != {n_cells}")
+        input_channels.append(np.array(vals, dtype=np.float32))  # (768,)
 
-    # Broadcast each (4,4) surface value → (4,48,4) then flatten to (768,)
-    expanded = [
-        np.tile(s[:, np.newaxis, :], (1, _CY, 1)).ravel()
-        for s in surface_arrays
-    ]  # each (768,)
-
-    # Normalised Y channel: centre of each cell layer
-    y_raw = np.array(
-        [-64.0 + cy * 8 + 4 for cy in range(_CY)], dtype=np.float32
-    )  # (48,)
-    y_norm = (y_raw - _Y_MIN) / (_Y_MAX - _Y_MIN) * 2.0 - 1.0  # → [-1, +1]
-    # Broadcast (48,) → (4,48,4) flattened to (768,)
-    y_channel = np.broadcast_to(
-        y_norm[np.newaxis, :, np.newaxis], (_CX, _CY, _CZ)
-    ).copy().ravel()  # (768,)
-
-    inputs = np.stack(expanded + [y_channel], axis=1)  # (768, 7)
+    # Stack all 12 channels: (768, 12)
+    inputs = np.stack(input_channels, axis=1)  # (768, 12)
     return inputs, labels
 
 
@@ -237,7 +203,7 @@ def load_dataset(data_dir: Path) -> tuple[np.ndarray, np.ndarray]:
         print(f"[ERROR] No chunk_*.json files found in {data_dir}", file=sys.stderr)
         sys.exit(1)
 
-    print(f"[Data] Loading {len(files)} chunk files from {data_dir} …")
+    print(f"[Data] Loading {len(files)} chunk files from {data_dir} ...")
     all_inputs: list[np.ndarray] = []
     all_labels: list[np.ndarray] = []
     n_skipped = 0
@@ -253,7 +219,7 @@ def load_dataset(data_dir: Path) -> tuple[np.ndarray, np.ndarray]:
             key = type(e).__name__ + ":" + str(e)
             skip_reason[key] = skip_reason.get(key, 0) + 1
         if (i + 1) % 2000 == 0:
-            print(f"  … {i + 1}/{len(files)} scanned  ({len(all_inputs)} loaded)")
+            print(f"  ... {i + 1}/{len(files)} scanned  ({len(all_inputs)} loaded)")
 
     if n_skipped:
         print(f"  [WARN] Skipped {n_skipped:,} files:", file=sys.stderr)
@@ -266,7 +232,9 @@ def load_dataset(data_dir: Path) -> tuple[np.ndarray, np.ndarray]:
 
     X = np.concatenate(all_inputs, axis=0)
     y = np.concatenate(all_labels, axis=0)
-    print(f"[Data] Loaded {len(all_inputs):,} chunks -> {X.shape[0]:,} samples  (features: {X.shape[1]})")
+    print(
+        f"[Data] Loaded {len(all_inputs):,} chunks -> {X.shape[0]:,} samples  (features: {X.shape[1]})"
+    )
     return X, y
 
 
@@ -331,7 +299,7 @@ def train(args):
     model = Stage1DensityMLP().to(device)
     param_count = sum(p.numel() for p in model.parameters())
     print(
-        f"[Train] Model: {INPUT_FEATURES}→{HIDDEN_SIZE}→{HIDDEN_SIZE}→{OUTPUT_SIZE}  "
+        f"[Train] Model: {INPUT_FEATURES}->{HIDDEN_SIZE}->{HIDDEN_SIZE}->{OUTPUT_SIZE}  "
         f"params: {param_count:,}"
     )
 
@@ -343,7 +311,7 @@ def train(args):
     best_epoch = 0
     best_ckpt = out_dir / "stage1_mlp_best.pt"
 
-    print(f"\n[Train] Training for {args.epochs} epochs …\n")
+    print(f"\n[Train] Training for {args.epochs} epochs...\n")
     t0 = time.time()
 
     for epoch in range(1, args.epochs + 1):
@@ -413,11 +381,11 @@ def train(args):
         f"\n[Train] Done. Best val_mse={best_val_mse:.6f} at epoch {best_epoch}  "
         f"({total_time:.1f}s total)"
     )
-    target_met = "✓ TARGET MET" if best_val_mse < args.target_mse else "✗ target not met"
+    target_met = "[OK] TARGET MET" if best_val_mse < args.target_mse else "[FAIL] target not met"
     print(f"[Train] {target_met}  (target={args.target_mse})")
 
     # ---- Load best weights for export ----
-    ckpt = torch.load(best_ckpt, map_location="cpu")
+    ckpt = torch.load(best_ckpt, map_location="cpu", weights_only=False)
     model.load_state_dict(ckpt["state"])
     model.eval()
     model.cpu()
@@ -425,7 +393,7 @@ def train(args):
     # -- Save final PyTorch checkpoint --
     final_pt = out_dir / "stage1_mlp.pt"
     torch.save(ckpt, final_pt)
-    print(f"[Export] PyTorch checkpoint → {final_pt}")
+    print(f"[Export] PyTorch checkpoint -> {final_pt}")
 
     # -- ONNX export --
     _export_onnx(model, mean_np, std_np, out_dir)
@@ -472,7 +440,7 @@ def _export_onnx(
         dynamic_axes={"features": {0: "batch"}, "final_density": {0: "batch"}},
         opset_version=17,
     )
-    print(f"[Export] ONNX model → {onnx_path}")
+    print(f"[Export] ONNX model -> {onnx_path}")
 
 
 # ---------------------------------------------------------------------------
@@ -503,7 +471,7 @@ def _export_flat_weights(model: Stage1DensityMLP, out_dir: Path) -> None:
 
     bin_path = out_dir / "stage1_mlp_weights.bin"
     blob.tofile(str(bin_path))
-    print(f"[Export] Flat weights ({len(blob)} floats, {len(blob)*4} bytes) → {bin_path}")
+    print(f"[Export] Flat weights ({len(blob)} floats, {len(blob)*4} bytes) -> {bin_path}")
 
 
 # ---------------------------------------------------------------------------
@@ -576,14 +544,18 @@ def parse_args() -> argparse.Namespace:
     return args
 
 
-def main():
+def main():  # Fix Windows terminal encoding for UTF-8 characters (e.g., emoji from torch.onnx)
+    import io
+
     args = parse_args()
+    if sys.stdout.encoding != "utf-8":
+        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
 
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
 
     print("=" * 70)
-    print("  Stage 1 Density MLP: 12 Direct Minecraft Density Inputs  —  WS-4.2")
+    print("  Stage 1 Density MLP: 12 Direct Minecraft Density Inputs  ---  WS-4.2")
     print("=" * 70)
     print(f"  data_dir   = {args.data_dir}  (from /dumpnoise stage1)")
     print(f"  out_dir    = {args.out_dir}")
