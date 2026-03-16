@@ -9,7 +9,7 @@ from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QMenu, QPushButton, QSizePolicy, QWidget
 
 from VoxelTree.gui.run_registry import RunRegistry
-from VoxelTree.gui.step_definitions import PIPELINE_STEPS, StepDef
+from VoxelTree.gui.step_definitions import PIPELINE_STEPS, TRACK_BY_ID, TRACK_ORDER, StepDef
 from VoxelTree.gui.step_node_widget import StepNodeWidget
 
 _NODE_W = 52
@@ -21,33 +21,80 @@ _ROW_H = _NODE_H + _ROW_GAP
 _V_PAD = 6  # vertical padding inside the nodes container
 
 
-def _compute_dag_layout(steps: list[StepDef]) -> dict[str, tuple[int, int]]:
-    """Compute (col, row) positions for each step from topological depth.
+def _compute_dag_layout(
+    steps: list[StepDef],
+) -> tuple[dict[str, tuple[int, int]], dict[str, tuple[int, int]]]:
+    """Compute swim-lane-aware (col, row) positions for each step.
 
-    Column = max depth from any root (longest prereq chain).
-    Row = order within that column (preserving PIPELINE_STEPS ordering).
+    Returns
+    -------
+    positions  : step_id → (col, row)
+    band_info  : track_id → (start_row, band_height)
+
+    Layout rules
+    ------------
+    * Column = topological depth (longest prereq chain from any root).
+      Only edges between steps in the provided list are counted.
+    * Row = determined by track membership.  Each track gets a contiguous
+      horizontal band.  Tracks are ordered by TRACK_ORDER from step_definitions.
+      Within a band, steps at the same column get stacked vertically.
+    * data_acq (no track field) → first band; loopback → last band.
     """
-    # Build dependency graph: step_id → set of prerequisites
-    graph = {s.id: set(s.prereqs) for s in steps}
-    sorter = TopologicalSorter(graph)
+    # Restrict graphs to steps visible in this DAG
+    step_ids = {s.id for s in steps}
+    graph = {s.id: {p for p in s.prereqs if p in step_ids} for s in steps}
 
-    # Compute depth: longest chain from any root
+    sorter = TopologicalSorter(graph)
     depth: dict[str, int] = {}
     for node in sorter.static_order():
-        if not graph[node]:  # root node (no prerequisites)
-            depth[node] = 0
-        else:
-            depth[node] = max(depth[p] for p in graph[node]) + 1
+        preds = graph[node]
+        depth[node] = (max(depth[p] for p in preds) + 1) if preds else 0
 
-    # Assign rows within each column
-    col_count: dict[int, int] = {}
+    def _eff_track(s: StepDef) -> str:
+        if s.track:
+            return s.track
+        return "loopback" if s.phase == "loopback" else "data_acq"
+
+    steps_by_track: dict[str, list[StepDef]] = {}
+    for s in steps:
+        steps_by_track.setdefault(_eff_track(s), []).append(s)
+
+    # Band height = max nodes sharing the same column within a track
+    band_height: dict[str, int] = {}
+    for tid, tsteps in steps_by_track.items():
+        col_counts: dict[int, int] = {}
+        for s in tsteps:
+            d = depth[s.id]
+            col_counts[d] = col_counts.get(d, 0) + 1
+        band_height[tid] = max(col_counts.values()) if col_counts else 1
+
+    # Assign band starting rows, respecting TRACK_ORDER
+    band_start: dict[str, int] = {}
+    cur = 0
+    for tid in TRACK_ORDER:
+        if tid in steps_by_track:
+            band_start[tid] = cur
+            cur += band_height[tid]
+    for tid in steps_by_track:          # tracks not in TRACK_ORDER go at the end
+        if tid not in band_start:
+            band_start[tid] = cur
+            cur += band_height.get(tid, 1)
+
+    # Assign final (col, row) — preserve PIPELINE_STEPS order within same depth
+    sub_row: dict[str, dict[int, int]] = {t: {} for t in steps_by_track}
     positions: dict[str, tuple[int, int]] = {}
-    for step in steps:
-        col = depth[step.id]
-        row = col_count.get(col, 0)
-        col_count[col] = row + 1
-        positions[step.id] = (col, row)
-    return positions
+    for s in steps:
+        tid = _eff_track(s)
+        col = depth[s.id]
+        sr = sub_row[tid].get(col, 0)
+        sub_row[tid][col] = sr + 1
+        positions[s.id] = (col, band_start[tid] + sr)
+
+    band_info: dict[str, tuple[int, int]] = {
+        tid: (band_start[tid], band_height[tid])
+        for tid in band_start
+    }
+    return positions, band_info
 
 
 class ProfileRow(QWidget):
@@ -232,6 +279,7 @@ class _NodesWidget(QWidget):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._step_positions: dict[str, tuple[int, int]] = {}  # step_id → (col, row)
+        self._band_info: dict[str, tuple[int, int]] = {}       # track_id → (start_row, height)
         self._node_widgets: dict[str, StepNodeWidget] = {}
         self._active_ids: set[str] = set()
         self._steps: list[StepDef] = []  # stored for paintEvent
@@ -246,7 +294,7 @@ class _NodesWidget(QWidget):
         self._steps = steps  # store for paintEvent
         # active IDs = all enabled steps in the provided list
         self._active_ids = {s.id for s in steps if s.enabled}
-        self._step_positions = _compute_dag_layout(steps)
+        self._step_positions, self._band_info = _compute_dag_layout(steps)
 
         if not self._step_positions:
             return
@@ -276,6 +324,15 @@ class _NodesWidget(QWidget):
 
         # Background
         painter.fillRect(self.rect(), QColor("#1e1e1e"))
+
+        # Swim-lane backgrounds — one tinted strip per model track
+        for tid, (start_row, height) in self._band_info.items():
+            track = TRACK_BY_ID.get(tid)
+            if track is None:
+                continue  # data_acq and loopback have no ModelTrack entry
+            y = start_row * _ROW_H + _V_PAD - _ROW_GAP // 2
+            h = height * _ROW_H + _ROW_GAP
+            painter.fillRect(0, y, self.width(), h, QColor(track.swim_lane_color))
 
         for step in self._steps:
             if step.id not in self._step_positions:

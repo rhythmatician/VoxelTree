@@ -20,7 +20,12 @@ from PySide6.QtWidgets import (
 
 from VoxelTree.gui.run_registry import RunRegistry
 from VoxelTree.gui.run_worker import RunWorker
-from VoxelTree.gui.step_definitions import ACTIVE_STEPS, STEP_BY_ID
+from VoxelTree.gui.step_definitions import (
+    ACTIVE_STEPS,
+    STEP_BY_ID,
+    TRACK_ORDER,
+    StepDef,
+)
 
 
 class DetailPanel(QDockWidget):
@@ -89,7 +94,7 @@ class DetailPanel(QDockWidget):
         # ── Step selector & controls ──
         step_scroll = QScrollArea()
         step_scroll.setWidgetResizable(True)
-        step_scroll.setFixedHeight(160)
+        step_scroll.setFixedHeight(240)
         step_scroll.setStyleSheet("QScrollArea { border: 1px solid #333; }")
 
         step_container = QWidget()
@@ -99,13 +104,47 @@ class DetailPanel(QDockWidget):
         self._step_layout.setSpacing(3)
 
         self._step_rows: dict[str, _StepControlRow] = {}
+
+        # Build collapsible section groups ordered by TRACK_ORDER ---------
+        # Accent colors for each section header left-border
+        _SECTION_META: dict[str, tuple[str, str]] = {
+            "data_acq": ("Data Acquisition", "#4a6a8a"),
+            "init": ("Init Model", "#4a80d0"),
+            "refine": ("Refine Model", "#9060d0"),
+            "leaf": ("Leaf Model", "#40b060"),
+            "sparse_root": ("Sparse Root", "#d07030"),
+            "stage1": ("Stage 1 Density", "#20b2aa"),
+            "loopback": ("Loopback (Future)", "#666666"),
+        }
+
+        def _group_key(s: StepDef) -> str:
+            if s.track:
+                return s.track
+            return "loopback" if s.phase == "loopback" else "data_acq"
+
+        # Collect all groups preserving PIPELINE_STEPS order
+        key_steps: dict[str, list[StepDef]] = {}
         for step in ACTIVE_STEPS:
-            row = _StepControlRow(step.id, step.label)
-            row.run_clicked.connect(self._run_step)
-            row.run_from_clicked.connect(self._run_from)
-            row.cancel_clicked.connect(self._cancel)
-            self._step_layout.addWidget(row)
-            self._step_rows[step.id] = row
+            key_steps.setdefault(_group_key(step), []).append(step)
+
+        # Display in TRACK_ORDER, then any unseen keys at the end
+        ordered_keys = [k for k in TRACK_ORDER if k in key_steps]
+        for k in key_steps:
+            if k not in ordered_keys:
+                ordered_keys.append(k)
+
+        for key in ordered_keys:
+            title, color = _SECTION_META.get(key, (key.replace("_", " ").title(), "#555555"))
+            grp = _SectionGroup(title, border_color=color, parent=step_container)
+            for step in key_steps[key]:
+                row = _StepControlRow(step.id, step.label)
+                row.run_clicked.connect(self._run_step)
+                row.run_from_clicked.connect(self._run_from)
+                row.cancel_clicked.connect(self._cancel)
+                grp.add_row(row)
+                self._step_rows[step.id] = row
+            self._step_layout.addWidget(grp)
+        # ---------------------------------------------------------------
 
         step_scroll.setWidget(step_container)
         layout.addWidget(step_scroll)
@@ -379,6 +418,53 @@ class DetailPanel(QDockWidget):
         if hasattr(parent, "get_profile_dict"):
             return parent.get_profile_dict(self._profile_name)
         return None
+
+
+# ---------------------------------------------------------------------------
+# Collapsible section group for the detail panel step list
+# ---------------------------------------------------------------------------
+
+
+class _SectionGroup(QWidget):
+    """Collapsible group of _StepControlRow items under a labelled header."""
+
+    def __init__(self, title: str, border_color: str = "#4a6a8a", parent=None) -> None:
+        super().__init__(parent)
+        root_layout = QVBoxLayout(self)
+        root_layout.setContentsMargins(0, 2, 0, 0)
+        root_layout.setSpacing(1)
+
+        # Header toggle button
+        self._hdr_btn = QPushButton(f"▼  {title}")
+        self._hdr_btn.setStyleSheet(
+            f"QPushButton {{ background: #2a2a2a; color: #bbbbbb; text-align: left; "
+            f"border: none; border-left: 3px solid {border_color}; "
+            "padding: 3px 8px; font-size: 11px; font-weight: bold; }}"
+            "QPushButton:hover { background: #333333; }"
+        )
+        self._hdr_btn.clicked.connect(self._toggle)
+        root_layout.addWidget(self._hdr_btn)
+
+        # Content container
+        self._body = QWidget()
+        body_layout = QVBoxLayout(self._body)
+        body_layout.setContentsMargins(8, 1, 0, 1)
+        body_layout.setSpacing(2)
+        self._body_layout = body_layout
+        root_layout.addWidget(self._body)
+
+        self._collapsed = False
+
+    def add_row(self, widget: QWidget) -> None:
+        self._body_layout.addWidget(widget)
+
+    def _toggle(self) -> None:
+        self._collapsed = not self._collapsed
+        self._body.setVisible(not self._collapsed)
+        icon = "▶" if self._collapsed else "▼"
+        # Replace leading icon in button text (format: "icon  title")
+        text = self._hdr_btn.text()
+        self._hdr_btn.setText(f"{icon}  {text[3:]}")
 
 
 # ---------------------------------------------------------------------------
