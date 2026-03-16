@@ -13,6 +13,13 @@
 # Step IDs follow the convention ``{phase}_{track_id}``
 # (e.g. ``train_sparse_root``, ``deploy_init``).
 #
+# ## Artifact-based prerequisite wiring
+#
+# Each step declares what it ``produces`` (artifacts created) and
+# ``consumes`` (artifacts required).  At module load time,
+# ``_wire_prereqs()`` auto-computes every step's ``prereqs`` list from
+# the artifact graph.  Manual prereq lists are no longer needed.
+#
 # ## Adding a new model — 3-step recipe
 #
 #   1. Write cmd-factory functions for each phase.
@@ -20,9 +27,12 @@
 #      as an ``enabled=False`` stub so it appears greyed-out in the GUI.
 #
 #   2. Append one ``ModelTrack(...)`` entry to ``MODEL_TRACKS`` below.
+#      Standard artifact names (``{track_id}_pairs``, ``{track_id}_checkpoint``,
+#      etc.) are generated automatically.  Set ``build_pairs_consumes`` if
+#      the track reads something other than ``octree_with_heights``.
 #
-#   3. Done.  Swim-lane rows, detail-panel groups, and DAG nodes all appear
-#      automatically on the next GUI launch.  No other files need editing.
+#   3. Done.  Swim-lane rows, detail-panel groups, DAG nodes, **and prereq
+#      edges** all appear automatically on the next GUI launch.
 #
 # ## Phase vocabulary
 #
@@ -49,7 +59,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
-
 # ---------------------------------------------------------------------------
 # StepDef — one node in the pipeline DAG
 # ---------------------------------------------------------------------------
@@ -65,6 +74,8 @@ class StepDef:
                    Changing this invalidates saved run states.
     label        : Short text shown inside the 52 px circle in the DAG.
     prereqs      : IDs of steps that must succeed before this one can run.
+                   **Auto-computed** by ``_wire_prereqs()`` from the
+                   produces / consumes artifact graph.  Do not set manually.
     cmd_factory  : Callable(profile_dict) → list[str] passed to subprocess.
     enabled      : False → faded stub node; not runnable.
     server_required : True → step sends RCON commands; needs Fabric server up.
@@ -74,6 +85,8 @@ class StepDef:
                    One of: "build_pairs", "train", "export", "deploy",
                    or a custom string for non-standard phases.
                    None for data-acquisition steps.
+    produces     : Logical artifact names this step creates.
+    consumes     : Logical artifact names this step requires as input.
     """
 
     id: str
@@ -84,6 +97,8 @@ class StepDef:
     server_required: bool = False
     track: str | None = None
     phase: str | None = None
+    produces: frozenset[str] = frozenset()
+    consumes: frozenset[str] = frozenset()
 
 
 # ---------------------------------------------------------------------------
@@ -110,10 +125,11 @@ class ModelTrack:
     id_overrides : Maps phase → step_id when the model predates ModelTrack and
                  must preserve legacy run-state JSON keys for continuity.
                  Leave empty for new models.
-    build_pairs_prereqs : Full prereq list for the build_pairs step.
-                 Defaults to ``["column_heights"]``.
+    build_pairs_consumes : Artifacts consumed by the build_pairs step.
+                 Defaults to ``{"octree_with_heights"}``.
     extra_steps : Additional StepDef entries appended after the 4 canonical
-                 phases (e.g. distillation, calibration).
+                 phases (e.g. distillation, calibration).  Must include
+                 ``produces`` and ``consumes`` for auto-wiring.
     """
 
     track_id: str
@@ -129,8 +145,8 @@ class ModelTrack:
     # Leave empty for new tracks — default IDs are ``{phase}_{track_id}``.
     id_overrides: dict[str, str] = field(default_factory=dict)
 
-    # Full prereq list for build_pairs.  Defaults to ["column_heights"].
-    build_pairs_prereqs: list[str] | None = None
+    # Artifacts consumed by build_pairs.  Defaults to {"octree_with_heights"}.
+    build_pairs_consumes: frozenset[str] = frozenset({"octree_with_heights"})
 
     # Non-standard extra steps appended after the 4 canonical phases.
     extra_steps: list[StepDef] = field(default_factory=list)
@@ -139,54 +155,69 @@ class ModelTrack:
         return self.id_overrides.get(phase, f"{phase}_{self.track_id}")
 
     def to_steps(self) -> list[StepDef]:
-        """Generate the canonical 4-phase StepDef list for this track."""
+        """Generate the canonical 4-phase StepDef list for this track.
+
+        Each phase auto-generates standard artifact names:
+
+        * build_pairs → produces ``{track_id}_pairs``
+        * train       → produces ``{track_id}_checkpoint``
+        * export      → produces ``{track_id}_exported``
+        * deploy      → produces ``{track_id}_deployed``
+
+        Prerequisites are auto-wired later by ``_wire_prereqs()``.
+        """
         bp = self.step_id("build_pairs")
         tr = self.step_id("train")
         ex = self.step_id("export")
         dp = self.step_id("deploy")
 
+        tid = self.track_id
         short = self.label[:6]
 
         steps: list[StepDef] = [
             StepDef(
                 id=bp,
                 label=f"P·{short}",
-                prereqs=(
-                    self.build_pairs_prereqs
-                    if self.build_pairs_prereqs is not None
-                    else ["column_heights"]
-                ),
+                prereqs=[],
                 cmd_factory=self.build_pairs_factory or _stub_cmd,
                 enabled=self.build_pairs_factory is not None,
-                track=self.track_id,
+                track=tid,
                 phase="build_pairs",
+                produces=frozenset({f"{tid}_pairs"}),
+                consumes=self.build_pairs_consumes,
             ),
             StepDef(
                 id=tr,
                 label=f"T·{short}",
-                prereqs=[bp],
+                prereqs=[],
                 cmd_factory=self.train_factory or _stub_cmd,
                 enabled=self.train_factory is not None,
-                track=self.track_id,
+                track=tid,
                 phase="train",
+                produces=frozenset({f"{tid}_checkpoint"}),
+                consumes=frozenset({f"{tid}_pairs"}),
             ),
             StepDef(
                 id=ex,
                 label=f"E·{short}",
-                prereqs=[tr],
+                prereqs=[],
                 cmd_factory=self.export_factory or _stub_cmd,
                 enabled=self.export_factory is not None,
-                track=self.track_id,
+                track=tid,
                 phase="export",
+                produces=frozenset({f"{tid}_exported"}),
+                consumes=frozenset({f"{tid}_checkpoint"}),
             ),
             StepDef(
                 id=dp,
                 label=f"D·{short}",
-                prereqs=[ex],
+                prereqs=[],
                 cmd_factory=self.deploy_factory or _stub_cmd,
                 enabled=self.deploy_factory is not None,
-                track=self.track_id,
+                track=tid,
                 phase="deploy",
+                produces=frozenset({f"{tid}_deployed"}),
+                consumes=frozenset({f"{tid}_exported"}),
             ),
         ]
         steps.extend(self.extra_steps)
@@ -210,6 +241,66 @@ def _vt_root() -> Path:
 def _stub_cmd(_p: dict) -> list[str]:
     """Placeholder factory for steps not yet implemented."""
     return [_python(), "-c", "raise NotImplementedError('step not yet implemented')"]
+
+
+def _wire_prereqs(steps: list[StepDef]) -> None:
+    """Auto-compute each step's ``prereqs`` from the artifact graph.
+
+    1. Build a map of artifact → producer step.
+    2. For each step, set ``prereqs`` to the list of steps that produce
+       its consumed artifacts.
+    3. Perform transitive reduction so that only the *minimal* set of
+       direct prerequisites remains (removes edges implied by other
+       prerequisite chains).
+    """
+    # ── 1. Producer map ───────────────────────────────────────────────
+    producers: dict[str, str] = {}
+    for step in steps:
+        for art in step.produces:
+            if art in producers:
+                raise ValueError(
+                    f"Artifact '{art}' produced by both " f"'{producers[art]}' and '{step.id}'"
+                )
+            producers[art] = step.id
+
+    # ── 2. Direct prereqs from consumed artifacts ─────────────────────
+    step_map: dict[str, StepDef] = {s.id: s for s in steps}
+    for step in steps:
+        computed: list[str] = []
+        for art in sorted(step.consumes):  # sorted for determinism
+            pid = producers.get(art)
+            if pid is None:
+                raise ValueError(f"Step '{step.id}' consumes '{art}' " f"but no step produces it")
+            if pid != step.id and pid not in computed:
+                computed.append(pid)
+        step.prereqs = computed
+
+    # ── 3. Transitive reduction ───────────────────────────────────────
+    #
+    # For each prereq P of step S, check whether P is already a
+    # transitive ancestor of some *other* prereq Q of S.  If so, Q
+    # already implies P and P is redundant.
+    for step in steps:
+        if len(step.prereqs) <= 1:
+            continue
+        # Collect transitive ancestors of each prereq.
+        anc: dict[str, set[str]] = {}
+        for p in step.prereqs:
+            visited: set[str] = set()
+            stack = [p]
+            while stack:
+                node = stack.pop()
+                if node in visited:
+                    continue
+                visited.add(node)
+                if node in step_map:
+                    stack.extend(step_map[node].prereqs)
+            visited.discard(p)
+            anc[p] = visited
+
+        redundant = {p for p in step.prereqs if any(p in anc[q] for q in step.prereqs if q != p)}
+        if redundant:
+            step.prereqs = [p for p in step.prereqs if p not in redundant]
 
 
 # ---------------------------------------------------------------------------
@@ -660,17 +751,19 @@ MODEL_TRACKS: list[ModelTrack] = [
             StepDef(
                 id="distill_sparse_root",
                 label="Distill",
-                prereqs=["train_sparse_root"],
+                prereqs=[],
                 cmd_factory=_distill_sparse_root_cmd,
                 track="sparse_root",
                 phase="distill",
+                produces=frozenset({"sparse_root_distilled"}),
+                consumes=frozenset({"sparse_root_checkpoint", "sparse_root_pairs"}),
             ),
         ],
     ),
     # ── Stage-1 Density (tiny NN) ─────────────────────────────────────────
     # Predates ModelTrack; id_overrides preserve legacy run-state JSON keys.
-    # build_pairs_prereqs=[dumpnoise] because the training script reads the
-    # noise-dump JSONs directly — no explicit pair-building step is needed.
+    # build_pairs_consumes={"noise_dumps"} because the training script reads
+    # the noise-dump JSONs directly — no explicit pair-building step is needed.
     # deploy is baked into extract_stage1_weights (pass --no-deploy to skip).
     ModelTrack(
         track_id="stage1",
@@ -686,23 +779,27 @@ MODEL_TRACKS: list[ModelTrack] = [
             "export": "extract_stage1_weights",
             "deploy": "deploy_stage1",
         },
-        build_pairs_prereqs=["dumpnoise"],
+        build_pairs_consumes=frozenset({"noise_dumps"}),
         extra_steps=[
             StepDef(
                 id="distill_density",
                 label="Distill",
-                prereqs=["train_stage1_density"],
+                prereqs=[],
                 cmd_factory=_distill_density_cmd,
                 track="stage1",
                 phase="distill",
+                produces=frozenset({"stage1_distilled"}),
+                consumes=frozenset({"stage1_checkpoint"}),
             ),
             StepDef(
                 id="train_terrain_shaper",
                 label="T·Shaper",
-                prereqs=["distill_density"],
+                prereqs=[],
                 cmd_factory=_train_terrain_shaper_cmd,
                 track="stage1",
                 phase="train_terrain_shaper",
+                produces=frozenset({"terrain_shaper_checkpoint"}),
+                consumes=frozenset({"stage1_distilled"}),
             ),
         ],
     ),
@@ -722,14 +819,17 @@ _DATA_ACQ_STEPS: list[StepDef] = [
         cmd_factory=_pregen_cmd,
         server_required=True,
         phase="data_acq",
+        produces=frozenset({"mc_world"}),
     ),
     StepDef(
         id="voxy_import",
         label="Voxy",
-        prereqs=["pregen"],
+        prereqs=[],
         cmd_factory=_voxy_import_cmd,
         server_required=True,
         phase="data_acq",
+        produces=frozenset({"voxy_db"}),
+        consumes=frozenset({"mc_world"}),
     ),
     StepDef(
         id="dumpnoise",
@@ -738,20 +838,25 @@ _DATA_ACQ_STEPS: list[StepDef] = [
         cmd_factory=_dumpnoise_cmd,
         server_required=True,
         phase="data_acq",
+        produces=frozenset({"noise_dumps"}),
     ),
     StepDef(
         id="extract_octree",
         label="Extract",
-        prereqs=["voxy_import"],
+        prereqs=[],
         cmd_factory=_extract_octree_cmd,
         phase="data_acq",
+        produces=frozenset({"octree_npz"}),
+        consumes=frozenset({"voxy_db"}),
     ),
     StepDef(
         id="column_heights",
         label="Heights",
-        prereqs=["extract_octree", "dumpnoise"],
+        prereqs=[],
         cmd_factory=_column_heights_cmd,
         phase="data_acq",
+        produces=frozenset({"octree_with_heights"}),
+        consumes=frozenset({"octree_npz", "noise_dumps"}),
     ),
 ]
 
@@ -760,18 +865,21 @@ _LOOPBACK_STEPS: list[StepDef] = [
     StepDef(
         id="reset_data",
         label="Reset",
-        prereqs=["deploy_leaf"],
+        prereqs=[],
         cmd_factory=_reset_data_cmd,
         enabled=False,
         phase="loopback",
+        produces=frozenset({"data_reset"}),
+        consumes=frozenset({"leaf_deployed"}),
     ),
     StepDef(
         id="new_seed",
         label="New Seed",
-        prereqs=["reset_data"],
+        prereqs=[],
         cmd_factory=_new_seed_cmd,
         enabled=False,
         phase="loopback",
+        consumes=frozenset({"data_reset"}),
     ),
 ]
 
@@ -781,6 +889,9 @@ PIPELINE_STEPS: list[StepDef] = (
     + [step for track in MODEL_TRACKS for step in track.to_steps()]
     + _LOOPBACK_STEPS
 )
+
+# Auto-wire prereqs from the produces/consumes artifact graph.
+_wire_prereqs(PIPELINE_STEPS)
 
 # ---------------------------------------------------------------------------
 # Convenience exports
