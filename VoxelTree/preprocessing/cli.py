@@ -1205,10 +1205,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="Fabric server runtime directory (auto-detected from repo layout by default)",
     )
     sub.add_parser("status", parents=[shared], help="Query Chunky pregeneration progress")
-    sub.add_parser(
+    p_dn = sub.add_parser(
         "dumpnoise",
         parents=[shared, pregen_args],
         help="Consolidate Stage1 + SparseRoot noise dumps via RCON (both formats needed for training)",
+    )
+    p_dn.add_argument(
+        "--timeout",
+        type=int,
+        default=3600,
+        metavar="SECS",
+        help="Max seconds to wait for each dump to complete (default: 3600)",
     )
     sub.add_parser(
         "info",

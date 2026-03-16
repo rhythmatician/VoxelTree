@@ -99,6 +99,9 @@ def _dumpnoise_cmd(p: dict) -> list[str]:
     from VoxelTree.gui.server_manager import get_rcon_settings  # noqa: PLC0415
 
     rcon = get_rcon_settings()
+    # Use profile rcon.timeout so large-radius dumps don't time out at the
+    # default 3600 s.  Fallback to 3600 if not set in the profile.
+    rcon_timeout = p.get("rcon", {}).get("timeout", 3600)
     return [
         _python(),
         "-m",
@@ -112,6 +115,8 @@ def _dumpnoise_cmd(p: dict) -> list[str]:
         str(rcon["host"]),
         "--port",
         str(rcon["port"]),
+        "--timeout",
+        str(rcon_timeout),
     ]
 
 
