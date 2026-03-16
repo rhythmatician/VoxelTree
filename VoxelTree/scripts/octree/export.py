@@ -60,6 +60,16 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import torch
 
+from .models import (
+    OctreeConfig,
+    OctreeInitModel,
+    OctreeLeafModel,
+    OctreeRefineModel,
+    create_init_model,
+    create_leaf_model,
+    create_refine_model,
+)
+
 
 class _LegacyShimModule(types.ModuleType):
     """A module shim that auto-creates stub classes for any unknown attribute.
@@ -106,15 +116,6 @@ if "train.unet3d" not in sys.modules:
     sys.modules["train.unet3d"] = mod
     sys.modules["train"].unet3d = mod  # type: ignore[attr-defined]
 
-from VoxelTree.train.octree_models import (
-    OctreeConfig,
-    OctreeInitModel,
-    OctreeLeafModel,
-    OctreeRefineModel,
-    create_init_model,
-    create_leaf_model,
-    create_refine_model,
-)
 
 LOGGER = logging.getLogger("export_octree")
 
