@@ -706,35 +706,6 @@ def _distill_sparse_root_run(p: dict[str, Any]) -> None:
 # ═══════════════════════════════════════════════════════════════════════════
 
 MODEL_TRACKS: list[ModelTrack] = [
-    # ── Octree ONNX Export (init/refine/leaf) ──────────────────────────────
-    # These steps wrap the existing export/deploy scripts in the pipeline.
-    ModelTrack(
-        track_id="init",
-        label="Octree Init",
-        swim_lane_color="#003030",
-        build_pairs_factory=None,
-        train_factory=None,
-        export_factory=_export_init_run,
-        deploy_factory=_deploy_init_run,
-    ),
-    ModelTrack(
-        track_id="refine",
-        label="Octree Refine",
-        swim_lane_color="#003040",
-        build_pairs_factory=None,
-        train_factory=None,
-        export_factory=_export_refine_run,
-        deploy_factory=_deploy_refine_run,
-    ),
-    ModelTrack(
-        track_id="leaf",
-        label="Octree Leaf",
-        swim_lane_color="#003050",
-        build_pairs_factory=None,
-        train_factory=None,
-        export_factory=_export_leaf_run,
-        deploy_factory=_deploy_leaf_run,
-    ),
     # ── Sparse Root ───────────────────────────────────────────────────────
     ModelTrack(
         track_id="sparse_root",
