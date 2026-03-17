@@ -67,8 +67,9 @@ stage1_model/
 tools/data-harvester/.gradle/
 tools/data-harvester/build/
 
-# Extracted Minecraft decompiled sources (for reference only)
+# Data harvester mod generated files
 tools/data-harvester/net/
+tools/data-harvester/bin/
 
 # Pytest cache and artifacts
 *.cpython-314-pytest-9.0.2.pyc.*
