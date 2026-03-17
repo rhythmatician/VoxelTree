@@ -33,7 +33,7 @@ If you think a new file is needed, **ask first**. The answer is almost always
 | **Dataset** | `train/octree_dataset.py` | Octree pair cache + DataLoader |
 | **Models** | `train/octree_models.py` | OctreeInitModel, OctreeRefineModel, OctreeLeafModel + OctreeConfig |
 | **Vocab** | `config/voxy_vocab.json` | 1104-entry block vocabulary |
-| **SparseRoot training** | `tools/train_sparse_root.py` | Train sparse-root model; always pass `--num-classes 1104` |
+| **SparseOctree training** | `tools/train_sparse_octree.py` | Train sparse-root model; always pass `--num-classes 1104` |
 
 Tests live in `tests/test_*.py`. Add tests to existing files or create
 `tests/test_<module>.py` for NEW modules only.
@@ -131,7 +131,7 @@ python pipeline.py run --voxy-dir LODiffusion/run/saves --epochs 20 --export --d
 - **Truthful labels**: extract from Voxy RocksDB only — no synthetic fallbacks
 - **No fallbacks in Python**: every input is required. No Optional with silent defaults.
 - **No router6**: dropped entirely. Do not add router6/multinoise inputs.
-- **Block vocab size is 1104**: Always use `--num-classes 1104` for `tools/train_sparse_root.py`. The default is hardcoded to 1104. Do not change it. See `train/octree_models.py` (`block_vocab_size = 1104`) and `config/voxy_vocab.json`.
+- **Block vocab size is 1104**: Always use `--num-classes 1104` for `tools/train_sparse_octree.py`. The default is hardcoded to 1104. Do not change it. See `train/octree_models.py` (`block_vocab_size = 1104`) and `config/voxy_vocab.json`.
 - **heightmap32 required**: every octree NPZ must have `heightmap32` (5-plane, 32×32)
 - **Java fallback kept**: the runtime ML-free deterministic fallback in Java is intentional; keep it.
 

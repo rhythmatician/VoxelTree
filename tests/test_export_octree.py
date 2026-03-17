@@ -33,7 +33,7 @@ def fake_exporters(monkeypatch, tmp_path):
         return path
 
     # monkeypatch the three helpers in the export script
-    import VoxelTree.scripts.octree.export as expmod
+    import voxel_tree.tasks.octree.export as expmod
 
     monkeypatch.setattr(expmod, "_export_init", lambda m, c, o: _stub_export("init", c, o))
     monkeypatch.setattr(expmod, "_export_refine", lambda m, c, o: _stub_export("refine", c, o))
@@ -55,7 +55,7 @@ def fake_exporters(monkeypatch, tmp_path):
 
 def run_export(args: list[str], tmp_path: Path) -> Path:
     """Invoke the CLI and return the export directory path."""
-    from VoxelTree.scripts.octree import export
+    from voxel_tree.tasks.octree import export
 
     export_dir = tmp_path / "out"
     argv = ["--checkpoint", str(tmp_path / "dummy.pt"), "--out-dir", str(export_dir)] + args
@@ -100,7 +100,7 @@ def test_load_checkpoint_with_old_module(tmp_path: Path):
 
     import torch
 
-    import VoxelTree.scripts.octree.export as expmod
+    import voxel_tree.tasks.octree.export as expmod
 
     # reload module to undo the fake_exporters monkeypatch
     expmod = importlib.reload(expmod)
@@ -119,7 +119,7 @@ def test_load_checkpoint_with_old_module(tmp_path: Path):
     legacy_obj = FakeLegacy()
 
     # build a minimal checkpoint containing the fake object
-    from VoxelTree.scripts.octree.models import OctreeConfig
+    from voxel_tree.tasks.octree.models import OctreeConfig
 
     cfg = OctreeConfig()
     ckpt = {

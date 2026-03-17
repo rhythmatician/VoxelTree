@@ -7,10 +7,10 @@ from typing import Any, List
 import pytest
 from PySide6.QtCore import QEvent
 
-from VoxelTree.gui import app as gui_app
-from VoxelTree.gui.detail_panel import DetailPanel
-from VoxelTree.gui.run_registry import RunRegistry
-from VoxelTree.gui.step_node_widget import StepNodeWidget
+from voxel_tree.gui import app as gui_app
+from voxel_tree.gui.detail_panel import DetailPanel
+from voxel_tree.gui.run_registry import RunRegistry
+from voxel_tree.gui.step_node_widget import StepNodeWidget
 
 
 @pytest.fixture(autouse=True)
@@ -108,9 +108,9 @@ def test_profilerow_refresh_shows_progress():
     # create a dummy registry with a fake progress value
     reg = RunRegistry("x")
     # pick a real step id so the ProfileRow will create a node for it
-    real_step = "train_sparse_root"
+    real_step = "train_sparse_octree"
     reg.set_progress(real_step, 0.33)
-    from VoxelTree.gui.profile_row import ProfileRow
+    from voxel_tree.gui.profile_row import ProfileRow
 
     row = ProfileRow("x", reg)
     # ensure the node exists and initial progress is shown after refresh
@@ -124,15 +124,15 @@ def test_profilerow_refresh_shows_progress():
 def test_profilerow_contains_new_export_deploy_nodes():
     # registry with no state still builds all nodes from PIPELINE_STEPS
     reg = RunRegistry("y")
-    from VoxelTree.gui.profile_row import ProfileRow
+    from voxel_tree.gui.profile_row import ProfileRow
 
     row = ProfileRow("y", reg)
     row.refresh()
     for step in (
-        "export_sparse_root",
-        "deploy_sparse_root",
-        "extract_stage1_weights",
-        "deploy_stage1",
+        "export_sparse_octree",
+        "deploy_sparse_octree",
+        "extract_terrain_shaper_weights",
+        "deploy_terrain_shaper",
     ):
         assert step in row._nodes, f"missing node {step}"
 
@@ -161,7 +161,7 @@ def test_profilerow_context_menu_actions(monkeypatch):
     step = "train_init"
     reg.mark_started(step)
 
-    from VoxelTree.gui.profile_row import ProfileRow
+    from voxel_tree.gui.profile_row import ProfileRow
 
     row = ProfileRow("p", reg)
     # connect to capture emitted events
@@ -200,7 +200,7 @@ def test_profilerow_context_menu_actions(monkeypatch):
 
 
 def test_dashboard_table_forwards_row_signals():
-    from VoxelTree.gui.dashboard_table import DashboardTable
+    from voxel_tree.gui.dashboard_table import DashboardTable
 
     reg = RunRegistry("p")
     table = DashboardTable()
@@ -217,7 +217,7 @@ def test_dashboard_table_forwards_row_signals():
 
 def test_progress_helper_prints(capsys):
     # reports at various points and clamps
-    from VoxelTree.utils.progress import report
+    from voxel_tree.utils.progress import report
 
     report(0, 10)
     report(5, 10)

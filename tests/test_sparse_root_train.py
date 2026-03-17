@@ -13,31 +13,31 @@ for p in (ROOT, INTERNAL_PKG):
     if str(p) not in sys.path:
         sys.path.insert(0, str(p))
 
-# Provide a tiny LODiffusion stub for importing sparse_root_train helpers.
-if "LODiffusion.models.sparse_root" not in sys.modules:
-    sparse_root_mod = types.ModuleType("LODiffusion.models.sparse_root")
+# Provide a tiny LODiffusion stub for importing sparse_octree_train helpers.
+if "LODiffusion.models.sparse_octree" not in sys.modules:
+    sparse_octree_mod = types.ModuleType("LODiffusion.models.sparse_octree")
 
     class _DummyModel:  # pragma: no cover - import shim only
         pass
 
-    sparse_root_mod.SparseRootFastModel = _DummyModel
-    sparse_root_mod.SparseRootModel = _DummyModel
+    sparse_octree_mod.SparseOctreeFastModel = _DummyModel
+    sparse_octree_mod.SparseOctreeModel = _DummyModel
     models_mod = types.ModuleType("LODiffusion.models")
-    models_mod.sparse_root = sparse_root_mod
+    models_mod.sparse_octree = sparse_octree_mod
     lod_mod = types.ModuleType("LODiffusion")
     lod_mod.models = models_mod
     sys.modules["LODiffusion"] = lod_mod
     sys.modules["LODiffusion.models"] = models_mod
-    sys.modules["LODiffusion.models.sparse_root"] = sparse_root_mod
+    sys.modules["LODiffusion.models.sparse_octree"] = sparse_octree_mod
 
-from VoxelTree.scripts.sparse_root.sparse_root_train import (
+from voxel_tree.tasks.sparse_octree.sparse_octree_train import (
     _finalize_metrics,
-    _sparse_root_loss,
+    _sparse_octree_loss,
     _update_batch_metrics,
 )
 
 
-def test_sparse_root_loss_masks_material_to_leaf_nodes() -> None:
+def test_sparse_octree_loss_masks_material_to_leaf_nodes() -> None:
     # One level, two nodes: first internal (split=1), second leaf (split=0).
     # Material logits for internal node are intentionally "wrong" but must be ignored.
     preds = {
@@ -54,7 +54,7 @@ def test_sparse_root_loss_masks_material_to_leaf_nodes() -> None:
         }
     }
 
-    perfect_leaf = _sparse_root_loss(
+    perfect_leaf = _sparse_octree_loss(
         preds,
         targets,
         split_weight=1.0,
@@ -73,7 +73,7 @@ def test_sparse_root_loss_masks_material_to_leaf_nodes() -> None:
     }
     preds_internal_changed[2]["label"][0, 0] = torch.tensor([9.0, 0.0])
 
-    still_perfect_leaf = _sparse_root_loss(
+    still_perfect_leaf = _sparse_octree_loss(
         preds_internal_changed,
         targets,
         split_weight=1.0,

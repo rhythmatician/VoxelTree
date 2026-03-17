@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from VoxelTree.gui import run_worker
+from voxel_tree.gui import run_worker
 
 
 def test_vt_root_points_to_repo_root() -> None:

@@ -9,8 +9,10 @@ from __future__ import annotations
 from pathlib import Path
 
 
-def test_sparse_root_export_and_deploy_call_export_sparse_root(monkeypatch, tmp_path: Path) -> None:
-    """Export + deploy should call the LODiffusion sparse_root exporter."""
+def test_sparse_octree_export_and_deploy_call_export_sparse_octree(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """Export + deploy should call the LODiffusion sparse_octree exporter."""
 
     called: dict[str, tuple[Path, Path]] = {}
 
@@ -26,13 +28,13 @@ def test_sparse_root_export_and_deploy_call_export_sparse_root(monkeypatch, tmp_
     sys.modules["LODiffusion"] = lodiffusion_mod
     models_mod = types.ModuleType("LODiffusion.models")
     sys.modules["LODiffusion.models"] = models_mod
-    export_mod = types.ModuleType("LODiffusion.models.export_sparse_root")
-    setattr(export_mod, "export_sparse_root", fake_export)
-    sys.modules["LODiffusion.models.export_sparse_root"] = export_mod
+    export_mod = types.ModuleType("LODiffusion.models.export_sparse_octree")
+    setattr(export_mod, "export_sparse_octree", fake_export)
+    sys.modules["LODiffusion.models.export_sparse_octree"] = export_mod
 
-    from VoxelTree.gui.step_definitions import (
-        _deploy_sparse_root_run,
-        _export_sparse_root_run,
+    from voxel_tree.gui.step_definitions import (
+        _deploy_sparse_octree_run,
+        _export_sparse_octree_run,
     )
 
     profile = {
@@ -41,22 +43,22 @@ def test_sparse_root_export_and_deploy_call_export_sparse_root(monkeypatch, tmp_
         "deploy": {"target_dir": str(tmp_path / "deployed")},
     }
 
-    _export_sparse_root_run(profile)
+    _export_sparse_octree_run(profile)
     assert "export" in called
     checkpoint, out_dir = called["export"]
-    assert checkpoint.name == "sparse_root_model.pt"
+    assert checkpoint.name == "sparse_octree_model.pt"
     assert out_dir == tmp_path / "exported"
 
     # Reset and test deploy runner
     called.clear()
-    _deploy_sparse_root_run(profile)
+    _deploy_sparse_octree_run(profile)
     assert "export" in called
     checkpoint, out_dir = called["export"]
-    assert checkpoint.name == "sparse_root_model.pt"
+    assert checkpoint.name == "sparse_octree_model.pt"
     assert out_dir == tmp_path / "deployed"
 
 
-def test_stage1_extract_and_deploy_calls_extract_density_weights(
+def test_terrain_shaper_extract_and_deploy_calls_extract_density_weights(
     monkeypatch, tmp_path: Path
 ) -> None:
     """Export/deploy for Stage-1 should call the extract_density_weights script."""
@@ -67,40 +69,40 @@ def test_stage1_extract_and_deploy_calls_extract_density_weights(
         called.setdefault("args", []).append(list(argv))
 
     monkeypatch.setattr(
-        "VoxelTree.scripts.stage1.extract_density_weights.main",
+        "voxel_tree.tasks.density.extract_density_weights.main",
         fake_main,
     )
 
-    from VoxelTree.gui.step_definitions import (
-        _deploy_stage1_run,
-        _extract_stage1_weights_run,
+    from voxel_tree.gui.step_definitions import (
+        _deploy_terrain_shaper_run,
+        _extract_terrain_shaper_weights_run,
     )
 
     profile = {
-        "train": {"output_dir": str(tmp_path / "stage1_model")},
-        "extract": {"output_dir": str(tmp_path / "stage1_export")},
+        "train": {"output_dir": str(tmp_path / "terrain_shaper_model")},
+        "extract": {"output_dir": str(tmp_path / "terrain_shaper_export")},
     }
 
-    _extract_stage1_weights_run(profile)
+    _extract_terrain_shaper_weights_run(profile)
     # should include --no-deploy and match our profile directories
     assert any("--no-deploy" in args for args in called.get("args", []))
     assert any(
-        "--model-dir" in args and str(tmp_path / "stage1_model") in args
+        "--model-dir" in args and str(tmp_path / "terrain_shaper_model") in args
         for args in called.get("args", [])
     )
     assert any(
-        "--out-dir" in args and str(tmp_path / "stage1_export") in args
+        "--out-dir" in args and str(tmp_path / "terrain_shaper_export") in args
         for args in called.get("args", [])
     )
 
     called.clear()
-    _deploy_stage1_run(profile)
+    _deploy_terrain_shaper_run(profile)
     assert any("--no-deploy" not in args for args in called.get("args", []))
     assert any(
-        "--model-dir" in args and str(tmp_path / "stage1_model") in args
+        "--model-dir" in args and str(tmp_path / "terrain_shaper_model") in args
         for args in called.get("args", [])
     )
     assert any(
-        "--out-dir" in args and str(tmp_path / "stage1_export") in args
+        "--out-dir" in args and str(tmp_path / "terrain_shaper_export") in args
         for args in called.get("args", [])
     )

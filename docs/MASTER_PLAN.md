@@ -11,9 +11,9 @@
 
 ### Current status (March 2026)
 
-- The active pipeline is now centered around a **sparse-octree model** ("sparse_root") that replaces the legacy init/refine/leaf octree training strategy.
+- The active pipeline is now centered around a **sparse-octree model** ("sparse_octree") that replaces the legacy init/refine/leaf octree training strategy.
 - The system supports a **GPU "shadow router" compute path** (GLSL + SSBO + Voxy request queue) for fast LOD generation, while retaining the option for CPU ONNX inference.
-- The data pipeline is now: **dumpnoise → NPZ cache → training/distillation → ONNX export → runtime inference**. This flow is implemented between `LODiffusion` and `VoxelTree` via the new `dumpnoise sparse_root` exporter, Python training scripts, and the ONNX runtime decoder.
+- The data pipeline is now: **dumpnoise → NPZ cache → training/distillation → ONNX export → runtime inference**. This flow is implemented between `LODiffusion` and `VoxelTree` via the new `dumpnoise sparse_octree` exporter, Python training scripts, and the ONNX runtime decoder.
 
 ---
 
@@ -151,7 +151,7 @@ this — they learn **cell-level** density, not per-block predictions.
                          ▼
 ┌──────────────────────────────────────────────────────────────┐
 │                    Training Data (NPZ)                       │
-│  stage1_density_data.npz  inputs: (N, 4, 48, 4, 11)         │
+│  terrain_shaper_density_data.npz  inputs: (N, 4, 48, 4, 11)         │
 │                           outputs: (N, 4, 48, 4, 1)         │
 └──────────────────────────────────────────────────────────────┘
 ```
@@ -790,11 +790,11 @@ runtime).
               Raw per-cell noise + ground truth
                             │
                             ▼
-              stage1_data_extraction.py
+              terrain_shaper_data_extraction.py
               JSON → NPZ conversion + tensor assembly
                             │
                             ▼
-              stage1_density_data.npz
+              terrain_shaper_density_data.npz
               (N, 4, 48, 4, 11) inputs
               (N, 4, 48, 4, 1)  finalDensity
 ```

@@ -13,11 +13,11 @@ from pathlib import Path
 
 import pytest  # noqa: E402
 
-from VoxelTree.gui import run_registry
+from voxel_tree.gui import run_registry
 
 # we only need the constant for the server‑session test
-from VoxelTree.gui.main_window import _SERVER_SESSION_STEPS
-from VoxelTree.gui.run_registry import RunRegistry
+from voxel_tree.gui.main_window import _SERVER_SESSION_STEPS
+from voxel_tree.gui.run_registry import RunRegistry
 
 
 def test_run_registry_persistence(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -39,10 +39,10 @@ def test_run_registry_persistence(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
         assert reg.get_status(step.id) == "not_run"
     # sanity: ensure core track steps are present
     assert "extract_octree" in run_registry.STEP_BY_ID
-    assert "build_pairs_sparse_root" in run_registry.STEP_BY_ID
-    assert "train_sparse_root" in run_registry.STEP_BY_ID
-    assert "export_sparse_root" in run_registry.STEP_BY_ID
-    assert "deploy_sparse_root" in run_registry.STEP_BY_ID
+    assert "build_pairs_sparse_octree" in run_registry.STEP_BY_ID
+    assert "train_sparse_octree" in run_registry.STEP_BY_ID
+    assert "export_sparse_octree" in run_registry.STEP_BY_ID
+    assert "deploy_sparse_octree" in run_registry.STEP_BY_ID
 
     # mark a couple of steps and check persistence
     reg.mark_success("pregen")
@@ -73,14 +73,14 @@ def test_phase_export_and_deploy_args(monkeypatch, tmp_path):
 
     # patch the underlying script entrypoints that phase3_export/phase4_deploy
     # import dynamically
-    monkeypatch.setattr("VoxelTree.scripts.octree.export.main", fake_export_main)
-    monkeypatch.setattr("VoxelTree.scripts.deploy_models.main", fake_deploy_main)
+    monkeypatch.setattr("voxel_tree.tasks.octree.export.main", fake_export_main)
+    monkeypatch.setattr("voxel_tree.tasks.deploy_models.main", fake_deploy_main)
 
     phase3 = __import__(
-        "VoxelTree.preprocessing.pipeline", fromlist=["phase3_export"]
+        "voxel_tree.preprocessing.pipeline", fromlist=["phase3_export"]
     ).phase3_export
     phase4 = __import__(
-        "VoxelTree.preprocessing.pipeline", fromlist=["phase4_deploy"]
+        "voxel_tree.preprocessing.pipeline", fromlist=["phase4_deploy"]
     ).phase4_deploy
 
     # call export with filtering

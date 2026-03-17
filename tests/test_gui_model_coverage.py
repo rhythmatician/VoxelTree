@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import pytest
 
-from VoxelTree.gui.step_definitions import (
+from voxel_tree.gui.step_definitions import (
     MODEL_TRACKS,
     PIPELINE_STEPS,
     STEP_BY_ID,
@@ -34,7 +34,7 @@ class TestModelTrackCoverage:
 
         # Current architecture handles models via ModelTrack registration.
         # We check for the core models currently in active development.
-        required_tracks = {"sparse_root", "stage1"}
+        required_tracks = {"sparse_octree", "terrain_shaper"}
         found_tracks = set(track_ids)
         assert required_tracks.issubset(
             found_tracks
@@ -148,14 +148,14 @@ class TestArtifactGraph:
         important_steps = {
             "extract_octree": ["harvest"],
             "column_heights": ["extract_octree", "dumpnoise"],
-            "build_pairs_sparse_root": ["harvest", "dumpnoise"],
-            "train_sparse_root": ["build_pairs_sparse_root"],
-            "export_sparse_root": ["train_sparse_root"],
-            "deploy_sparse_root": ["export_sparse_root"],
-            "build_pairs_stage1": ["dumpnoise"],
-            "train_stage1_density": ["build_pairs_stage1"],
-            "extract_stage1_weights": ["train_stage1_density"],
-            "deploy_stage1": ["extract_stage1_weights"],
+            "build_pairs_sparse_octree": ["harvest", "dumpnoise"],
+            "train_sparse_octree": ["build_pairs_sparse_octree"],
+            "export_sparse_octree": ["train_sparse_octree"],
+            "deploy_sparse_octree": ["export_sparse_octree"],
+            "build_pairs_terrain_shaper": ["dumpnoise"],
+            "train_terrain_shaper_density": ["build_pairs_terrain_shaper"],
+            "extract_terrain_shaper_weights": ["train_terrain_shaper_density"],
+            "deploy_terrain_shaper": ["extract_terrain_shaper_weights"],
         }
 
         actual = {s.id: s.prereqs for s in PIPELINE_STEPS}

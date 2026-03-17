@@ -14,7 +14,7 @@ import time
 from pathlib import Path
 from unittest.mock import Mock
 
-from VoxelTree.preprocessing.harvest import (
+from voxel_tree.preprocessing.harvest import (
     find_voxy_databases,
     get_db_size,
     spiral_positions,

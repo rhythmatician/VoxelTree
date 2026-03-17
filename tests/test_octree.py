@@ -29,9 +29,9 @@ INTERNAL_PKG = ROOT / "VoxelTree"
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-# If VoxelTree is loaded as a namespace package pointing to the outer folder,
+# If voxel_tree is loaded as a namespace package pointing to the outer folder,
 # patch its __path__ to include the real package directory so submodules can be found.
-import VoxelTree as _VT
+import voxel_tree as _VT
 
 if hasattr(_VT, "__path__"):
     pkg_path = str(INTERNAL_PKG)
@@ -50,7 +50,7 @@ import pytest
 import torch
 
 try:
-    from VoxelTree.scripts.build_octree_pairs import (
+    from VoxelTree.voxel_tree.tasks.octree.build_octree_pairs import (
         build_section_index,
         child_coords_from_parent,
         extract_octant,
@@ -71,17 +71,17 @@ except ImportError:
     extract_octant = mod.extract_octant
     extract_octant_and_upsample = mod.extract_octant_and_upsample
     parent_coords_and_octant = mod.parent_coords_and_octant
-from VoxelTree.scripts.sparse_octree_targets import (
+from voxel_tree.tasks.sparse_octree_targets import (
     build_sparse_octree_targets,
     child_occupancy_mask,
     iter_sparse_octree_nodes,
 )
-from VoxelTree.scripts.octree.dataset import (
+from voxel_tree.tasks.octree.dataset import (
     OctreeDataset,
     _model_type_for_level,
     collate_octree_batch,
 )
-from VoxelTree.scripts.octree.models import (
+from voxel_tree.tasks.octree.models import (
     OccGateModule,
     OccupancyHead,
     OctreeConfig,
@@ -90,7 +90,7 @@ from VoxelTree.scripts.octree.models import (
     create_leaf_model,
     create_refine_model,
 )
-from VoxelTree.scripts.octree.train import (
+from voxel_tree.tasks.octree.train import (
     OctreeLoss,
     _bitmask_to_binary,
     _prepare_targets,
@@ -439,7 +439,7 @@ class TestStackAndSave:
         }
 
     def test_empty_pairs_returns_zero_and_warns(self, tmp_path: Path, capsys: Any) -> None:
-        from VoxelTree.scripts.build_octree_pairs import stack_and_save
+        from VoxelTree.voxel_tree.tasks.octree.build_octree_pairs import stack_and_save
 
         out_file = tmp_path / "out.npz"
         count = stack_and_save([], out_file)
@@ -448,7 +448,7 @@ class TestStackAndSave:
         assert "WARNING" in captured.out
 
     def test_ascii_arrow_in_output(self, tmp_path: Path, capsys: Any) -> None:
-        from VoxelTree.scripts.build_octree_pairs import stack_and_save
+        from VoxelTree.voxel_tree.tasks.octree.build_octree_pairs import stack_and_save
 
         out_file = tmp_path / "out.npz"
         pair = self._make_fake_pair()
@@ -465,11 +465,11 @@ class TestBuildFunctionOutput:
 
     def test_build_prints_ascii_arrows(self, tmp_path: Path, capsys: Any, monkeypatch: Any) -> None:
         """Patch helpers so build() runs without touching disk."""
-        from VoxelTree.scripts.build_octree_pairs import build
+        from VoxelTree.voxel_tree.tasks.octree.build_octree_pairs import build
 
         # fake section indices always non-empty
         monkeypatch.setattr(
-            "VoxelTree.scripts.octree.build_pairs.build_section_index",
+            "voxel_tree.tasks.octree.build_pairs.build_section_index",
             lambda data_dir, level: {0: 1},
         )
 
@@ -489,13 +489,13 @@ class TestBuildFunctionOutput:
             ]
 
         monkeypatch.setattr(
-            "VoxelTree.scripts.octree.build_pairs.build_pairs_for_level",
+            "voxel_tree.tasks.octree.build_pairs.build_pairs_for_level",
             fake_build_pairs_for_level,
         )
 
         # bypass actual NPZ writing
         monkeypatch.setattr(
-            "VoxelTree.scripts.octree.build_pairs.stack_and_save",
+            "voxel_tree.tasks.octree.build_pairs.stack_and_save",
             lambda pairs, path: len(pairs),
         )
 
@@ -512,9 +512,9 @@ class TestBuildFunctionOutput:
         assert "\u2190" not in captured.out
         assert "←" not in captured.out
 
-    def test_build_creates_sparse_root_pairs(self, tmp_path: Path) -> None:
-        """build() should produce a sparse_root_pairs.npz with expected keys/shapes."""
-        from VoxelTree.scripts.build_octree_pairs import build
+    def test_build_creates_sparse_octree_pairs(self, tmp_path: Path) -> None:
+        """build() should produce a sparse_octree_pairs.npz with expected keys/shapes."""
+        from VoxelTree.voxel_tree.tasks.octree.build_octree_pairs import build
 
         data_dir = tmp_path / "data"
         out_dir = tmp_path / "out"
@@ -530,10 +530,10 @@ class TestBuildFunctionOutput:
             section_y=np.int64(0),
         )
 
-        build(data_dir, out_dir, model_type="all", clean=True, sparse_root=True)
+        build(data_dir, out_dir, model_type="all", clean=True, sparse_octree=True)
 
-        out_file = out_dir / "sparse_root_pairs.npz"
-        assert out_file.exists(), "Expected sparse_root_pairs.npz to be created"
+        out_file = out_dir / "sparse_octree_pairs.npz"
+        assert out_file.exists(), "Expected sparse_octree_pairs.npz to be created"
 
         with np.load(out_file) as out:
             assert set(out.files) == {
@@ -1346,7 +1346,7 @@ class TestParentContextAblation:
     """Test parent_context_mode='embed'/'zeros'/'disabled' on refine + leaf."""
 
     def _refine_fwd(self, mode: str) -> Dict[str, torch.Tensor]:
-        from VoxelTree.scripts.octree.models import OctreeConfig, create_refine_model
+        from voxel_tree.tasks.octree.models import OctreeConfig, create_refine_model
 
         cfg = OctreeConfig(
             block_vocab_size=32,
@@ -1375,7 +1375,7 @@ class TestParentContextAblation:
             )
 
     def _leaf_fwd(self, mode: str) -> Dict[str, torch.Tensor]:
-        from VoxelTree.scripts.octree.models import OctreeConfig, create_leaf_model
+        from voxel_tree.tasks.octree.models import OctreeConfig, create_leaf_model
 
         cfg = OctreeConfig(
             block_vocab_size=32,
@@ -1431,7 +1431,7 @@ class TestParentContextAblation:
 
     def test_disabled_has_fewer_params(self) -> None:
         """Disabled mode should have fewer parameters than embed mode."""
-        from VoxelTree.scripts.octree.models import OctreeConfig, create_refine_model
+        from voxel_tree.tasks.octree.models import OctreeConfig, create_refine_model
 
         def _count(mode: str) -> int:
             cfg = OctreeConfig(
@@ -1454,7 +1454,7 @@ class TestParentContextAblation:
 
     def test_zeros_has_same_arch_as_embed(self) -> None:
         """Zeros mode uses same U-Net input channels as embed, just zero-filled."""
-        from VoxelTree.scripts.octree.models import OctreeConfig, create_refine_model
+        from voxel_tree.tasks.octree.models import OctreeConfig, create_refine_model
 
         cfg_embed = OctreeConfig(
             block_vocab_size=32,
@@ -1483,7 +1483,7 @@ class TestParentContextAblation:
 
     def test_embed_raises_without_parent(self) -> None:
         """In embed mode, calling without parent should raise ValueError."""
-        from VoxelTree.scripts.octree.models import OctreeConfig, create_refine_model
+        from voxel_tree.tasks.octree.models import OctreeConfig, create_refine_model
 
         cfg = OctreeConfig(
             block_vocab_size=32,
@@ -1565,20 +1565,20 @@ class TestParentEmbedDimCLI:
     """Test that parent_embed_dim is properly wired through config."""
 
     def test_config_stores_parent_embed_dim(self) -> None:
-        from VoxelTree.scripts.octree.models import OctreeConfig
+        from voxel_tree.tasks.octree.models import OctreeConfig
 
         cfg = OctreeConfig(parent_embed_dim=64)
         assert cfg.parent_embed_dim == 64
 
     def test_config_stores_parent_context_mode(self) -> None:
-        from VoxelTree.scripts.octree.models import OctreeConfig
+        from voxel_tree.tasks.octree.models import OctreeConfig
 
         cfg = OctreeConfig(parent_context_mode="zeros")
         assert cfg.parent_context_mode == "zeros"
 
     def test_refine_model_uses_config_dim(self) -> None:
         """Refine model U-Net input channels should reflect parent_embed_dim."""
-        from VoxelTree.scripts.octree.models import OctreeConfig, create_refine_model
+        from voxel_tree.tasks.octree.models import OctreeConfig, create_refine_model
 
         for dim in [4, 8, 32]:
             cfg = OctreeConfig(
