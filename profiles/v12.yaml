@@ -13,6 +13,7 @@ description: Production v12 model — latest iteration with full voxy_octree dat
 export:
   output_dir: production/v12
 name: v12
+server_role: train
 rcon:
   timeout: 600
 train:

@@ -1,39 +1,14 @@
 dag:
   steps:
-  - id: pregen
-  - id: voxy_import
-  - id: dumpnoise
-    prereqs: []
-  - id: train_stage1_density
-  - id: extract_stage1_weights
-  - id: distill_density
-    prereqs:
-    - train_stage1_density
-  - id: extract_octree
-  - id: build_pairs_init
-    prereqs:
-    - column_heights
-    - dumpnoise
-    - extract_octree
-  - id: build_pairs_refine
-    prereqs:
-    - column_heights
-    - dumpnoise
-    - extract_octree
-  - id: build_pairs_leaf
-    prereqs:
-    - column_heights
-    - dumpnoise
-    - extract_octree
-  - id: train_init
-  - id: train_refine
-  - id: train_leaf
-  - id: export_init
-  - id: export_refine
-  - id: export_leaf
-  - id: deploy_init
-  - id: deploy_refine
-  - id: deploy_leaf
+    - id: pregen
+    - id: harvest
+    - id: dumpnoise
+    - id: extract_octree
+    - id: column_heights
+    - id: build_pairs_stage1
+    - id: train_stage1_density
+    - id: extract_stage1_weights
+    - id: distill_density
 data:
   data_dir: VoxelTree/data/voxy_octree
   max_sections: null
@@ -43,12 +18,13 @@ data:
   voxy_dir: ../LODiffusion/run/saves
 deploy:
   files:
-  - stage1_mlp_weights.bin
-  - stage1_norm_mean.bin
-  - stage1_norm_std.bin
-  - stage1_mlp.onnx
+    - stage1_mlp_weights.bin
+    - stage1_norm_mean.bin
+    - stage1_norm_std.bin
+    - stage1_mlp.onnx
   target_dir: ../LODiffusion/src/main/resources/assets/lodiffusion/models
-description: Stage 1 density MLP — 12→64→64→1, predicts finalDensity from 12 noise
+description:
+  Stage 1 density MLP — 12→64→64→1, predicts finalDensity from 12 noise
   features
 distill:
   alpha: 0.5
@@ -62,11 +38,12 @@ dump:
   samples_per_chunk: 768
 export:
   formats:
-  - pt
-  - onnx
-  - bin
+    - pt
+    - onnx
+    - bin
   output_dir: production/stage1_v1
 name: stage1_density
+server_role: train
 rcon:
   timeout: 575
 train:

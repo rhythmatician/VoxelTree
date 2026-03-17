@@ -1,4 +1,5 @@
 name: tiny
+server_role: train
 description: "Quick test profile — minimal data for rapid iteration"
 
 world:

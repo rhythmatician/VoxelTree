@@ -26,8 +26,9 @@ from VoxelTree.gui.server_status_bar import ServerStatusBar
 # installed-package layouts.
 _PROFILES_DIR = Path(__file__).resolve().parents[2] / "profiles"
 
-# Server-required steps in the order they should be queued for a session
-_SERVER_SESSION_STEPS = ["pregen", "voxy_import", "dumpnoise"]
+# Server-required steps run automatically when the user clicks “Run Server Session”.
+# Order matters: pregen must complete before harvest (client needed) can start.
+_SERVER_SESSION_STEPS = ["pregen", "harvest", "dumpnoise"]
 
 
 class MainWindow(QMainWindow):
@@ -247,8 +248,10 @@ class MainWindow(QMainWindow):
         if profile_name not in self._profiles:
             return
 
-        # Server settings (seed, level-name, RCON password) are global and
-        # already configured in server.properties. Just start the server.
+        profile = self._profiles[profile_name]
+
+        # Patch server.properties for this profile's role before launching.
+        self._server.configure_for_profile(profile)
         self._server.start()
 
         # Load the detail panel for this profile (so we can run steps).

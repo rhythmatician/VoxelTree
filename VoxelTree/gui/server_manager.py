@@ -5,16 +5,17 @@ stdout/stderr capture.  Detects startup completion via RCON port polling
 (no log-line parsing needed — works regardless of RCON credential changes).
 
 The single source of truth for RCON credentials (host, port, password) is
-``tools/fabric-server/runtime/server.properties``.  When a profile is activated
-the manager patches ``server.properties`` to match the profile's world seed,
-level-name, and RCON password before (re)starting the server.
+``tools/fabric-server/runtime/server.properties``.  Call
+:meth:`ServerManager.configure_for_role` (or set ``server_role`` in the profile
+YAML) **before** calling :meth:`ServerManager.start`; the manager will patch
+``server.properties`` with the role's seed, level-name, and network ports.
 
 Usage
 -----
     mgr = ServerManager()
     mgr.log_line.connect(print)
     mgr.status_changed.connect(lambda s: print("Status:", s))
-    mgr.configure_for_profile(profile_dict)
+    mgr.configure_for_role("train")   # patches server.properties
     mgr.start()
     # ... later ...
     mgr.stop()
@@ -27,8 +28,37 @@ from pathlib import Path
 
 from PySide6.QtCore import QObject, QProcess, QTimer, Signal, Slot
 
-from VoxelTree.preprocessing.cli import FREEZE_COMMANDS
+from VoxelTree.gui.server_config import get_role
 from VoxelTree.preprocessing.rcon import RconClient
+
+# ---------------------------------------------------------------------------
+# World-freeze gamerule commands sent automatically after server startup.
+# Format: (rcon_command, human_description)
+# ---------------------------------------------------------------------------
+FREEZE_COMMANDS: list[tuple[str, str]] = [
+    ("gamerule doFireTick false", "disable fire spread"),
+    ("gamerule doMobSpawning false", "disable mob spawning"),
+    ("gamerule doWeatherCycle false", "freeze weather"),
+    ("gamerule doDaylightCycle false", "freeze time"),
+    ("gamerule randomTickSpeed 0", "disable random ticks"),
+    ("gamerule doEntityDrops false", "disable entity drops"),
+    ("gamerule doTileDrops false", "disable tile drops"),
+    ("gamerule doMobLoot false", "disable mob loot"),
+    ("difficulty peaceful", "set peaceful difficulty"),
+    ("time set 6000", "set noon"),
+    ("weather clear", "clear weather"),
+]
+
+UNFREEZE_COMMANDS: list[tuple[str, str]] = [
+    ("gamerule doFireTick true", "restore fire spread"),
+    ("gamerule doMobSpawning true", "restore mob spawning"),
+    ("gamerule doWeatherCycle true", "restore weather cycle"),
+    ("gamerule doDaylightCycle true", "restore day/night cycle"),
+    ("gamerule randomTickSpeed 3", "restore random ticks"),
+    ("gamerule doEntityDrops true", "restore entity drops"),
+    ("gamerule doTileDrops true", "restore tile drops"),
+    ("gamerule doMobLoot true", "restore mob loot"),
+]
 
 
 def _find_fabric_tools_dir() -> Path:
@@ -167,6 +197,7 @@ class ServerManager(QObject):
     def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
         self._status = "stopped"
+        self._active_role: str | None = None
 
         # QProcess handles stdout/stderr in a Qt-friendly way
         self._process = QProcess(self)
@@ -202,19 +233,53 @@ class ServerManager(QObject):
     def is_running(self) -> bool:
         return self._status == "running"
 
-    def configure_for_profile(self, profile: dict) -> None:
-        """Validate profile is loaded (no server.properties patches).
+    @property
+    def active_role(self) -> str | None:
+        """The server role currently configured in server.properties."""
+        return self._active_role
 
-        This method is a no-op that validates the profile is a dict. The
-        server's seed, level-name, and RCON settings are now truly global
-        settings managed once at server startup, not per-profile patches.
+    def configure_for_role(self, role_name: str | None = None) -> None:
+        """Patch ``server.properties`` for the given role before :meth:`start`.
 
-        Profile-specific settings (data paths, training params, etc.) do not
-        affect the server—only the pipeline configuration.
+        Reads the matching :class:`~VoxelTree.gui.server_config.ServerRole` from
+        ``servers.yaml`` and writes ``level-name``, ``level-seed``,
+        ``server-port``, ``rcon.port``, ``rcon.password``, and
+        ``enable-rcon=true`` into ``server.properties``.
+
+        Parameters
+        ----------
+        role_name:
+            One of the role keys in ``servers.yaml`` (e.g. ``"train"``,
+            ``"validate"``).  Defaults to ``"train"``.
         """
-        # Validate profile structure for future extensibility
+        role = get_role(role_name)
+        self._active_role = role.name
+        _patch_server_properties(
+            {
+                "level-name": role.level_name,
+                "level-seed": str(role.seed),
+                "server-port": str(role.server_port),
+                "rcon.port": str(role.rcon_port),
+                "rcon.password": role.rcon_password,
+                "enable-rcon": "true",
+            }
+        )
+        self.log_line.emit(
+            f"[Server] Role '{role.name}': level={role.level_name!r}  "
+            f"seed={role.seed}  port={role.server_port}  rcon={role.rcon_port}"
+        )
+
+    def configure_for_profile(self, profile: dict) -> None:
+        """Configure the server from the ``server_role`` key in a profile dict.
+
+        Reads ``profile.get("server_role")`` and delegates to
+        :meth:`configure_for_role`.  Falls back to ``"train"`` when the key is
+        absent.
+        """
         if not isinstance(profile, dict):
             raise TypeError(f"Expected dict profile, got {type(profile)}")
+        role_name = profile.get("server_role")
+        self.configure_for_role(role_name)
 
     # Legacy shim — old callers may still call configure_rcon(); this now
     # reads/writes server.properties instead of storing state in-memory.

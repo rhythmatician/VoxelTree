@@ -1,0 +1,32 @@
+# servers.yaml — Named server role configurations for the Fabric training server.
+#
+# Each top-level key is a role name (e.g. "train", "validate").  The profile
+# YAML for a run declares ``server_role: train`` or ``server_role: validate``;
+# the GUI and CLI look up the matching entry here before launching the server.
+#
+# By using different ``level_name`` values, both worlds coexist in the single
+# ``tools/fabric-server/runtime/`` directory — Minecraft stores each world as a
+# sub-folder keyed by level-name.
+#
+# By using different ``server_port`` values, the Minecraft client (and Voxy)
+# stores data in separate directories (e.g. ``localhost_25565/`` vs
+# ``localhost_25566/``), keeping training and validation Voxy data cleanly
+# separated without any manual file management.
+#
+# Only one server role runs at a time.  The ServerManager patches
+# server.properties before launch so the correct seed, level-name, and ports
+# are always active.
+
+train:
+  seed: 8675309
+  level_name: train
+  server_port: 25565
+  rcon_port: 25575
+  rcon_password: voxeltree
+
+validate:
+  seed: 3141592
+  level_name: validate
+  server_port: 25566
+  rcon_port: 25576
+  rcon_password: voxeltree
