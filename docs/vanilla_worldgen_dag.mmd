@@ -26,7 +26,7 @@ graph TD
         dist_p[["Noise Config<br/>(shifts @ 0.25 scale)"]]
         dist_p --> shift_x["shift_x noise"]
         dist_p --> shift_z["shift_z noise"]
-        shift_x & shift_z --> shifted_xz[/shifted x', z'<br/>@quart/]
+        shift_x & shift_z --> shifted_xz[/s93//]
     end
 
     noise_config --> Distortion
@@ -212,7 +212,7 @@ graph TD
     %% STAGE 9: SURFACE RULES
     subgraph Surface_Rules["8️⃣ Surface Rules<br/>(Biome Decoration)"]
         direction LR
-        surface_param[["Surface Rule Config<br/>(biome-specific)"]
+        surface_param[["Surface Rule Config<br/>(biome-specific)"]]
         surface_param --> grass_rule["Grass/Mycelium<br/>Layer"]
         surface_param --> sand_rule["Sand/Gravel<br/>Layer"]
         surface_param --> special_rule["Biome-Specific<br/>Rules"]
