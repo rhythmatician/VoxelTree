@@ -83,13 +83,8 @@ class DetailPanel(QDockWidget):
         self._edit_btn = QPushButton("✎ Edit Profile")
         self._edit_btn.setFixedWidth(100)
         self._edit_btn.setStyleSheet(
-            "QPushButton {"
-            "  background: #2a3a4a;"
-            "  color: #aaccff;"
-            "  border: 1px solid #4a6a8a;"
-            "  border-radius: 4px;"
-            "  padding: 3px 8px;"
-            "}"
+            "QPushButton { background: #2a3a4a; color: #aaccff; border: 1px solid #4a6a8a; "
+            "border-radius: 4px; padding: 3px 8px; } "
             "QPushButton:hover { background: #3a4a5a; }"
         )
         self._edit_btn.clicked.connect(self._on_edit)
@@ -162,13 +157,8 @@ class DetailPanel(QDockWidget):
         clear_btn = QPushButton("Clear")
         clear_btn.setFixedWidth(55)
         clear_btn.setStyleSheet(
-            "QPushButton {"
-            "  background: #333;"
-            "  color: #aaa;"
-            "  border: 1px solid #444;"
-            "  border-radius: 3px;"
-            "  padding: 2px 6px;"
-            "}"
+            "QPushButton { background: #333; color: #aaa; border: 1px solid #444; "
+            "border-radius: 3px; padding: 2px 6px; } "
             "QPushButton:hover { background: #444; }"
         )
         clear_btn.clicked.connect(self._clear_log)
