@@ -1,7 +1,5 @@
 dag:
   steps:
-  - id: pregen
-  - id: voxy_import
   - id: harvest
   - id: dumpnoise
   - id: extract_octree
