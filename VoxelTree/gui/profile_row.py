@@ -161,6 +161,7 @@ class ProfileRow(QWidget):
                 step.label,
                 stub=is_stub,
                 server_required=getattr(step, "server_required", False),
+                client_required=getattr(step, "client_required", False),
             )
             node.clicked.connect(self._on_node_clicked)
             node.context_menu_requested.connect(self._on_node_contextmenu)

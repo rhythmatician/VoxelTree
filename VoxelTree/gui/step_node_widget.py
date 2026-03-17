@@ -50,6 +50,7 @@ class StepNodeWidget(QWidget):
         label: str,
         stub: bool = False,
         server_required: bool = False,
+        client_required: bool = False,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -57,6 +58,7 @@ class StepNodeWidget(QWidget):
         self.label = label
         self.stub = stub
         self.server_required = server_required
+        self.client_required = client_required
 
         self._status = "stub" if stub else "not_run"
         self._metadata: str | None = None  # optional text override (e.g., "5 epochs")
@@ -161,7 +163,7 @@ class StepNodeWidget(QWidget):
         painter.drawEllipse(margin, margin, d, d)
 
         # Status icon / label
-        painter.setPen(QColor("#e8e8e8") if not self.stub else QColor("#505050"))
+        painter.setPen(QColor("#ffffff") if not self.stub else QColor("#505050"))
         font = QFont("Segoe UI", 9, QFont.Weight.Bold)
         painter.setFont(font)
 
@@ -199,27 +201,27 @@ class StepNodeWidget(QWidget):
             painter.setPen(QPen(QColor("#1e1e1e"), 1))
             painter.drawEllipse(dot_x - dot_r, dot_y - dot_r, dot_r * 2, dot_r * 2)
 
+        # Client-required indicator: small green dot in top-left
+        if self.client_required and not self.stub:
+            dot_r = 5
+            dot_x = margin + dot_r + 1
+            dot_y = margin + dot_r + 1
+            painter.setBrush(QColor("#4ad48a"))
+            painter.setPen(QPen(QColor("#1e1e1e"), 1))
+            painter.drawEllipse(dot_x - dot_r, dot_y - dot_r, dot_r * 2, dot_r * 2)
+
     def _icon(self) -> str:
         # If metadata is set (e.g., epoch count for Train), show it first
         if self._metadata is not None:
             return self._metadata
         # Next, if we know a progress fraction show a percentage.
-        # We display two significant figures: use one decimal place for
-        # values <10, otherwise show an integer.
         if self._progress is not None:
             pct = self._progress * 100.0
             if pct < 10:
                 return f"{pct:.1f}%"
             else:
                 return f"{int(pct)}%"
-        # Otherwise show a simple indicator for nodes that haven't started.
-        # If the step hasn't run yet, avoid showing the label so the chart stays
-        # clean.
-        if self._status == "not_run" or self.stub:
-            return "-"
-
-        # For all other states, show the step label.
-        # The border colour / fill indicate success/failure/etc.
+        # Otherwise always show the step label
         return self.label
 
     def sizeHint(self) -> QSize:
