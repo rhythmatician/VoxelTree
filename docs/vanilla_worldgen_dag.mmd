@@ -246,14 +246,75 @@ graph TD
     class Carving_Stage wrapper
     class carver_exec transform
 
-    %% STAGE 11: FINAL OUTPUT
-    subgraph Final_Output["✅ Final Chunk Output"]
-        direction LR
-        final_chunk --> prototchunk["ProtoChunk<br/>(ChunkAccess wrapper)<br/>16×16×384 blocks"]
-        prototchunk --> ready["Ready for:<br/>- Structure Generation<br/>- Entity Spawning<br/>- Persistence"]
+    %% STAGE 10B: HEIGHTMAP & CARVING MASK
+    final_chunk --> heightmap["Build Heightmaps<br/>(WORLD_SURFACE_WG, OCEAN_FLOOR_WG)"]
+    heightmap --> heightmap_out[["Heightmap Data<br/>(block Y per XZ column)"]]
+
+    %% STAGE 11: NATURAL FEATURE PLACEMENT
+    subgraph Feature_Placement["🌲 Natural Feature Placement<br/>(GenerationStep.Decoration)"]
+        direction TB
+
+        subgraph Feature_Steps["Decoration Substeps (Sequential)"]
+            direction LR
+            step_raw["1️⃣ RAW_GENERATION<br/>(End islands)"]
+            step_lakes["2️⃣ LAKES<br/>(Lakes, waterfalls)"]
+            step_local["3️⃣ LOCAL_MODIFICATIONS<br/>(Ice spikes, rocky terrain)"]
+            step_underground_struct["4️⃣ UNDERGROUND_STRUCTURES<br/>(Caves, geodes)"]
+            step_surface_struct["5️⃣ SURFACE_STRUCTURES<br/>(Shell, etc.)"]
+            step_strongholds["6️⃣ STRONGHOLDS<br/>(Stronghold placement)"]
+            step_ores["7️⃣ UNDERGROUND_ORES<br/>(Ore veins)"]
+            step_underground_deco["8️⃣ UNDERGROUND_DECORATION<br/>(Dripstone, sculk, amethyst)"]
+            step_springs["9️⃣ FLUID_SPRINGS<br/>(Water/lava springs)"]
+            step_vegetal["🌳 VEGETAL_DECORATION<br/>(Trees, flowers, grass)"]
+            step_top["🔟 TOP_LAYER_MODIFICATION<br/>(Snow, lilypads)"]
+
+            step_raw --> step_lakes --> step_local --> step_underground_struct --> step_surface_struct --> step_strongholds --> step_ores --> step_underground_deco --> step_springs --> step_vegetal --> step_top
+        end
+
+        subgraph Placement_Pipeline["Placement Modifier Pipeline"]
+            direction LR
+            place_in["PlacedFeature<br/>(ConfiguredFeature<br/>+ modifiers)"]
+            place_count["CountPlacement<br/>(repeat N times)"]
+            place_square["InSquarePlacement<br/>(random XZ offset)"]
+            place_heightmap["HeightmapPlacement<br/>(set Y from surface)"]
+            place_height_range["HeightRangePlacement<br/>(constrain Y range)"]
+            place_biome["BiomeFilter<br/>(only matching biome)"]
+            place_rarity["RarityFilter<br/>(rarity threshold)"]
+            place_env_scan["EnvironmentScan<br/>(probe surface)"]
+
+            place_in --> place_count --> place_square --> place_heightmap --> place_height_range --> place_biome --> place_rarity --> place_env_scan
+            place_env_scan --> place_out[BlockPos Stream]
+        end
+
+        Feature_Steps -.-> Placement_Pipeline
+
+        place_out --> feature_exec["Execute Feature<br/>at BlockPos<br/>@block-level"]
     end
 
+    biome_out -.-> Feature_Placement
+    heightmap_out --> Feature_Placement
+    final_chunk --> Feature_Placement
+
+    feature_exec --> feature_out["Placed Block<br/>(Tree, decoration,<br/>terrain feature)"]
+
+    class Feature_Placement wrapper
+    class place_count,place_square,place_heightmap,place_biome,place_rarity,place_env_scan transform
+    class feature_exec transform
+
+    %% FEATURE TYPES BY STAGE
+    feature_out --> feature_types["[Feature Types by Step]<br/>Trees: OAK, BIRCH, SPRUCE, JUNGLE<br/>Vegetation: FLOWERS, GRASS, KELP<br/>Terrain: ICE_SPIKES, DRIPSTONE, SCULK"]
+
+    %% MERGE TO FINAL
+    feature_types --> final_chunk_decorated["[Final Chunk<br/>with Features]"]
+
     class Final_Output wrapper
+
+    %% STAGE 12: FINAL OUTPUT
+    subgraph Final_Output["✅ Final Chunk Output"]
+        direction LR
+        final_chunk_decorated --> prototchunk["ProtoChunk<br/>(ChunkAccess wrapper)<br/>16×16×384 blocks"]
+        prototchunk --> ready["Ready for:<br/>- Structures (if enabled)<br/>- Entity Spawning<br/>- Persistence"]
+    end
 
     %% RESOLUTION LEGEND
     subgraph Legend["📊 Resolution Levels Throughout Pipeline"]
