@@ -22,7 +22,14 @@ def test_vt_root_points_to_repo_root() -> None:
     assert run_worker.RunWorker._VT_ROOT == expected
     # also verify that the repo root contains the expected top-level markers
     assert (expected / "pyproject.toml").exists(), "repo root missing pyproject.toml"
-    assert (expected / "VoxelTree").is_dir(), "repo root missing VoxelTree package directory"
+    # The package directory moved from `VoxelTree/` to `voxel_tree/` as part of
+    # the new-architecture refactor. Accept either layout for backwards
+    # compatibility.
+    assert (expected / "VoxelTree").is_dir() or (
+        expected / "voxel_tree"
+    ).is_dir(), (
+        "repo root missing VoxelTree package directory (expected either VoxelTree/ or voxel_tree/)"
+    )
 
 
 def test_progress_signal_parsed(monkeypatch):

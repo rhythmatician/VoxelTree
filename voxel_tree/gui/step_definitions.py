@@ -624,7 +624,7 @@ def _train_terrain_shaper_run(_: dict[str, Any]) -> None:
 
 
 def _build_pairs_sparse_octree_run(p: dict[str, Any]) -> None:
-    from VoxelTree.voxel_tree.tasks.octree.build_octree_pairs import (
+    from voxel_tree.tasks.octree.build_pairs import (
         main as pairs_main,
     )  # noqa: PLC0415
 

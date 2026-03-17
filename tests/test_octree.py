@@ -23,9 +23,9 @@ from pathlib import Path
 from typing import Any, Dict
 
 # Ensure we import the correct inner package even when running tests from repo root.
-# The repo structure is: <repo>/VoxelTree/VoxelTree (package) and tests live in <repo>/VoxelTree/tests.
+# The repo structure is: <repo>/VoxelTree/voxel_tree (package) and tests live in <repo>/VoxelTree/tests.
 ROOT = Path(__file__).resolve().parents[1]
-INTERNAL_PKG = ROOT / "VoxelTree"
+INTERNAL_PKG = ROOT / "voxel_tree"
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
@@ -50,7 +50,7 @@ import pytest
 import torch
 
 try:
-    from VoxelTree.voxel_tree.tasks.octree.build_octree_pairs import (
+    from voxel_tree.tasks.octree.build_pairs import (
         build_section_index,
         child_coords_from_parent,
         extract_octant,
@@ -58,12 +58,12 @@ try:
         parent_coords_and_octant,
     )
 except ImportError:
-    # Fall back to loading the script directly by path, which is useful when
-    # running tests in environments where `VoxelTree.scripts` is not importable.
+    # Fall back to loading the module directly by path. This is useful when
+    # running tests in environments where the package import paths are not set up.
     import importlib.util
 
-    bp_path = INTERNAL_PKG / "scripts" / "build_octree_pairs.py"
-    spec = importlib.util.spec_from_file_location("build_octree_pairs", str(bp_path))
+    bp_path = INTERNAL_PKG / "tasks" / "octree" / "build_pairs.py"
+    spec = importlib.util.spec_from_file_location("build_pairs", str(bp_path))
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     build_section_index = mod.build_section_index
@@ -439,7 +439,7 @@ class TestStackAndSave:
         }
 
     def test_empty_pairs_returns_zero_and_warns(self, tmp_path: Path, capsys: Any) -> None:
-        from VoxelTree.voxel_tree.tasks.octree.build_octree_pairs import stack_and_save
+        from voxel_tree.tasks.octree.build_pairs import stack_and_save
 
         out_file = tmp_path / "out.npz"
         count = stack_and_save([], out_file)
@@ -448,7 +448,7 @@ class TestStackAndSave:
         assert "WARNING" in captured.out
 
     def test_ascii_arrow_in_output(self, tmp_path: Path, capsys: Any) -> None:
-        from VoxelTree.voxel_tree.tasks.octree.build_octree_pairs import stack_and_save
+        from voxel_tree.tasks.octree.build_pairs import stack_and_save
 
         out_file = tmp_path / "out.npz"
         pair = self._make_fake_pair()
@@ -465,7 +465,7 @@ class TestBuildFunctionOutput:
 
     def test_build_prints_ascii_arrows(self, tmp_path: Path, capsys: Any, monkeypatch: Any) -> None:
         """Patch helpers so build() runs without touching disk."""
-        from VoxelTree.voxel_tree.tasks.octree.build_octree_pairs import build
+        from voxel_tree.tasks.octree.build_pairs import build
 
         # fake section indices always non-empty
         monkeypatch.setattr(
@@ -514,7 +514,7 @@ class TestBuildFunctionOutput:
 
     def test_build_creates_sparse_octree_pairs(self, tmp_path: Path) -> None:
         """build() should produce a sparse_octree_pairs.npz with expected keys/shapes."""
-        from VoxelTree.voxel_tree.tasks.octree.build_octree_pairs import build
+        from voxel_tree.tasks.octree.build_pairs import build
 
         data_dir = tmp_path / "data"
         out_dir = tmp_path / "out"

@@ -214,12 +214,12 @@ def phase3_export(
 def phase4_deploy(
     export_dir: Path, dest: Path | None = None, models: list[str] | None = None
 ) -> bool:
-    """Phase 4: Deploy ONNX models to LODiffusion using deploy_models.py.
+    """Phase 4: Deploy ONNX models to LODiffusion.
 
-    Reads pipeline_manifest.json from export_dir to know which files to copy.
-    If ``models`` is provided, the deploy script will be invoked with
-    ``--models`` to limit which submodels are copied.  Returns True on
-    success.
+    Deploy is split into per-model scripts (init/refine/leaf). Each model has a
+    dedicated deploy entry point so the GUI can run them independently.
+
+    If ``models`` is None, all submodels will be deployed.
     """
     print()
     print("=" * 70)
@@ -227,16 +227,22 @@ def phase4_deploy(
     print("=" * 70)
     print()
 
-    from voxel_tree.tasks.deploy_models import main as _deploy_main
+    if models is None:
+        models = ["init", "refine", "leaf"]
 
-    deploy_args = [str(export_dir)]
-    if dest is not None:
-        deploy_args.extend(["--dest", str(dest)])
+    def _deploy_model(model_name: str) -> None:
+        module_name = f"voxel_tree.tasks.octree.deploy_{model_name}"
+        module = __import__(module_name, fromlist=["main"])
+        deploy_main = getattr(module, "main")
 
-    if models:
-        deploy_args += ["--models"] + list(models)
+        args: list[str] = [str(export_dir)]
+        if dest is not None:
+            args += ["--dest", str(dest)]
+        deploy_main(args)
+
     try:
-        _deploy_main(deploy_args)
+        for model in models:
+            _deploy_model(model)
         return True
     except Exception as exc:  # noqa: BLE001
         print("ERROR: Deploy raised exception: %s" % exc)

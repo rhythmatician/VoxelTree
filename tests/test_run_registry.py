@@ -74,7 +74,7 @@ def test_phase_export_and_deploy_args(monkeypatch, tmp_path):
     # patch the underlying script entrypoints that phase3_export/phase4_deploy
     # import dynamically
     monkeypatch.setattr("voxel_tree.tasks.octree.export.main", fake_export_main)
-    monkeypatch.setattr("voxel_tree.tasks.deploy_models.main", fake_deploy_main)
+    monkeypatch.setattr("voxel_tree.tasks.octree.deploy_refine.main", fake_deploy_main)
 
     phase3 = __import__(
         "voxel_tree.preprocessing.pipeline", fromlist=["phase3_export"]
@@ -101,8 +101,8 @@ def test_phase_export_and_deploy_args(monkeypatch, tmp_path):
 
     # call deploy with filtering
     phase4(tmp_path, tmp_path / "dest", models=["refine"])
-    assert "--models" in called["deploy"]
-    assert "refine" in called["deploy"]
+    assert called["deploy"][0] == str(tmp_path)
+    assert "--dest" in called["deploy"]
 
 
 def test_reconcile_marks_early_steps(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):

@@ -49,7 +49,7 @@ from voxel_tree.tasks.octree.models import (
     create_leaf_model,
     create_refine_model,
 )
-from VoxelTree.voxel_tree.tasks.octree.prior_init import init_models_from_train_priors
+from voxel_tree.tasks.octree.prior_init import init_models_from_train_priors
 
 # Default paths
 _PKG_DIR = Path(__file__).resolve().parent.parent  # VoxelTree/
