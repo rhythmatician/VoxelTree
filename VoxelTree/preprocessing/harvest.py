@@ -402,6 +402,82 @@ def freeze_world(rcon: RconClient) -> None:
     print("  World frozen.")
 
 
+def _run_dumpnoise(rcon: RconClient, radius_blocks: int, timeout: int) -> None:
+    """Run the /dumpnoise stage1 + sparse_root sequence via RCON.
+
+    This mirrors :func:`VoxelTree.preprocessing.cli.cmd_dumpnoise` but reuses
+    the existing RCON connection from ``run_harvest`` so the harvest pipeline
+    can produce all training noise dumps in one shot.
+    """
+
+    chunk_radius = max(1, (radius_blocks + 15) // 16)
+    total_chunks = (2 * chunk_radius + 1) ** 2
+    total_sections = total_chunks * 24  # 24 sections per chunk column
+
+    print("\n  Killing all entities to reduce heap pressure...")
+    kill_resp = rcon.command("kill @e[type=!player]")
+    kill_text = kill_resp.strip() or "(no response)"
+    try:
+        enc = getattr(sys.stdout, "encoding", None) or "utf-8"
+        kill_text = kill_text.encode(enc, errors="replace").decode(enc)
+    except Exception:
+        kill_text = kill_text.encode("utf-8", errors="replace").decode("utf-8")
+    print(f"  Server: {kill_text}")
+    print("  Sleeping 5 s for GC to reclaim freed entity memory...")
+    time.sleep(5)
+
+    print("\n  [1/2] Dumping Stage1 noise...")
+    cmd_str = f"dumpnoise stage1 {chunk_radius}"
+    resp = rcon.command(cmd_str)
+    resp_text = resp.strip() or "(no response)"
+    try:
+        enc = getattr(sys.stdout, "encoding", None) or "utf-8"
+        resp_text = resp_text.encode(enc, errors="replace").decode(enc)
+    except Exception:
+        resp_text = resp_text.encode("utf-8", errors="replace").decode("utf-8")
+    print(f"        Server: {resp_text}")
+
+    start = time.time()
+    interval = 5
+    while time.time() - start < timeout:
+        time.sleep(interval)
+        elapsed = time.time() - start
+        estimate = total_chunks / 200.0 + 5.0
+        if elapsed >= estimate:
+            break
+        print(
+            f"        [{time.strftime('%H:%M:%S')}] Waiting "
+            f"(~{int(estimate - elapsed)}s remaining)..."
+        )
+
+    print("\n  [2/2] Dumping SparseRoot noise...")
+    cmd_str = f"dumpnoise sparse_root {chunk_radius}"
+    resp = rcon.command(cmd_str)
+    resp_text = resp.strip() or "(no response)"
+    try:
+        enc = getattr(sys.stdout, "encoding", None) or "utf-8"
+        resp_text = resp_text.encode(enc, errors="replace").decode(enc)
+    except Exception:
+        resp_text = resp_text.encode("utf-8", errors="replace").decode("utf-8")
+    print(f"        Server: {resp_text}")
+
+    start = time.time()
+    while time.time() - start < timeout:
+        time.sleep(interval)
+        elapsed = time.time() - start
+        estimate = total_sections / 400.0 + 5.0
+        if elapsed >= estimate:
+            break
+        print(
+            f"        [{time.strftime('%H:%M:%S')}] Waiting "
+            f"(~{int(estimate - elapsed)}s remaining)..."
+        )
+
+    print("\n  Noise consolidation complete:")
+    print(f"    [OK] Stage1:    <game_dir>/stage1_dumps/ ({total_chunks:,} files)")
+    print(f"    [OK] SparseRoot: <game_dir>/sparse_root_dumps/ ({total_sections:,} files)")
+
+
 # ---------------------------------------------------------------------------
 # Main pipeline
 # ---------------------------------------------------------------------------
@@ -419,6 +495,7 @@ def run_harvest(args: argparse.Namespace) -> None:
     print(f"  Voxy DB:  {args.voxy_dir}")
     print(sep)
 
+    rcon = None
     try:
         rcon = RconClient(args.host, args.rcon_port, args.password, timeout=15.0)
         rcon.connect()
@@ -514,18 +591,21 @@ def run_harvest(args: argparse.Namespace) -> None:
             print("  DB locations:")
             for db in dbs:
                 print(f"    {db}")
-            print("\n  Next steps:")
-            print("    python -m VoxelTree.preprocessing.cli dataprep --from-step extract-octree")
-            print(sep)
-        else:
-            print("\n  Harvest may be incomplete. Check Voxy DB manually.")
+
+        if not args.skip_dumpnoise:
+            print(f"\n{'─' * 65}")
+            print("  STEP 5: Generating noise dumps (dumpnoise)")
+            print(f"{'─' * 65}")
+            _run_dumpnoise(rcon, args.radius, timeout=args.voxy_timeout)
 
     finally:
-        rcon.close()
+        if rcon is not None:
+            rcon.close()
 
 
 def run_monitor(args: argparse.Namespace) -> None:
-    """Just monitor the Voxy DB size — no server interaction."""
+    """Just monitor Voxy DB growth — no harvesting steps."""
+
     voxy_dir = Path(args.voxy_dir)
     wait_for_voxy_db(
         voxy_dir,
@@ -608,6 +688,11 @@ def main() -> None:
         "--skip-pregen",
         action="store_true",
         help="Skip Chunky pregeneration (chunks already exist)",
+    )
+    parser.add_argument(
+        "--skip-dumpnoise",
+        action="store_true",
+        help="Skip dumping noise outputs (stage1 + sparse_root)",
     )
     parser.add_argument(
         "--spiral-only",

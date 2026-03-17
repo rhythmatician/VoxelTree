@@ -619,6 +619,7 @@ MODEL_TRACKS: list[ModelTrack] = [
         train_factory=_train_sparse_root_cmd,
         export_factory=_export_sparse_root_cmd,
         deploy_factory=_deploy_sparse_root_cmd,
+        build_pairs_consumes=frozenset({"voxy_db", "noise_dumps"}),
         extra_steps=[
             StepDef(
                 id="distill_sparse_root",
@@ -672,7 +673,7 @@ MODEL_TRACKS: list[ModelTrack] = [
                 track="stage1",
                 phase="train_terrain_shaper",
                 produces=frozenset({"terrain_shaper_checkpoint"}),
-                consumes=frozenset({"stage1_distilled"}),
+                consumes=frozenset({"noise_dumps"}),
             ),
         ],
     ),
@@ -692,17 +693,8 @@ _DATA_ACQ_STEPS: list[StepDef] = [
         cmd_factory=_harvest_cmd,
         server_required=True,
         phase="data_acq",
-        produces=frozenset({"voxy_db"}),
+        produces=frozenset({"voxy_db", "noise_dumps"}),
         consumes=frozenset(),
-    ),
-    StepDef(
-        id="dumpnoise",
-        label="Noise",
-        prereqs=[],
-        cmd_factory=_dumpnoise_cmd,
-        server_required=True,
-        phase="data_acq",
-        produces=frozenset({"noise_dumps"}),
     ),
     StepDef(
         id="extract_octree",
