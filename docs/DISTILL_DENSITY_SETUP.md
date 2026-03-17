@@ -45,7 +45,7 @@ The density NN distillation workflow has been fully integrated into the stage1_d
 
 ### Via CLI
 ```bash
-python -m VoxelTree.scripts.distill_density_nn \
+python -m VoxelTree.scripts.stage1.distill_density \
   --teacher unet \
   --student sep \
   --epochs 120 \
@@ -56,7 +56,7 @@ python -m VoxelTree.scripts.distill_density_nn \
 
 ### Programmatic (Python)
 ```python
-from VoxelTree.core.distill_density_nn import distill_student
+from VoxelTree.scripts.stage1.distill_density import distill_student
 
 result = distill_student(
     teacher_name='unet',
