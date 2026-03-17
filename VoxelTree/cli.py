@@ -126,8 +126,8 @@ def _cmd_show_step(step_id: str) -> None:
 
 
 def _cmd_run_step(step_id: str, profile_name: str | None) -> None:
-    """Build the step's command via its cmd_factory and exec it."""
-    import subprocess  # noqa: PLC0415
+    """Run a pipeline step directly by calling its run_fn."""
+    import os  # noqa: PLC0415
 
     from VoxelTree.gui.step_definitions import STEP_BY_ID  # noqa: PLC0415
 
@@ -147,13 +147,11 @@ def _cmd_run_step(step_id: str, profile_name: str | None) -> None:
         sys.exit(1)
 
     profile = _load_profile(name)
-    cmd = step.cmd_factory(profile)
 
     print(f"[voxel-tree] step={step_id!r}  profile={name!r}")
-    print(f"[voxel-tree] {' '.join(cmd)}")
 
-    result = subprocess.run(cmd, cwd=str(_repo_root()))
-    sys.exit(result.returncode)
+    os.chdir(str(_repo_root()))
+    step.run_fn(profile)
 
 
 def _cmd_server(action: str, role: str | None) -> None:

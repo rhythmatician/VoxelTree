@@ -478,7 +478,7 @@ def _export_flat_weights(model: Stage1DensityMLP, out_dir: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(
         description="Train Stage 1 density MLP from /dumpnoise stage1 data."
     )
@@ -514,7 +514,7 @@ def parse_args() -> argparse.Namespace:
         help="Early-stop when val MSE < this threshold  (default: 0.001)",
     )
     p.add_argument("--seed", type=int, default=42, help="Random seed  (default: 42)")
-    args = p.parse_args()
+    args = p.parse_args(argv)
 
     # Apply profile defaults (before hard-coded fallbacks below)
     if args.profile:
@@ -543,10 +543,12 @@ def parse_args() -> argparse.Namespace:
     return args
 
 
-def main():  # Fix Windows terminal encoding for UTF-8 characters (e.g., emoji from torch.onnx)
+def main(
+    argv: list[str] | None = None,
+):  # Fix Windows terminal encoding for UTF-8 characters (e.g., emoji from torch.onnx)
     import io
 
-    args = parse_args()
+    args = parse_args(argv)
     if sys.stdout.encoding != "utf-8":
         sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
 

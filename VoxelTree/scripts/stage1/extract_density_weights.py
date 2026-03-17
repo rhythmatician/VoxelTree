@@ -192,7 +192,7 @@ def copy_to_lodiffusion(files: list[tuple[Path, str]], lodiffusion_models: Path)
 # ---------------------------------------------------------------------------
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(
         description="Extract Stage 1 MLP weights and deploy to LODiffusion."
     )
@@ -207,11 +207,11 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--no-deploy", action="store_true", help="Skip copying files to LODiffusion resources"
     )
-    return p.parse_args()
+    return p.parse_args(argv)
 
 
-def main() -> None:
-    args = parse_args()
+def main(argv: list[str] | None = None) -> None:
+    args = parse_args(argv)
     model_dir = Path(args.model_dir)
     out_dir = Path(args.out_dir) if args.out_dir else model_dir
 

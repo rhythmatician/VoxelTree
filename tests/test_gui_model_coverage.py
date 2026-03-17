@@ -76,56 +76,27 @@ class TestModelTrackCoverage:
                 )
 
     def test_all_steps_have_callable_factories(self):
-        """Every step must have a callable cmd_factory."""
+        """Every step must have a callable run_fn."""
         for step in PIPELINE_STEPS:
-            assert callable(step.cmd_factory), (
-                f"Step '{step.id}' cmd_factory is not callable: " f"{step.cmd_factory}"
+            assert callable(step.run_fn), (
+                f"Step '{step.id}' run_fn is not callable: " f"{step.run_fn}"
             )
 
-    def test_all_steps_factory_returns_list(self):
-        """Verify each factory can be called and returns a list of strings."""
-        test_profile = {
-            "name": "test_profile",
-            "data": {
-                "data_dir": "test_data",
-                "noise_dump_dir": "test_noise",
-                "stage1_dump_dir": "test_stage1",
-                "val_split": 0.1,
-            },
-            "train": {
-                "output_dir": "test_output",
-                "epochs": 5,
-                "batch_size": 2,
-                "lr": 1e-4,
-                "device": "cpu",
-                "sparse_root_variant": "fast",
-                "sparse_root_hidden": 80,
-            },
-            "extract": {"output_dir": "test_extract"},
-            "distill": {
-                "teacher": "unet",
-                "student": "sep",
-                "epochs": 10,
-                "alpha": 0.5,
-                "lr": 2e-3,
-            },
-            "export": {"output_dir": "test_export"},
-            "deploy": {"target_dir": "test_deploy"},
-        }
+    def test_all_steps_run_fn_callable_with_profile(self):
+        """Verify each run_fn can be called without import errors.
+
+        We cannot truly run the steps (they need real data/servers), but we
+        verify the function object is callable and accepts a dict argument
+        by inspecting its signature.
+        """
+        import inspect
 
         for step in PIPELINE_STEPS:
-            try:
-                cmd = step.cmd_factory(test_profile)
-                assert isinstance(cmd, list), (
-                    f"Step '{step.id}' factory returned {type(cmd)}, " "expected list"
-                )
-                assert len(cmd) > 0, f"Step '{step.id}' factory returned empty list"
-                assert all(isinstance(c, str) for c in cmd), (
-                    f"Step '{step.id}' factory returned non-string elements: "
-                    f"{[type(c) for c in cmd]}"
-                )
-            except Exception as e:
-                pytest.fail(f"Step '{step.id}' factory raised {type(e).__name__}: {e}")
+            sig = inspect.signature(step.run_fn)
+            params = list(sig.parameters.values())
+            assert (
+                len(params) >= 1
+            ), f"Step '{step.id}' run_fn must accept at least one parameter (profile dict)"
 
     def test_track_factories_defined_for_phases(self):
         """Validate that tracks have required factories for their model phases.
@@ -251,14 +222,8 @@ class TestArtifactGraph:
 
     def test_all_steps_declare_artifacts(self):
         """Every step (except terminal loopback stubs) should produce something."""
-        no_output = [
-            s.id
-            for s in PIPELINE_STEPS
-            if not s.produces and s.phase != "loopback"
-        ]
-        assert not no_output, (
-            f"Steps with no produces (add artifact declarations): {no_output}"
-        )
+        no_output = [s.id for s in PIPELINE_STEPS if not s.produces and s.phase != "loopback"]
+        assert not no_output, f"Steps with no produces (add artifact declarations): {no_output}"
 
     def test_no_duplicate_producers(self):
         """Each artifact name should be produced by exactly one step."""
@@ -267,9 +232,7 @@ class TestArtifactGraph:
         for step in PIPELINE_STEPS:
             for art in step.produces:
                 if art in seen:
-                    dupes.append(
-                        f"'{art}' produced by both '{seen[art]}' and '{step.id}'"
-                    )
+                    dupes.append(f"'{art}' produced by both '{seen[art]}' and '{step.id}'")
                 seen[art] = step.id
         assert not dupes, "Duplicate artifact producers:\n" + "\n".join(dupes)
 
@@ -281,8 +244,7 @@ class TestArtifactGraph:
             missing = step.consumes - all_produced
             if missing:
                 failures.append(
-                    f"Step '{step.id}' consumes {missing} "
-                    f"but no step produces them"
+                    f"Step '{step.id}' consumes {missing} " f"but no step produces them"
                 )
         assert not failures, "Broken artifact edges:\n" + "\n".join(failures)
 
@@ -302,16 +264,13 @@ class TestArtifactGraph:
                     orphaned.append(f"{step.id} → {art}")
 
         terminal_suffixes = ("_deployed", "_checkpoint")
-        real_orphans = [
-            o for o in orphaned if not any(o.endswith(s) for s in terminal_suffixes)
-        ]
+        real_orphans = [o for o in orphaned if not any(o.endswith(s) for s in terminal_suffixes)]
 
         if real_orphans:
             import warnings
 
             warnings.warn(
-                f"Artifacts produced but never consumed "
-                f"(possible dead ends): {real_orphans}",
+                f"Artifacts produced but never consumed " f"(possible dead ends): {real_orphans}",
                 stacklevel=1,
             )
 
@@ -365,20 +324,14 @@ class TestArtifactGraph:
         assert not missing_steps, f"Expected steps missing from pipeline: {missing_steps}"
 
         extra_steps = set(actual) - set(expected)
-        assert not extra_steps, (
-            f"Unexpected new steps (add to snapshot): {extra_steps}"
-        )
+        assert not extra_steps, f"Unexpected new steps (add to snapshot): {extra_steps}"
 
         mismatches: list[str] = []
         for step_id, exp in sorted(expected.items()):
             act = actual[step_id]
             if sorted(act) != sorted(exp):
-                mismatches.append(
-                    f"  {step_id}: expected {exp}, got {act}"
-                )
-        assert not mismatches, (
-            "Auto-wired prereqs differ from snapshot:\n" + "\n".join(mismatches)
-        )
+                mismatches.append(f"  {step_id}: expected {exp}, got {act}")
+        assert not mismatches, "Auto-wired prereqs differ from snapshot:\n" + "\n".join(mismatches)
 
     def test_no_circular_prerequisites(self):
         """DAG must be acyclic — detect cycles in the prereq graph."""
@@ -393,9 +346,7 @@ class TestArtifactGraph:
                     children[prereq].append(step.id)
                     in_degree[step.id] += 1
 
-        queue: deque[str] = deque(
-            sid for sid, deg in in_degree.items() if deg == 0
-        )
+        queue: deque[str] = deque(sid for sid, deg in in_degree.items() if deg == 0)
         visited = 0
         while queue:
             node = queue.popleft()

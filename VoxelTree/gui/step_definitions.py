@@ -54,7 +54,7 @@ from __future__ import annotations
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable
+from typing import Callable
 
 # ---------------------------------------------------------------------------
 # StepDef — one node in the pipeline DAG
@@ -73,7 +73,7 @@ class StepDef:
     prereqs      : IDs of steps that must succeed before this one can run.
                    **Auto-computed** by ``_wire_prereqs()`` from the
                    produces / consumes artifact graph.  Do not set manually.
-    cmd_factory  : Callable(profile_dict) → list[str] passed to subprocess.
+    run_fn       : Callable(profile_dict) → None; runs the step directly.
     enabled      : False → faded stub node; not runnable.
     server_required : True → step sends RCON commands; needs Fabric server up.
     client_required : True → step needs a Minecraft client (DataHarvester bot).
@@ -90,7 +90,7 @@ class StepDef:
     id: str
     label: str
     prereqs: list[str]
-    cmd_factory: Callable[[dict], list[str]]
+    run_fn: Callable[[dict], None]
     enabled: bool = True
     server_required: bool = False
     client_required: bool = False
@@ -119,7 +119,7 @@ class ModelTrack:
     label      : Human-readable name shown in swim-lane headers.
     swim_lane_color : Hex background tint for the model's DAG row.
     build_pairs_factory / train_factory / export_factory / deploy_factory :
-                 CMD factory for each phase.  ``None`` → the step is generated
+                 Step runner for each phase.  ``None`` → the step is generated
                  as an ``enabled=False`` stub (renders greyed-out).
     id_overrides : Maps phase → step_id when the model predates ModelTrack and
                  must preserve legacy run-state JSON keys for continuity.
@@ -135,10 +135,10 @@ class ModelTrack:
     label: str
     swim_lane_color: str
 
-    build_pairs_factory: Callable[[dict], list[str]] | None = None
-    train_factory: Callable[[dict], list[str]] | None = None
-    export_factory: Callable[[dict], list[str]] | None = None
-    deploy_factory: Callable[[dict], list[str]] | None = None
+    build_pairs_factory: Callable[[dict], None] | None = None
+    train_factory: Callable[[dict], None] | None = None
+    export_factory: Callable[[dict], None] | None = None
+    deploy_factory: Callable[[dict], None] | None = None
 
     # Override step IDs for backward compat with pre-existing run-state JSONs.
     # Leave empty for new tracks — default IDs are ``{phase}_{track_id}``.
@@ -183,7 +183,7 @@ class ModelTrack:
                 id=bp,
                 label=f"P·{short}",
                 prereqs=[],
-                cmd_factory=self.build_pairs_factory or _stub_cmd,
+                run_fn=self.build_pairs_factory or _stub_run,
                 enabled=self.build_pairs_factory is not None,
                 track=tid,
                 phase="build_pairs",
@@ -194,7 +194,7 @@ class ModelTrack:
                 id=tr,
                 label=f"T·{short}",
                 prereqs=[],
-                cmd_factory=self.train_factory or _stub_cmd,
+                run_fn=self.train_factory or _stub_run,
                 enabled=self.train_factory is not None,
                 track=tid,
                 phase="train",
@@ -205,7 +205,7 @@ class ModelTrack:
                 id=ex,
                 label=f"E·{short}",
                 prereqs=[],
-                cmd_factory=self.export_factory or _stub_cmd,
+                run_fn=self.export_factory or _stub_run,
                 enabled=self.export_factory is not None,
                 track=tid,
                 phase="export",
@@ -216,7 +216,7 @@ class ModelTrack:
                 id=dp,
                 label=f"D·{short}",
                 prereqs=[],
-                cmd_factory=self.deploy_factory or _stub_cmd,
+                run_fn=self.deploy_factory or _stub_run,
                 enabled=self.deploy_factory is not None,
                 track=tid,
                 phase="deploy",
@@ -233,18 +233,9 @@ class ModelTrack:
 # ---------------------------------------------------------------------------
 
 
-def _python() -> str:
-    return sys.executable
-
-
-def _vt_root() -> Path:
-    """Absolute path to the VoxelTree repo root (3 levels up from this file)."""
-    return Path(__file__).resolve().parent.parent.parent
-
-
-def _stub_cmd(_p: dict) -> list[str]:
-    """Placeholder factory for steps not yet implemented."""
-    return [_python(), "-c", "raise NotImplementedError('step not yet implemented')"]
+def _stub_run(_p: dict) -> None:
+    """Placeholder for steps not yet implemented."""
+    raise NotImplementedError("step not yet implemented")
 
 
 def _wire_prereqs(steps: list[StepDef]) -> None:
@@ -308,41 +299,39 @@ def _wire_prereqs(steps: list[StepDef]) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Command factories — Data Acquisition
+# Step runners — Data Acquisition
 # ---------------------------------------------------------------------------
 
 
-def _dumpnoise_cmd(p: dict) -> list[str]:
-    world = p.get("world", {})
+def _dumpnoise_run(p: dict) -> None:
     from VoxelTree.gui.server_manager import get_rcon_settings  # noqa: PLC0415
+    from VoxelTree.preprocessing.cli import main as cli_main  # noqa: PLC0415
 
+    world = p.get("world", {})
     rcon = get_rcon_settings()
-    # Use profile rcon.timeout so large-radius dumps do not time out.
     rcon_timeout = p.get("rcon", {}).get("timeout", 3600)
-    return [
-        _python(),
-        "-m",
-        "VoxelTree.preprocessing.cli",
-        "dumpnoise",
-        "--radius",
-        str(world.get("radius", 2048)),
-        "--password",
-        str(rcon["password"]),
-        "--host",
-        str(rcon["host"]),
-        "--port",
-        str(rcon["port"]),
-        "--timeout",
-        str(rcon_timeout),
-    ]
+    cli_main(
+        [
+            "dumpnoise",
+            "--radius",
+            str(world.get("radius", 2048)),
+            "--password",
+            str(rcon["password"]),
+            "--host",
+            str(rcon["host"]),
+            "--port",
+            str(rcon["port"]),
+            "--timeout",
+            str(rcon_timeout),
+        ]
+    )
 
 
-def _extract_octree_cmd(p: dict) -> list[str]:
+def _extract_octree_run(p: dict) -> None:
+    from VoxelTree.preprocessing.cli import main as cli_main  # noqa: PLC0415
+
     data = p.get("data", {})
-    cmd = [
-        _python(),
-        "-m",
-        "VoxelTree.preprocessing.cli",
+    argv = [
         "dataprep",
         "--from-step",
         "extract-octree",
@@ -350,82 +339,65 @@ def _extract_octree_cmd(p: dict) -> list[str]:
         str(data.get("voxy_dir", "../LODiffusion/run/saves")),
     ]
     if data.get("data_dir"):
-        cmd += ["--data-dir", str(data["data_dir"])]
+        argv += ["--data-dir", str(data["data_dir"])]
     if data.get("max_sections"):
-        cmd += ["--max-sections", str(data["max_sections"])]
+        argv += ["--max-sections", str(data["max_sections"])]
     if data.get("min_solid"):
-        cmd += ["--min-solid", str(data["min_solid"])]
-    return cmd
+        argv += ["--min-solid", str(data["min_solid"])]
+    cli_main(argv)
 
 
-def _column_heights_cmd(p: dict) -> list[str]:
+def _column_heights_run(p: dict) -> None:
+    from VoxelTree.preprocessing.cli import main as cli_main  # noqa: PLC0415
+
     data = p.get("data", {})
-    cmd = [
-        _python(),
-        "-m",
-        "VoxelTree.preprocessing.cli",
-        "dataprep",
-        "--from-step",
-        "column-heights-octree",
-    ]
+    argv = ["dataprep", "--from-step", "column-heights-octree"]
     if data.get("data_dir"):
-        cmd += ["--data-dir", str(data["data_dir"])]
+        argv += ["--data-dir", str(data["data_dir"])]
     if data.get("noise_dump_dir"):
-        cmd += ["--noise-dump-dir", str(data["noise_dump_dir"])]
-    return cmd
+        argv += ["--noise-dump-dir", str(data["noise_dump_dir"])]
+    cli_main(argv)
 
 
-def _pregen_cmd(p: dict) -> list[str]:
-    """Chunky pregeneration — generates Minecraft chunks on the server.
-
-    Runs the harvest script in ``--pregen-only`` mode: freezes the world,
-    starts Chunky, waits for completion, then exits.  Requires only the
-    Fabric server; no Minecraft client is needed.
-    """
-    world = p.get("world", {})
+def _pregen_run(p: dict) -> None:
+    """Chunky pregeneration — generates chunks on the server."""
     from VoxelTree.gui.server_manager import get_rcon_settings  # noqa: PLC0415
+    from VoxelTree.preprocessing.harvest import main as harvest_main  # noqa: PLC0415
 
+    world = p.get("world", {})
     rcon = get_rcon_settings()
     rcon_timeout = p.get("rcon", {}).get("timeout", 7200)
-    return [
-        _python(),
-        "-m",
-        "VoxelTree.preprocessing.harvest",
-        "--pregen-only",
-        "--radius",
-        str(world.get("radius", 2048)),
-        "--password",
-        str(rcon["password"]),
-        "--rcon-port",
-        str(rcon["port"]),
-        "--chunky-timeout",
-        str(rcon_timeout),
-    ]
+    harvest_main(
+        [
+            "--pregen-only",
+            "--radius",
+            str(world.get("radius", 2048)),
+            "--password",
+            str(rcon["password"]),
+            "--rcon-port",
+            str(rcon["port"]),
+            "--chunky-timeout",
+            str(rcon_timeout),
+        ]
+    )
 
 
-def _harvest_cmd(p: dict) -> list[str]:
-    """Voxy data harvest — ingests pre-generated chunks into client-side Voxy.
-
-    Requires both the Fabric server (for RCON /ingestall) and a connected
-    Minecraft client running the DataHarvester + Voxy mods.  Assumes chunks
-    have already been pregenerated by the ``pregen`` step.
+def _harvest_run(p: dict) -> None:
+    """Voxy data harvest — ingests pre-generated chunks into Voxy.
 
     The voxy-dir is resolved in priority order:
       1. Explicit ``data.voxy_dir`` in the profile.
-      2. Derived from ``server_role`` via ServerRole.voxy_save_key
-         (e.g. train→localhost_25565, validate→localhost_25566).
-      3. harvest.py's own default (localhost_25565) when neither is set.
+      2. Derived from ``server_role`` via ServerRole.voxy_save_key.
+      3. harvest.py's own default when neither is set.
     """
+    from VoxelTree.gui.server_manager import get_rcon_settings  # noqa: PLC0415
+    from VoxelTree.preprocessing.harvest import main as harvest_main  # noqa: PLC0415
+
     world = p.get("world", {})
     data = p.get("data", {})
-    from VoxelTree.gui.server_manager import get_rcon_settings  # noqa: PLC0415
-
     rcon = get_rcon_settings()
     rcon_timeout = p.get("rcon", {}).get("timeout", 3600)
-    cmd = [
-        _python(),
-        "-m",
-        "VoxelTree.preprocessing.harvest",
+    argv = [
         "--skip-pregen",
         "--radius",
         str(world.get("radius", 2048)),
@@ -449,197 +421,176 @@ def _harvest_cmd(p: dict) -> list[str]:
             voxy_dir = str(MODRINTH_VOXY_SAVES / role.voxy_save_key)
 
     if voxy_dir:
-        cmd += ["--voxy-dir", str(voxy_dir)]
-    return cmd
+        argv += ["--voxy-dir", str(voxy_dir)]
+    harvest_main(argv)
 
 
 # ---------------------------------------------------------------------------
-# Command factories — Stage-1 density (tiny NN)
+# Step runners — Stage-1 density (tiny NN)
 # ---------------------------------------------------------------------------
 
 
-def _train_stage1_density_cmd(p: dict) -> list[str]:
+def _train_stage1_density_run(p: dict) -> None:
+    from VoxelTree.scripts.stage1.train_density import main as train_main  # noqa: PLC0415
+
     data = p.get("data", {})
     train = p.get("train", {})
-    cmd = [_python(), "scripts/stage1/train_density.py"]
+    argv: list[str] = []
     if data.get("stage1_dump_dir"):
-        cmd += ["--data-dir", str(data["stage1_dump_dir"])]
+        argv += ["--data-dir", str(data["stage1_dump_dir"])]
     if train.get("output_dir"):
-        cmd += ["--out-dir", str(train["output_dir"])]
+        argv += ["--out-dir", str(train["output_dir"])]
     if train.get("epochs") is not None:
-        cmd += ["--epochs", str(train["epochs"])]
+        argv += ["--epochs", str(train["epochs"])]
     if train.get("batch_size") is not None:
-        cmd += ["--batch-size", str(train["batch_size"])]
+        argv += ["--batch-size", str(train["batch_size"])]
     if train.get("lr") is not None:
-        cmd += ["--lr", str(train["lr"])]
+        argv += ["--lr", str(train["lr"])]
     if train.get("target_mse") is not None:
-        cmd += ["--target-mse", str(train["target_mse"])]
-    return cmd
+        argv += ["--target-mse", str(train["target_mse"])]
+    train_main(argv)
 
 
-def _extract_stage1_weights_cmd(p: dict) -> list[str]:
-    # Export weights only (do not deploy).  The deploy phase runs the same
-    # script without --no-deploy to push into LODiffusion resources.
+def _extract_stage1_weights_run(p: dict) -> None:
+    """Export weights only (do not deploy)."""
+    from VoxelTree.scripts.stage1.extract_density_weights import (
+        main as extract_main,
+    )  # noqa: PLC0415
+
     train = p.get("train", {})
     extract = p.get("extract", {})
-    cmd = [_python(), "scripts/stage1/extract_density_weights.py", "--no-deploy"]
+    argv = ["--no-deploy"]
     model_dir = train.get("output_dir")
     if model_dir:
-        cmd += ["--model-dir", str(model_dir)]
+        argv += ["--model-dir", str(model_dir)]
     if extract.get("output_dir"):
-        cmd += ["--out-dir", str(extract["output_dir"])]
-    return cmd
+        argv += ["--out-dir", str(extract["output_dir"])]
+    extract_main(argv)
 
 
-def _build_pairs_stage1_cmd(p: dict) -> list[str]:
-    """Validate that Stage1 noise dumps exist (stage1_dumps)."""
+def _build_pairs_stage1_run(p: dict) -> None:
+    """Validate that Stage-1 noise dumps exist."""
     data = p.get("data", {})
-    dump_dir = data.get("stage1_dump_dir", "stage1_dumps")
-    # Fail fast if there are no Stage1 dumps.
-    snippet = (
-        "import pathlib,sys; "
-        "p=pathlib.Path(%r); "
-        "files=list(p.glob('chunk_*.json')); "
-        "sys.exit(0 if files else (print(f'No Stage1 dumps found in {p}', file=sys.stderr), 1)[1])"
-        % str(dump_dir)
-    )
-    return [_python(), "-c", snippet]
+    dump_dir = Path(data.get("stage1_dump_dir", "stage1_dumps"))
+    files = list(dump_dir.glob("chunk_*.json"))
+    if not files:
+        print(f"No Stage1 dumps found in {dump_dir}", file=sys.stderr)
+        sys.exit(1)
 
 
-def _deploy_stage1_cmd(p: dict) -> list[str]:
+def _deploy_stage1_run(p: dict) -> None:
+    """Deploy weights to LODiffusion resources."""
+    from VoxelTree.scripts.stage1.extract_density_weights import (
+        main as extract_main,
+    )  # noqa: PLC0415
+
     train = p.get("train", {})
     extract = p.get("extract", {})
-    cmd = [_python(), "scripts/stage1/extract_density_weights.py"]
+    argv: list[str] = []
     model_dir = train.get("output_dir")
     if model_dir:
-        cmd += ["--model-dir", str(model_dir)]
+        argv += ["--model-dir", str(model_dir)]
     if extract.get("output_dir"):
-        cmd += ["--out-dir", str(extract["output_dir"])]
-    return cmd
+        argv += ["--out-dir", str(extract["output_dir"])]
+    extract_main(argv)
 
 
-def _distill_density_cmd(p: dict[str, Any]) -> list[str]:
+def _distill_density_run(p: dict) -> None:
+    from VoxelTree.scripts.stage1.distill_density import distill_student  # noqa: PLC0415
+
     train = p.get("train", {})
     distill = p.get("distill", {})
-    return [
-        _python(),
-        "scripts/stage1/distill_density.py",
-        "--teacher",
-        str(distill.get("teacher", "unet")),
-        "--student",
-        str(distill.get("student", "sep")),
-        "--epochs",
-        str(distill.get("epochs", 120)),
-        "--alpha",
-        str(distill.get("alpha", 0.5)),
-        "--lr",
-        str(distill.get("lr", 2e-3)),
-        "--device",
-        str(train.get("device", "auto")),
-    ]
+    distill_student(
+        teacher_name=distill.get("teacher", "unet"),
+        student_name=distill.get("student", "sep"),
+        epochs=distill.get("epochs", 120),
+        alpha=distill.get("alpha", 0.5),
+        lr=distill.get("lr", 2e-3),
+        device=train.get("device", "auto"),
+    )
 
 
-def _train_terrain_shaper_cmd(_: dict) -> list[str]:
-    """Train the TerrainShaper spline-approximation MLP (fixed internal settings)."""
-    return [_python(), "scripts/stage1/train_terrain_shaper.py"]
+def _train_terrain_shaper_run(_: dict) -> None:
+    """Train the TerrainShaper spline-approximation MLP."""
+    from VoxelTree.scripts.stage1.train_terrain_shaper import main as shaper_main  # noqa: PLC0415
+
+    shaper_main()
 
 
 # ---------------------------------------------------------------------------
-# Command factories — Sparse Root
+# Step runners — Sparse Root
 # ---------------------------------------------------------------------------
 
 
-def _build_pairs_sparse_root_cmd(p: dict) -> list[str]:
+def _build_pairs_sparse_root_run(p: dict) -> None:
+    from VoxelTree.scripts.build_octree_pairs import main as pairs_main  # noqa: PLC0415
+
     data = p.get("data", {})
-    cmd = [
-        _python(),
-        str(_vt_root() / "VoxelTree" / "scripts" / "build_octree_pairs.py"),
-        "--sparse-root",
-        "--val-split",
-        str(data.get("val_split", 0.1)),
-    ]
+    argv = ["--sparse-root", "--val-split", str(data.get("val_split", 0.1))]
     if data.get("data_dir"):
-        cmd += ["--data-dir", str(data["data_dir"])]
-    return cmd
+        argv += ["--data-dir", str(data["data_dir"])]
+    pairs_main(argv)
 
 
-def _train_sparse_root_cmd(p: dict) -> list[str]:
+def _train_sparse_root_run(p: dict) -> None:
+    from VoxelTree.scripts.sparse_root.train import train_sparse_root  # noqa: PLC0415
+
     data = p.get("data", {})
     train = p.get("train", {})
     data_dir = data.get("data_dir", "noise_training_data")
-    cmd = [
-        _python(),
-        "scripts/sparse_root/train.py",
-        "--data",
-        str(Path(data_dir) / "sparse_root_pairs.npz"),
-        "--model-variant",
-        str(train.get("sparse_root_variant", "fast")),
-        "--hidden",
-        str(train.get("sparse_root_hidden", 80)),
-        "--epochs",
-        str(train.get("epochs", 20)),
-        "--batch-size",
-        str(train.get("batch_size", 4)),
-        "--lr",
-        str(train.get("lr", 1e-4)),
-        "--device",
-        str(train.get("device", "auto")),
-    ]
-    if train.get("output_dir"):
-        cmd += ["--out", str(Path(train["output_dir"]) / "sparse_root_model.pt")]
-    return cmd
+    out_path = Path(train.get("output_dir", ".")) / "sparse_root_model.pt"
+    train_sparse_root(
+        data_path=Path(data_dir) / "sparse_root_pairs.npz",
+        out_path=out_path,
+        model_variant=train.get("sparse_root_variant", "fast"),
+        hidden=train.get("sparse_root_hidden", 80),
+        epochs=train.get("epochs", 20),
+        batch_size=train.get("batch_size", 4),
+        lr=train.get("lr", 1e-4),
+        device=train.get("device", "auto"),
+    )
 
 
-def _export_sparse_root_cmd(p: dict[str, Any]) -> list[str]:
+def _export_sparse_root_run(p: dict) -> None:
+    from LODiffusion.models.export_sparse_root import export_sparse_root  # noqa: PLC0415
+
     train = p.get("train", {})
     export = p.get("export", {})
-    checkpoint = Path(train.get("output_dir", ".")) / "sparse_root_model.pt"
-    out_dir = export.get("output_dir") or "LODiffusion/run/models"
-    return [
-        _python(),
-        "LODiffusion/models/export_sparse_root.py",
-        "--checkpoint",
-        str(checkpoint),
-        "--out-dir",
-        str(out_dir),
-    ]
+    export_sparse_root(
+        checkpoint=Path(train.get("output_dir", ".")) / "sparse_root_model.pt",
+        out_dir=Path(export.get("output_dir") or "LODiffusion/run/models"),
+    )
 
 
-def _deploy_sparse_root_cmd(p: dict[str, Any]) -> list[str]:
+def _deploy_sparse_root_run(p: dict) -> None:
+    from LODiffusion.models.export_sparse_root import export_sparse_root  # noqa: PLC0415
+
     deploy = p.get("deploy", {})
-    checkpoint = Path(p.get("train", {}).get("output_dir", ".")) / "sparse_root_model.pt"
     out_dir = (
         deploy.get("target_dir")
         or p.get("export", {}).get("output_dir")
         or "LODiffusion/run/models"
     )
-    return [
-        _python(),
-        "LODiffusion/models/export_sparse_root.py",
-        "--checkpoint",
-        str(checkpoint),
-        "--out-dir",
-        str(out_dir),
-    ]
+    export_sparse_root(
+        checkpoint=Path(p.get("train", {}).get("output_dir", ".")) / "sparse_root_model.pt",
+        out_dir=Path(out_dir),
+    )
 
 
-def _distill_sparse_root_cmd(p: dict) -> list[str]:
+def _distill_sparse_root_run(p: dict) -> None:
+    from VoxelTree.scripts.sparse_root.distill import distill_sparse_root  # noqa: PLC0415
+
     data = p.get("data", {})
     train = p.get("train", {})
     data_dir = data.get("data_dir", "noise_training_data")
     teacher_dir = train.get("output_dir", ".")
-    return [
-        _python(),
-        "scripts/sparse_root/distill.py",
-        "--teacher-checkpoint",
-        str(Path(teacher_dir) / "sparse_root_model.pt"),
-        "--data",
-        str(Path(data_dir) / "sparse_root_pairs.npz"),
-        "--student-variant",
-        str(train.get("sparse_root_variant", "fast")),
-        "--student-hidden",
-        str(train.get("sparse_root_hidden", 80)),
-    ]
+    distill_sparse_root(
+        teacher_checkpoint=Path(teacher_dir) / "sparse_root_model.pt",
+        data_path=Path(data_dir) / "sparse_root_pairs.npz",
+        out_path=Path(teacher_dir) / "sparse_root_distilled.pt",
+        student_variant=train.get("sparse_root_variant", "fast"),
+        student_hidden=train.get("sparse_root_hidden", 80),
+    )
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -664,17 +615,17 @@ MODEL_TRACKS: list[ModelTrack] = [
         track_id="sparse_root",
         label="SparseRoot",
         swim_lane_color="#2a1500",
-        build_pairs_factory=_build_pairs_sparse_root_cmd,
-        train_factory=_train_sparse_root_cmd,
-        export_factory=_export_sparse_root_cmd,
-        deploy_factory=_deploy_sparse_root_cmd,
+        build_pairs_factory=_build_pairs_sparse_root_run,
+        train_factory=_train_sparse_root_run,
+        export_factory=_export_sparse_root_run,
+        deploy_factory=_deploy_sparse_root_run,
         build_pairs_consumes=frozenset({"voxy_db", "noise_dumps"}),
         extra_steps=[
             StepDef(
                 id="distill_sparse_root",
                 label="Distill",
                 prereqs=[],
-                cmd_factory=_distill_sparse_root_cmd,
+                run_fn=_distill_sparse_root_run,
                 track="sparse_root",
                 phase="distill",
                 produces=frozenset({"sparse_root_distilled"}),
@@ -692,10 +643,10 @@ MODEL_TRACKS: list[ModelTrack] = [
         track_id="stage1",
         label="Stage 1",
         swim_lane_color="#00202a",
-        build_pairs_factory=_build_pairs_stage1_cmd,
-        train_factory=_train_stage1_density_cmd,
-        export_factory=_extract_stage1_weights_cmd,
-        deploy_factory=_deploy_stage1_cmd,
+        build_pairs_factory=_build_pairs_stage1_run,
+        train_factory=_train_stage1_density_run,
+        export_factory=_extract_stage1_weights_run,
+        deploy_factory=_deploy_stage1_run,
         id_overrides={
             "build_pairs": "build_pairs_stage1",
             "train": "train_stage1_density",
@@ -708,7 +659,7 @@ MODEL_TRACKS: list[ModelTrack] = [
                 id="distill_density",
                 label="Distill",
                 prereqs=[],
-                cmd_factory=_distill_density_cmd,
+                run_fn=_distill_density_run,
                 track="stage1",
                 phase="distill",
                 produces=frozenset({"stage1_distilled"}),
@@ -718,7 +669,7 @@ MODEL_TRACKS: list[ModelTrack] = [
                 id="train_terrain_shaper",
                 label="T·Shaper",
                 prereqs=[],
-                cmd_factory=_train_terrain_shaper_cmd,
+                run_fn=_train_terrain_shaper_run,
                 track="stage1",
                 phase="train_terrain_shaper",
                 produces=frozenset({"terrain_shaper_checkpoint"}),
@@ -739,7 +690,7 @@ _DATA_ACQ_STEPS: list[StepDef] = [
         id="pregen",
         label="Pregen",
         prereqs=[],
-        cmd_factory=_pregen_cmd,
+        run_fn=_pregen_run,
         server_required=True,
         phase="data_acq",
         produces=frozenset({"pregenerated_chunks"}),
@@ -749,7 +700,7 @@ _DATA_ACQ_STEPS: list[StepDef] = [
         id="harvest",
         label="Harvest",
         prereqs=[],
-        cmd_factory=_harvest_cmd,
+        run_fn=_harvest_run,
         server_required=True,
         client_required=True,
         phase="data_acq",
@@ -760,7 +711,7 @@ _DATA_ACQ_STEPS: list[StepDef] = [
         id="dumpnoise",
         label="Noise",
         prereqs=[],
-        cmd_factory=_dumpnoise_cmd,
+        run_fn=_dumpnoise_run,
         server_required=True,
         phase="data_acq",
         produces=frozenset({"noise_dumps"}),
@@ -770,7 +721,7 @@ _DATA_ACQ_STEPS: list[StepDef] = [
         id="extract_octree",
         label="Extract",
         prereqs=[],
-        cmd_factory=_extract_octree_cmd,
+        run_fn=_extract_octree_run,
         phase="data_acq",
         produces=frozenset({"octree_npz"}),
         consumes=frozenset({"voxy_db"}),
@@ -779,7 +730,7 @@ _DATA_ACQ_STEPS: list[StepDef] = [
         id="column_heights",
         label="Heights",
         prereqs=[],
-        cmd_factory=_column_heights_cmd,
+        run_fn=_column_heights_run,
         phase="data_acq",
         produces=frozenset({"octree_with_heights"}),
         consumes=frozenset({"octree_npz", "noise_dumps"}),

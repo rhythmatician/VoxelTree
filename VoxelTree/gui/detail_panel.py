@@ -276,12 +276,11 @@ class DetailPanel(QDockWidget):
         step = STEP_BY_ID.get(step_id)
         if not step:
             return
-        # We need the profile dict to build the command — fetched from parent window
+        # We need the profile dict to run the step — fetched from parent window
         profile_dict = self._get_profile_dict()
         if profile_dict is None:
             return
-        cmd = step.cmd_factory(profile_dict)
-        self._launch_worker(step_id, cmd)
+        self._launch_worker(step_id, profile_dict)
 
     def _run_from(self, step_id: str) -> None:
         """Run step_id and all downstream steps reachable through the DAG."""
@@ -311,7 +310,7 @@ class DetailPanel(QDockWidget):
         """Superseded by _run_from_targets logic in _on_step_finished.  Kept for safety."""
         pass
 
-    def _launch_worker(self, step_id: str, cmd: list[str]) -> None:
+    def _launch_worker(self, step_id: str, profile: dict) -> None:  # type: ignore[type-arg]
         assert self._registry is not None
         self._registry.mark_started(step_id)
         self._refresh_buttons()
@@ -319,10 +318,9 @@ class DetailPanel(QDockWidget):
         ts = datetime.now().strftime("%H:%M:%S")
         self.append_log(f"\n{'─'*60}")
         self.append_log(f"[{ts}] Starting: {step_id}")
-        self.append_log("$ " + " ".join(cmd))
         self.append_log(f"{'─'*60}")
 
-        worker = RunWorker(step_id, cmd)
+        worker = RunWorker(step_id, profile)
         worker.log_line.connect(self._on_log_line)
         worker.step_finished.connect(self._on_step_finished)
         worker.progress.connect(self._on_progress)

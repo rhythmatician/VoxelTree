@@ -554,7 +554,7 @@ def run_monitor(args: argparse.Namespace) -> None:
 # ---------------------------------------------------------------------------
 
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(
         description="Automated Voxy training data harvester.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -645,7 +645,7 @@ def main() -> None:
         "--force", action="store_true", help="Continue even if pregen appears incomplete"
     )
 
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     if args.monitor_only:
         run_monitor(args)
