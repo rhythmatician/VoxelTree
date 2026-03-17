@@ -1,26 +1,26 @@
 dag:
   steps:
-  - id: harvest
-  - id: dumpnoise
-  - id: extract_octree
-  - id: build_pairs_sparse_root
-    prereqs:
-    - column_heights
-    - harvest
-  - id: train_sparse_root
-  - id: export_sparse_root
-  - id: deploy_sparse_root
-    prereqs:
-    - export_sparse_root
-  - id: distill_sparse_root
-  - id: build_pairs_stage1
-  - id: train_stage1_density
-  - id: extract_stage1_weights
-  - id: deploy_stage1
-  - id: distill_density
-  - id: train_terrain_shaper
-    prereqs:
-    - dumpnoise
+    - id: harvest
+    - id: dumpnoise
+    - id: extract_octree
+    - id: build_pairs_sparse_root
+      prereqs:
+        - column_heights
+        - harvest
+    - id: train_sparse_root
+    - id: export_sparse_root
+    - id: deploy_sparse_root
+      prereqs:
+        - export_sparse_root
+    - id: distill_sparse_root
+    - id: build_pairs_stage1
+    - id: train_stage1_density
+    - id: extract_stage1_weights
+    - id: deploy_stage1
+    - id: distill_density
+    - id: train_terrain_shaper
+      prereqs:
+        - dumpnoise
 data:
   data_dir: data/voxy_octree
   max_sections: null
@@ -30,7 +30,8 @@ data:
   voxy_dir: None
 deploy:
   target_dir: ../LODiffusion/run/config/lodiffusion
-description: Large-area training profile (radius 4096 blocks, 512×512 chunks). Generates
+description:
+  Large-area training profile (radius 4096 blocks, 512×512 chunks). Generates
   ~6.3 M (noise, voxy) section pairs — 4× the coverage of v12.
 export:
   output_dir: production/v13_large
