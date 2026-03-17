@@ -6,15 +6,15 @@ The octree model is a 3-model architecture for generating Minecraft terrain at m
 ## Code Organization
 
 ### Model Implementation (`VoxelTree` package)
-- **Models**: `VoxelTree.train.octree_models` → OctreeInitModel, OctreeRefineModel, OctreeLeafModel
-- **Dataset**: `VoxelTree.train.octree_dataset` → OctreeDataset, collate_octree_batch  
-- **Prior Init**: `VoxelTree.train.prior_init` → initialization utilities
-- **Export**: `VoxelTree.scripts.export_octree` → ONNX/deployment export
+- **Models**: `VoxelTree.scripts.octree.models` → OctreeInitModel, OctreeRefineModel, OctreeLeafModel
+- **Dataset**: `VoxelTree.scripts.octree.dataset` → OctreeDataset, collate_octree_batch
+- **Prior Init**: `VoxelTree.scripts.prior_init` → initialization utilities
+- **Export**: `VoxelTree.scripts.octree.export` → ONNX/deployment export
 - **Pair Building**: `VoxelTree.scripts.build_octree_pairs` → build training pair caches
-- **Utilities**: `VoxelTree.scripts.octree_shootout_utils` → evaluation and visualization
+- **Utilities**: `VoxelTree.scripts.octree.octree_shootout_utils` → evaluation and visualization
 
 ### Training Scripts (this folder)
-- `train.py` — Main training entry point (reads from `VoxelTree.train.*`)
+- `train.py` — Main training entry point (reads from `VoxelTree.scripts.octree.*`)
 - `convert_fp16.py` — Float16 quantization
 - `optimize_onnx.py` — ONNX optimization post-export
 - `octree_*_shootout.ipynb` — Model architecture experiments and selection

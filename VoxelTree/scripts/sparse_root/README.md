@@ -6,12 +6,12 @@ Fast, spatial-pruning sparse voxel tree model for Minecraft terrain refinement. 
 ## Code Organization
 
 ### Model Implementation (`VoxelTree` package)
-- **Training**: `VoxelTree.core.sparse_root_train` → Training loop, data handling
-- **Distillation**: `VoxelTree.core.sparse_root_distill` → Knowledge distillation from octree
-- **Utilities**: `VoxelTree.core.sparse_octree_targets` → Ground truth generation
+- **Training**: `VoxelTree.scripts.sparse_root.sparse_root_train` → Training loop, data handling
+- **Distillation**: `VoxelTree.scripts.sparse_root.sparse_root_distill` → Knowledge distillation from octree
+- **Utilities**: `VoxelTree.scripts.sparse_octree_targets` → Ground truth generation
 
 ### Training Scripts (this folder)
-- `train.py` — Training entry point launched via GUI (reads from `VoxelTree.core.*`)
+- `train.py` — Training entry point launched via GUI (reads from `VoxelTree.scripts.sparse_root.*`)
 - `distill.py` — Distillation from octree checkpoint
 - `calibrate.py` — Threshold calibration for split decisions
 - `calibrate_split_threshold.py` — Detailed threshold analysis
@@ -54,6 +54,6 @@ The sparse-root objective is intentionally biased toward structural sparsity.
 Use `train.py --split-weight ... --label-weight ...` to sweep these values.
 
 ## References
-- Training pairs from octree-derived targets (VoxelTree.core.sparse_octree_targets)
+- Training pairs from octree-derived targets (VoxelTree.scripts.sparse_octree_targets)
 - Checkpoints needed: prior octree checkpoint
 - Output: sparse root checkpoint suitable for refinement
