@@ -214,18 +214,12 @@ class StepNodeWidget(QWidget):
                 return f"{int(pct)}%"
         # Otherwise show a simple indicator for nodes that haven't started.
         # If the step hasn't run yet, avoid showing the label so the chart stays
-        # clean; once running/success/failed, the label can surface via tooltip.
-        if self._status == "not_run":
+        # clean.
+        if self._status == "not_run" or self.stub:
             return "-"
 
-        # Show a checkmark for successful steps and an X for failures.
-        if self._status == "success":
-            return "✓"
-        if self._status == "failed":
-            return "✗"
-
-        if self.stub:
-            return "-"
+        # For all other states, show the step label.
+        # The border colour / fill indicate success/failure/etc.
         return self.label
 
     def sizeHint(self) -> QSize:

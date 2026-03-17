@@ -123,10 +123,23 @@ class ProfileDag:
 
     @classmethod
     def default(cls) -> ProfileDag:
-        """Return a ProfileDag that mirrors the full PIPELINE_STEPS list (enabled only)."""
-        from VoxelTree.gui.step_definitions import PIPELINE_STEPS  # late import avoids cycle
+        """Return a ProfileDag containing only default-active steps.
 
-        entries = [DagStepEntry(id=s.id) for s in PIPELINE_STEPS if s.enabled]
+        Steps belonging to model tracks where ``in_default_dag=False`` are
+        excluded — they remain in the full step registry so advanced profiles
+        can include them explicitly, but they do not appear in freshly-created
+        or reset profiles.
+        """
+        from VoxelTree.gui.step_definitions import PIPELINE_STEPS, TRACK_BY_ID  # late import
+
+        excluded_tracks: set[str] = {
+            tid for tid, track in TRACK_BY_ID.items() if not track.in_default_dag
+        }
+        entries = [
+            DagStepEntry(id=s.id)
+            for s in PIPELINE_STEPS
+            if s.enabled and (s.track is None or s.track not in excluded_tracks)
+        ]
         return cls(entries=entries)
 
     # ------------------------------------------------------------------

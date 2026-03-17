@@ -43,11 +43,8 @@
 #
 # ## Track IDs in use (add new tracks to this list when you create them)
 #
-#   "init"         — Octree Init model (L4 → L3)
-#   "refine"       — Octree Refine model (L3 → L1)
-#   "leaf"         — Octree Leaf model (L0 block labels)
 #   "sparse_root"  — Sparse-Root hierarchy classifier (5-level octree)
-#   "stage1"       — Stage-1 density MLP (tiny NN distilled from Minecraft)
+#   "stage1"       — Stage-1 density MLP + Terrain Shaper NN
 #
 # ═══════════════════════════════════════════════════════════════════════════
 """
@@ -150,6 +147,11 @@ class ModelTrack:
 
     # Non-standard extra steps appended after the 4 canonical phases.
     extra_steps: list[StepDef] = field(default_factory=list)
+
+    # When False, this track's steps are excluded from ProfileDag.default().
+    # They remain in the global step registry so advanced profiles can still
+    # include them explicitly.
+    in_default_dag: bool = True
 
     def step_id(self, phase: str) -> str:
         return self.id_overrides.get(phase, f"{phase}_{self.track_id}")
@@ -308,51 +310,6 @@ def _wire_prereqs(steps: list[StepDef]) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _pregen_cmd(p: dict) -> list[str]:
-    world = p.get("world", {})
-    from VoxelTree.gui.server_manager import get_rcon_settings  # noqa: PLC0415
-
-    rcon = get_rcon_settings()
-    return [
-        _python(),
-        "-m",
-        "VoxelTree",
-        "pregen",
-        "--radius",
-        str(world.get("radius", 2048)),
-        "--password",
-        str(rcon["password"]),
-        "--host",
-        str(rcon["host"]),
-        "--port",
-        str(rcon["port"]),
-    ]
-
-
-def _voxy_import_cmd(p: dict) -> list[str]:
-    world = p.get("world", {})
-    from VoxelTree.gui.server_manager import get_rcon_settings  # noqa: PLC0415
-
-    rcon = get_rcon_settings()
-    rcon_timeout = p.get("rcon", {}).get("timeout", 300)
-    return [
-        _python(),
-        "-m",
-        "VoxelTree",
-        "voxy-import",
-        "--world-name",
-        str(world.get("save_name", "New World")),
-        "--password",
-        str(rcon["password"]),
-        "--host",
-        str(rcon["host"]),
-        "--port",
-        str(rcon["port"]),
-        "--timeout",
-        str(rcon_timeout),
-    ]
-
-
 def _dumpnoise_cmd(p: dict) -> list[str]:
     world = p.get("world", {})
     from VoxelTree.gui.server_manager import get_rcon_settings  # noqa: PLC0415
@@ -416,139 +373,35 @@ def _column_heights_cmd(p: dict) -> list[str]:
     return cmd
 
 
-# ---------------------------------------------------------------------------
-# Command factories — Octree models (init / refine / leaf)
-# ---------------------------------------------------------------------------
+def _harvest_cmd(p: dict) -> list[str]:
+    """Automated Voxy data harvest via DataHarvester spiral + RocksDB monitoring.
 
-
-def _build_pairs_model_cmd(p: dict, model_type: str) -> list[str]:
+    Replaces the old manual pregen → voxy-import two-step with a single
+    orchestrated command that handles chunk pregeneration, bot teleportation,
+    and blocks until the Voxy RocksDB stabilises.
+    """
+    world = p.get("world", {})
     data = p.get("data", {})
+    from VoxelTree.gui.server_manager import get_rcon_settings  # noqa: PLC0415
+
+    rcon = get_rcon_settings()
+    rcon_timeout = p.get("rcon", {}).get("timeout", 3600)
     cmd = [
         _python(),
         "-m",
-        "VoxelTree",
-        "build-pairs",
-        "--model-type",
-        model_type,
-        "--val-split",
-        str(data.get("val_split", 0.1)),
+        "VoxelTree.preprocessing.harvest",
+        "--radius",
+        str(world.get("radius", 2048)),
+        "--password",
+        str(rcon["password"]),
+        "--rcon-port",
+        str(rcon["port"]),
+        "--voxy-timeout",
+        str(rcon_timeout),
     ]
-    if data.get("data_dir"):
-        cmd += ["--data-dir", str(data["data_dir"])]
+    if data.get("voxy_dir"):
+        cmd += ["--voxy-dir", str(data["voxy_dir"])]
     return cmd
-
-
-def _train_model_cmd(p: dict, model_type: str) -> list[str]:
-    data = p.get("data", {})
-    train = p.get("train", {})
-    cmd = [
-        _python(),
-        "-m",
-        "VoxelTree",
-        "train",
-        "--models",
-        model_type,
-        "--epochs",
-        str(train.get("epochs", 20)),
-        "--batch-size",
-        str(train.get("batch_size", 4)),
-        "--lr",
-        str(train.get("lr", 1e-4)),
-        "--device",
-        str(train.get("device", "auto")),
-    ]
-    if data.get("data_dir"):
-        cmd += ["--data-dir", str(data["data_dir"])]
-    if train.get("output_dir"):
-        cmd += ["--output-dir", str(train["output_dir"])]
-    return cmd
-
-
-def _export_model_cmd(p: dict, model_type: str) -> list[str]:
-    train = p.get("train", {})
-    export = p.get("export", {})
-    model_dir = train.get("output_dir", "models/voxy_octree")
-    cmd = [
-        _python(),
-        "-m",
-        "VoxelTree",
-        "pipeline",
-        "export",
-        "--checkpoint-dir",
-        str(model_dir),
-        "--models",
-        model_type,
-    ]
-    if export.get("output_dir"):
-        cmd += ["--export-dir", str(export["output_dir"])]
-    return cmd
-
-
-def _deploy_model_cmd(p: dict, model_type: str) -> list[str]:
-    export = p.get("export", {})
-    deploy = p.get("deploy", {})
-    export_dir = export.get("output_dir", "production")
-    cmd = [
-        _python(),
-        "-m",
-        "VoxelTree",
-        "pipeline",
-        "deploy",
-        str(export_dir),
-        "--models",
-        model_type,
-    ]
-    if deploy.get("target_dir"):
-        cmd += ["--dest", str(deploy["target_dir"])]
-    return cmd
-
-
-def _build_pairs_init_cmd(p: dict) -> list[str]:
-    return _build_pairs_model_cmd(p, "init")
-
-
-def _train_init_cmd(p: dict) -> list[str]:
-    return _train_model_cmd(p, "init")
-
-
-def _export_init_cmd(p: dict) -> list[str]:
-    return _export_model_cmd(p, "init")
-
-
-def _deploy_init_cmd(p: dict) -> list[str]:
-    return _deploy_model_cmd(p, "init")
-
-
-def _build_pairs_refine_cmd(p: dict) -> list[str]:
-    return _build_pairs_model_cmd(p, "refine")
-
-
-def _train_refine_cmd(p: dict) -> list[str]:
-    return _train_model_cmd(p, "refine")
-
-
-def _export_refine_cmd(p: dict) -> list[str]:
-    return _export_model_cmd(p, "refine")
-
-
-def _deploy_refine_cmd(p: dict) -> list[str]:
-    return _deploy_model_cmd(p, "refine")
-
-
-def _build_pairs_leaf_cmd(p: dict) -> list[str]:
-    return _build_pairs_model_cmd(p, "leaf")
-
-
-def _train_leaf_cmd(p: dict) -> list[str]:
-    return _train_model_cmd(p, "leaf")
-
-
-def _export_leaf_cmd(p: dict) -> list[str]:
-    return _export_model_cmd(p, "leaf")
-
-
-def _deploy_leaf_cmd(p: dict) -> list[str]:
-    return _deploy_model_cmd(p, "leaf")
 
 
 # ---------------------------------------------------------------------------
@@ -740,19 +593,6 @@ def _distill_sparse_root_cmd(p: dict) -> list[str]:
     ]
 
 
-# ---------------------------------------------------------------------------
-# Command factories — Loopback stubs (future iteration)
-# ---------------------------------------------------------------------------
-
-
-def _reset_data_cmd(_p: dict[str, Any]) -> list[str]:
-    return ["echo", "[loopback] reset_data not yet implemented"]
-
-
-def _new_seed_cmd(_p: dict[str, Any]) -> list[str]:
-    return ["echo", "[loopback] new_seed not yet implemented"]
-
-
 # ═══════════════════════════════════════════════════════════════════════════
 # MODEL TRACKS
 # ═══════════════════════════════════════════════════════════════════════════
@@ -767,36 +607,6 @@ def _new_seed_cmd(_p: dict[str, Any]) -> list[str]:
 # ═══════════════════════════════════════════════════════════════════════════
 
 MODEL_TRACKS: list[ModelTrack] = [
-    # ── Octree: Init ──────────────────────────────────────────────────────
-    ModelTrack(
-        track_id="init",
-        label="Init",
-        swim_lane_color="#0b1a2e",
-        build_pairs_factory=_build_pairs_init_cmd,
-        train_factory=_train_init_cmd,
-        export_factory=_export_init_cmd,
-        deploy_factory=_deploy_init_cmd,
-    ),
-    # ── Octree: Refine ────────────────────────────────────────────────────
-    ModelTrack(
-        track_id="refine",
-        label="Refine",
-        swim_lane_color="#170b2e",
-        build_pairs_factory=_build_pairs_refine_cmd,
-        train_factory=_train_refine_cmd,
-        export_factory=_export_refine_cmd,
-        deploy_factory=_deploy_refine_cmd,
-    ),
-    # ── Octree: Leaf ──────────────────────────────────────────────────────
-    ModelTrack(
-        track_id="leaf",
-        label="Leaf",
-        swim_lane_color="#0b2514",
-        build_pairs_factory=_build_pairs_leaf_cmd,
-        train_factory=_train_leaf_cmd,
-        export_factory=_export_leaf_cmd,
-        deploy_factory=_deploy_leaf_cmd,
-    ),
     # ── Sparse Root ───────────────────────────────────────────────────────
     # export and deploy are stubs until scripts exist:
     #   TODO export: write scripts/sparse_root/export_sparse_root.py
@@ -876,23 +686,14 @@ MODEL_TRACKS: list[ModelTrack] = [
 # Data-acquisition steps (no model track — they feed all tracks)
 _DATA_ACQ_STEPS: list[StepDef] = [
     StepDef(
-        id="pregen",
-        label="Pregen",
+        id="harvest",
+        label="Harvest",
         prereqs=[],
-        cmd_factory=_pregen_cmd,
-        server_required=True,
-        phase="data_acq",
-        produces=frozenset({"mc_world"}),
-    ),
-    StepDef(
-        id="voxy_import",
-        label="Voxy",
-        prereqs=[],
-        cmd_factory=_voxy_import_cmd,
+        cmd_factory=_harvest_cmd,
         server_required=True,
         phase="data_acq",
         produces=frozenset({"voxy_db"}),
-        consumes=frozenset({"mc_world"}),
+        consumes=frozenset(),
     ),
     StepDef(
         id="dumpnoise",
@@ -923,35 +724,9 @@ _DATA_ACQ_STEPS: list[StepDef] = [
     ),
 ]
 
-# Future iteration stubs
-_LOOPBACK_STEPS: list[StepDef] = [
-    StepDef(
-        id="reset_data",
-        label="Reset",
-        prereqs=[],
-        cmd_factory=_reset_data_cmd,
-        enabled=False,
-        phase="loopback",
-        produces=frozenset({"data_reset"}),
-        consumes=frozenset({"leaf_deployed"}),
-    ),
-    StepDef(
-        id="new_seed",
-        label="New Seed",
-        prereqs=[],
-        cmd_factory=_new_seed_cmd,
-        enabled=False,
-        phase="loopback",
-        consumes=frozenset({"data_reset"}),
-    ),
+PIPELINE_STEPS: list[StepDef] = _DATA_ACQ_STEPS + [
+    step for track in MODEL_TRACKS for step in track.to_steps()
 ]
-
-# Assemble: data acq → all model tracks (in MODEL_TRACKS order) → loopback
-PIPELINE_STEPS: list[StepDef] = (
-    _DATA_ACQ_STEPS
-    + [step for track in MODEL_TRACKS for step in track.to_steps()]
-    + _LOOPBACK_STEPS
-)
 
 # Auto-wire prereqs from the produces/consumes artifact graph.
 _wire_prereqs(PIPELINE_STEPS)
@@ -969,8 +744,7 @@ STEP_REGISTRY: list[StepDef] = PIPELINE_STEPS
 ACTIVE_STEPS: list[StepDef] = [s for s in PIPELINE_STEPS if s.enabled]
 STUB_STEPS: list[StepDef] = [s for s in PIPELINE_STEPS if not s.enabled]
 
-# Track order as declared (data_acq first, then model tracks, then loopback)
-TRACK_ORDER: list[str] = ["data_acq"] + [t.track_id for t in MODEL_TRACKS] + ["loopback"]
+TRACK_ORDER: list[str] = ["data_acq"] + [t.track_id for t in MODEL_TRACKS]
 
 # Map track_id → ModelTrack for quick lookup
 TRACK_BY_ID: dict[str, ModelTrack] = {t.track_id: t for t in MODEL_TRACKS}
