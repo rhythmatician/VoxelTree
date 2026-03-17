@@ -30,7 +30,7 @@ import torch.optim as optim
 from torch.utils.data import DataLoader, Dataset
 
 from LODiffusion.models.sparse_root import SparseRootFastModel, SparseRootModel
-from .sparse_octree_targets import build_sparse_octree_targets
+from ..sparse_octree_targets import build_sparse_octree_targets
 
 # ---------------------------------------------------------------------------
 # Dataset

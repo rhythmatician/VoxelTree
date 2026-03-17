@@ -90,7 +90,7 @@ from VoxelTree.scripts.octree.models import (
     create_leaf_model,
     create_refine_model,
 )
-from VoxelTree.train.train import (
+from VoxelTree.scripts.octree.train import (
     OctreeLoss,
     _bitmask_to_binary,
     _prepare_targets,

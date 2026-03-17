@@ -1,1 +1,0 @@
-# VoxelTree core utilities

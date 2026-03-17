@@ -80,7 +80,7 @@ import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from VoxelTree.preprocessing.rcon import RconClient
+from VoxelTree.utils.rcon import RconClient
 
 
 def _safe_unicode(char: str, fallback: str) -> str:
@@ -834,14 +834,16 @@ def build_parser() -> argparse.ArgumentParser:
         prog="data-cli",
         description="LODiffusion freeze + pregen pipeline orchestrator.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog=textwrap.dedent("""
+        epilog=textwrap.dedent(
+            """
             Quickstart (development / dry-run):
               python data-cli.py info
               python data-cli.py pregen --radius 512 --dry-run
 
             Quickstart (live server with RCON):
               python data-cli.py pregen --password secret --radius 2048
-        """),
+        """
+        ),
     )
     sub = parser.add_subparsers(dest="subcommand", required=True)
 
@@ -924,7 +926,8 @@ def build_parser() -> argparse.ArgumentParser:
         parents=[shared, pregen_args],
         help="Automated Voxy import: pregen + RCON teleport spiral + DB monitoring",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog=textwrap.dedent("""\
+        epilog=textwrap.dedent(
+            """\
             Automates the voxy-import step by:
               1. (Optional) Running Chunky pregeneration
               2. Waiting for a player/bot to connect
@@ -933,7 +936,8 @@ def build_parser() -> argparse.ArgumentParser:
 
             Requires the DataHarvester mod installed on the client, or a
             manually-connected player. See: VoxelTree/tools/data-harvester/
-        """),
+        """
+        ),
     )
     p_hv.add_argument(
         "--step",
@@ -1005,7 +1009,8 @@ def build_parser() -> argparse.ArgumentParser:
         parents=[shared, pregen_args],
         help="Run the full data-preparation pipeline (pregen → build-octree-pairs)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog=textwrap.dedent("""\
+        epilog=textwrap.dedent(
+            """\
             Pipeline steps:
               pregen                 RCON — freeze world + Chunky pregeneration
               voxy-import            RCON — /voxy import world <name>
@@ -1027,7 +1032,8 @@ def build_parser() -> argparse.ArgumentParser:
               # Just rebuild octree pairs:
               python data-cli.py dataprep --from-step build-octree-pairs \\
                      --data-dir data/voxy_octree
-            """),
+            """
+        ),
     )
     p_dp.add_argument(
         "--from-step",

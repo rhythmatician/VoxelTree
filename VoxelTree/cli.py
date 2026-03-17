@@ -198,7 +198,7 @@ def _cmd_server(action: str, role: str | None) -> None:
         sys.exit(result.returncode)
 
     elif action == "stop":
-        from VoxelTree.preprocessing.rcon import RconClient  # noqa: PLC0415
+        from VoxelTree.utils.rcon import RconClient  # noqa: PLC0415
 
         rcon = get_rcon_settings()
         print(f"[server] Sending /stop via RCON ({rcon['host']}:{rcon['port']})…")

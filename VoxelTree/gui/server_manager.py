@@ -29,7 +29,7 @@ from pathlib import Path
 from PySide6.QtCore import QObject, QProcess, QTimer, Signal, Slot
 
 from VoxelTree.gui.server_config import get_role
-from VoxelTree.preprocessing.rcon import RconClient
+from VoxelTree.utils.rcon import RconClient
 
 # ---------------------------------------------------------------------------
 # World-freeze gamerule commands sent automatically after server startup.
@@ -349,7 +349,7 @@ class ServerManager(QObject):
         password = str(rcon["password"])
 
         try:
-            from VoxelTree.preprocessing.rcon import RconClient  # noqa: PLC0415
+            from VoxelTree.utils.rcon import RconClient  # noqa: PLC0415
 
             with RconClient(host, port, password, timeout=3.0) as rc:
                 rc.command("stop")

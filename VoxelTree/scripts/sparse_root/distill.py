@@ -7,7 +7,7 @@ import argparse
 from pathlib import Path
 
 try:
-    from VoxelTree.core.sparse_root_distill import distill_sparse_root
+    from VoxelTree.scripts.sparse_root.sparse_root_distill import distill_sparse_root
 except ModuleNotFoundError:
     import sys
 
@@ -18,7 +18,7 @@ except ModuleNotFoundError:
         if str(p) not in sys.path:
             sys.path.insert(0, str(p))
 
-    from VoxelTree.core.sparse_root_distill import distill_sparse_root
+    from VoxelTree.scripts.sparse_root.sparse_root_distill import distill_sparse_root
 
 
 def main(argv=None):

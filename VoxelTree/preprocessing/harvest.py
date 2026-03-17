@@ -50,7 +50,7 @@ _PKG_ROOT = _SCRIPT_DIR.parent.parent  # VoxelTree/ repo root
 if str(_PKG_ROOT) not in sys.path:
     sys.path.insert(0, str(_PKG_ROOT))
 
-from VoxelTree.preprocessing.rcon import RconClient, RconError  # noqa: E402
+from VoxelTree.utils.rcon import RconClient, RconError  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Constants

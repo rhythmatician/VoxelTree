@@ -30,7 +30,7 @@ if "LODiffusion.models.sparse_root" not in sys.modules:
     sys.modules["LODiffusion.models"] = models_mod
     sys.modules["LODiffusion.models.sparse_root"] = sparse_root_mod
 
-from VoxelTree.core.sparse_root_train import (
+from VoxelTree.scripts.sparse_root.sparse_root_train import (
     _finalize_metrics,
     _sparse_root_loss,
     _update_batch_metrics,
