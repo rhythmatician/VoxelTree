@@ -69,3 +69,6 @@ tools/data-harvester/build/
 
 # Extracted Minecraft decompiled sources (for reference only)
 tools/data-harvester/net/
+
+# Pytest cache and artifacts
+*.cpython-314-pytest-9.0.2.pyc.*

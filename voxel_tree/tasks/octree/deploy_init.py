@@ -1,7 +1,7 @@
-"""Deploy the `leaf` octree model to LODiffusion.
+"""Deploy the `init` octree model to LODiffusion.
 
 This is a thin wrapper around :mod:`voxel_tree.tasks.deploy` that always
-deploys the `leaf` submodel.
+deploys the `init` submodel.
 """
 
 from __future__ import annotations
@@ -13,12 +13,17 @@ from .octree.deploy import main as _deploy_main
 
 
 def main(argv: List[str] | None = None) -> None:
-    """Deploy the leaf model."""
+    """Deploy the init model.
+
+    Args:
+        argv: CLI args (same as :func:`voxel_tree.tasks.deploy.main`).
+    """
     if argv is None:
         argv = sys.argv[1:]
 
+    # Ensure the deploy helper only deploys `init`.
     if "--models" not in argv:
-        argv = ["--models", "leaf"] + argv
+        argv = ["--models", "init"] + argv
 
     _deploy_main(argv)
 

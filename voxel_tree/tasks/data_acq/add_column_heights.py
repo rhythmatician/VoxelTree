@@ -46,7 +46,7 @@ from typing import Any
 
 import numpy as np
 import numpy.typing as npt
-from biome_mapping import BIOME_NAME_TO_ID, UNKNOWN_BIOME_ID
+from VoxelTree.voxel_tree.utils.biome_mapping import BIOME_NAME_TO_ID, UNKNOWN_BIOME_ID
 from tqdm import tqdm
 
 from voxel_tree.utils.progress import report as _report_progress

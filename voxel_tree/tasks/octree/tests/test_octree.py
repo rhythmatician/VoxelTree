@@ -18,60 +18,21 @@ Covers:
 
 from __future__ import annotations
 
-import sys
 from pathlib import Path
 from typing import Any, Dict
-
-# Ensure we import the correct inner package even when running tests from repo root.
-# The repo structure is: <repo>/VoxelTree/voxel_tree (package) and tests live in <repo>/VoxelTree/tests.
-ROOT = Path(__file__).resolve().parents[1]
-INTERNAL_PKG = ROOT / "voxel_tree"
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
-
-# If voxel_tree is loaded as a namespace package pointing to the outer folder,
-# patch its __path__ to include the real package directory so submodules can be found.
-import voxel_tree as _VT
-
-if hasattr(_VT, "__path__"):
-    pkg_path = str(INTERNAL_PKG)
-    if pkg_path not in _VT.__path__:
-        _VT.__path__ = list(_VT.__path__) + [pkg_path]
-
-# Also ensure the `VoxelTree.scripts` namespace includes the inner scripts folder.
-inner_scripts = INTERNAL_PKG / "scripts"
-if hasattr(_VT, "scripts") and hasattr(_VT.scripts, "__path__"):
-    script_path = str(inner_scripts)
-    if script_path not in _VT.scripts.__path__:
-        _VT.scripts.__path__ = list(_VT.scripts.__path__) + [script_path]
 
 import numpy as np
 import pytest
 import torch
 
-try:
-    from voxel_tree.tasks.octree.build_pairs import (
-        build_section_index,
-        child_coords_from_parent,
-        extract_octant,
-        extract_octant_and_upsample,
-        parent_coords_and_octant,
-    )
-except ImportError:
-    # Fall back to loading the module directly by path. This is useful when
-    # running tests in environments where the package import paths are not set up.
-    import importlib.util
-
-    bp_path = INTERNAL_PKG / "tasks" / "octree" / "build_pairs.py"
-    spec = importlib.util.spec_from_file_location("build_pairs", str(bp_path))
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    build_section_index = mod.build_section_index
-    child_coords_from_parent = mod.child_coords_from_parent
-    extract_octant = mod.extract_octant
-    extract_octant_and_upsample = mod.extract_octant_and_upsample
-    parent_coords_and_octant = mod.parent_coords_and_octant
-from voxel_tree.tasks.sparse_octree_targets import (
+from voxel_tree.tasks.octree.build_pairs import (
+    build_section_index,
+    child_coords_from_parent,
+    extract_octant,
+    extract_octant_and_upsample,
+    parent_coords_and_octant,
+)
+from voxel_tree.tasks.sparse_octree import (
     build_sparse_octree_targets,
     child_occupancy_mask,
     iter_sparse_octree_nodes,

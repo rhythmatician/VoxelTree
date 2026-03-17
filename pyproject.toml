@@ -46,7 +46,7 @@ module = "yaml"
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+testpaths = ["voxel_tree"]
 markers = [
     "integration: marks tests that integrate with external systems (Fabric server, etc)",
 ]

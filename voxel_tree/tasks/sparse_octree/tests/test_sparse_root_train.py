@@ -6,13 +6,6 @@ from pathlib import Path
 
 import torch
 
-# Ensure the nested package directory is importable when running from repo root.
-ROOT = Path(__file__).resolve().parents[1]
-INTERNAL_PKG = ROOT / "VoxelTree"
-for p in (ROOT, INTERNAL_PKG):
-    if str(p) not in sys.path:
-        sys.path.insert(0, str(p))
-
 # Provide a tiny LODiffusion stub for importing sparse_octree_train helpers.
 if "LODiffusion.models.sparse_octree" not in sys.modules:
     sparse_octree_mod = types.ModuleType("LODiffusion.models.sparse_octree")

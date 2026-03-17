@@ -13,7 +13,7 @@ from voxel_tree.tasks.octree.build_pairs import (
     extract_octant_and_upsample,
     parent_coords_and_octant,
 )
-from .sparse_octree_targets import (
+from .sparse_octree import (
     SparseOctreeLevel,
     SparseOctreeNode,
     build_sparse_octree_targets,
