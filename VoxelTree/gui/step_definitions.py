@@ -54,7 +54,7 @@ from __future__ import annotations
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
 
 # ---------------------------------------------------------------------------
 # StepDef — one node in the pipeline DAG
@@ -90,7 +90,7 @@ class StepDef:
     id: str
     label: str
     prereqs: list[str]
-    run_fn: Callable[[dict], None]
+    run_fn: Callable[[dict[str, Any]], None]
     enabled: bool = True
     server_required: bool = False
     client_required: bool = False
@@ -135,10 +135,10 @@ class ModelTrack:
     label: str
     swim_lane_color: str
 
-    build_pairs_factory: Callable[[dict], None] | None = None
-    train_factory: Callable[[dict], None] | None = None
-    export_factory: Callable[[dict], None] | None = None
-    deploy_factory: Callable[[dict], None] | None = None
+    build_pairs_factory: Callable[[dict[str, Any]], None] | None = None
+    train_factory: Callable[[dict[str, Any]], None] | None = None
+    export_factory: Callable[[dict[str, Any]], None] | None = None
+    deploy_factory: Callable[[dict[str, Any]], None] | None = None
 
     # Override step IDs for backward compat with pre-existing run-state JSONs.
     # Leave empty for new tracks — default IDs are ``{phase}_{track_id}``.
@@ -233,7 +233,7 @@ class ModelTrack:
 # ---------------------------------------------------------------------------
 
 
-def _stub_run(_p: dict) -> None:
+def _stub_run(_p: dict[str, Any]) -> None:
     """Placeholder for steps not yet implemented."""
     raise NotImplementedError("step not yet implemented")
 
@@ -303,31 +303,35 @@ def _wire_prereqs(steps: list[StepDef]) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _dumpnoise_run(p: dict) -> None:
+def _dumpnoise_run(p: dict[str, Any]) -> None:
     from VoxelTree.gui.server_manager import get_rcon_settings  # noqa: PLC0415
     from VoxelTree.preprocessing.cli import main as cli_main  # noqa: PLC0415
 
     world = p.get("world", {})
     rcon = get_rcon_settings()
     rcon_timeout = p.get("rcon", {}).get("timeout", 3600)
-    cli_main(
-        [
-            "dumpnoise",
-            "--radius",
-            str(world.get("radius", 2048)),
-            "--password",
-            str(rcon["password"]),
-            "--host",
-            str(rcon["host"]),
-            "--port",
-            str(rcon["port"]),
-            "--timeout",
-            str(rcon_timeout),
-        ]
-    )
+    try:
+        cli_main(
+            [
+                "dumpnoise",
+                "--radius",
+                str(world.get("radius", 2048)),
+                "--password",
+                str(rcon["password"]),
+                "--host",
+                str(rcon["host"]),
+                "--port",
+                str(rcon["port"]),
+                "--timeout",
+                str(rcon_timeout),
+            ]
+        )
+    except SystemExit as e:
+        if e.code != 0:
+            raise RuntimeError(f"Dumpnoise failed with exit code {e.code}") from e
 
 
-def _extract_octree_run(p: dict) -> None:
+def _extract_octree_run(p: dict[str, Any]) -> None:
     from VoxelTree.preprocessing.cli import main as cli_main  # noqa: PLC0415
 
     data = p.get("data", {})
@@ -344,10 +348,14 @@ def _extract_octree_run(p: dict) -> None:
         argv += ["--max-sections", str(data["max_sections"])]
     if data.get("min_solid"):
         argv += ["--min-solid", str(data["min_solid"])]
-    cli_main(argv)
+    try:
+        cli_main(argv)
+    except SystemExit as e:
+        if e.code != 0:
+            raise RuntimeError(f"Extract octree failed with exit code {e.code}") from e
 
 
-def _column_heights_run(p: dict) -> None:
+def _column_heights_run(p: dict[str, Any]) -> None:
     from VoxelTree.preprocessing.cli import main as cli_main  # noqa: PLC0415
 
     data = p.get("data", {})
@@ -356,10 +364,14 @@ def _column_heights_run(p: dict) -> None:
         argv += ["--data-dir", str(data["data_dir"])]
     if data.get("noise_dump_dir"):
         argv += ["--noise-dump-dir", str(data["noise_dump_dir"])]
-    cli_main(argv)
+    try:
+        cli_main(argv)
+    except SystemExit as e:
+        if e.code != 0:
+            raise RuntimeError(f"Column heights failed with exit code {e.code}") from e
 
 
-def _pregen_run(p: dict) -> None:
+def _pregen_run(p: dict[str, Any]) -> None:
     """Chunky pregeneration — generates chunks on the server."""
     from VoxelTree.gui.server_manager import get_rcon_settings  # noqa: PLC0415
     from VoxelTree.preprocessing.harvest import main as harvest_main  # noqa: PLC0415
@@ -382,7 +394,7 @@ def _pregen_run(p: dict) -> None:
     )
 
 
-def _harvest_run(p: dict) -> None:
+def _harvest_run(p: dict[str, Any]) -> None:
     """Voxy data harvest — ingests pre-generated chunks into Voxy.
 
     The voxy-dir is resolved in priority order:
@@ -430,7 +442,7 @@ def _harvest_run(p: dict) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _train_stage1_density_run(p: dict) -> None:
+def _train_stage1_density_run(p: dict[str, Any]) -> None:
     from VoxelTree.scripts.stage1.train_density import main as train_main  # noqa: PLC0415
 
     data = p.get("data", {})
@@ -451,7 +463,7 @@ def _train_stage1_density_run(p: dict) -> None:
     train_main(argv)
 
 
-def _extract_stage1_weights_run(p: dict) -> None:
+def _extract_stage1_weights_run(p: dict[str, Any]) -> None:
     """Export weights only (do not deploy)."""
     from VoxelTree.scripts.stage1.extract_density_weights import (
         main as extract_main,
@@ -468,7 +480,7 @@ def _extract_stage1_weights_run(p: dict) -> None:
     extract_main(argv)
 
 
-def _build_pairs_stage1_run(p: dict) -> None:
+def _build_pairs_stage1_run(p: dict[str, Any]) -> None:
     """Validate that Stage-1 noise dumps exist."""
     data = p.get("data", {})
     dump_dir = Path(data.get("stage1_dump_dir", "stage1_dumps"))
@@ -478,7 +490,7 @@ def _build_pairs_stage1_run(p: dict) -> None:
         sys.exit(1)
 
 
-def _deploy_stage1_run(p: dict) -> None:
+def _deploy_stage1_run(p: dict[str, Any]) -> None:
     """Deploy weights to LODiffusion resources."""
     from VoxelTree.scripts.stage1.extract_density_weights import (
         main as extract_main,
@@ -495,7 +507,94 @@ def _deploy_stage1_run(p: dict) -> None:
     extract_main(argv)
 
 
-def _distill_density_run(p: dict) -> None:
+# ---------------------------------------------------------------------------
+# Step runners — Octree export/deploy (init/refine/leaf)
+# ---------------------------------------------------------------------------
+
+
+def _export_octree_run(p: dict[str, Any], model: str) -> None:
+    """Export a single octree submodel via the octree export script."""
+    from VoxelTree.preprocessing.pipeline import phase3_export  # noqa: PLC0415
+
+    train = p.get("train", {})
+    export = p.get("export", {})
+    checkpoint_dir = Path(train.get("output_dir")) if train.get("output_dir") else None
+    export_dir = Path(export.get("output_dir", "production"))
+    phase3_export(None, export_dir, checkpoint_dir=checkpoint_dir, models=[model])
+
+
+def _deploy_octree_run(p: dict[str, Any], model: str) -> None:
+    """Deploy a single octree submodel via the deploy_models script."""
+    from VoxelTree.preprocessing.pipeline import phase4_deploy  # noqa: PLC0415
+
+    export = p.get("export", {})
+    deploy = p.get("deploy", {})
+    export_dir = Path(export.get("output_dir", "production"))
+    dest = Path(deploy.get("target_dir")) if deploy.get("target_dir") else None
+    phase4_deploy(export_dir, dest, models=[model])
+
+
+def _export_init_run(p: dict[str, Any]) -> None:
+    _export_octree_run(p, "init")
+
+
+def _deploy_init_run(p: dict[str, Any]) -> None:
+    _deploy_octree_run(p, "init")
+
+
+def _export_refine_run(p: dict[str, Any]) -> None:
+    _export_octree_run(p, "refine")
+
+
+def _deploy_refine_run(p: dict[str, Any]) -> None:
+    _deploy_octree_run(p, "refine")
+
+
+def _export_leaf_run(p: dict[str, Any]) -> None:
+    _export_octree_run(p, "leaf")
+
+
+def _deploy_leaf_run(p: dict[str, Any]) -> None:
+    _deploy_octree_run(p, "leaf")
+
+
+def _export_init_cmd(profile: dict[str, Any]) -> list[str]:
+    args: list[str] = ["--models", "init"]
+    train = profile.get("train", {})
+    if train.get("output_dir"):
+        args += ["--checkpoint-dir", str(train["output_dir"])]
+    return args
+
+
+def _export_refine_cmd(profile: dict[str, Any]) -> list[str]:
+    args: list[str] = ["--models", "refine"]
+    train = profile.get("train", {})
+    if train.get("output_dir"):
+        args += ["--checkpoint-dir", str(train["output_dir"])]
+    return args
+
+
+def _export_leaf_cmd(profile: dict[str, Any]) -> list[str]:
+    args: list[str] = ["--models", "leaf"]
+    train = profile.get("train", {})
+    if train.get("output_dir"):
+        args += ["--checkpoint-dir", str(train["output_dir"])]
+    return args
+
+
+def _deploy_init_cmd(profile: dict[str, Any]) -> list[str]:
+    return ["--models", "init"]
+
+
+def _deploy_refine_cmd(profile: dict[str, Any]) -> list[str]:
+    return ["--models", "refine"]
+
+
+def _deploy_leaf_cmd(profile: dict[str, Any]) -> list[str]:
+    return ["--models", "leaf"]
+
+
+def _distill_density_run(p: dict[str, Any]) -> None:
     from VoxelTree.scripts.stage1.distill_density import distill_student  # noqa: PLC0415
 
     train = p.get("train", {})
@@ -510,7 +609,7 @@ def _distill_density_run(p: dict) -> None:
     )
 
 
-def _train_terrain_shaper_run(_: dict) -> None:
+def _train_terrain_shaper_run(_: dict[str, Any]) -> None:
     """Train the TerrainShaper spline-approximation MLP."""
     from VoxelTree.scripts.stage1.train_terrain_shaper import main as shaper_main  # noqa: PLC0415
 
@@ -522,7 +621,7 @@ def _train_terrain_shaper_run(_: dict) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _build_pairs_sparse_root_run(p: dict) -> None:
+def _build_pairs_sparse_root_run(p: dict[str, Any]) -> None:
     from VoxelTree.scripts.build_octree_pairs import main as pairs_main  # noqa: PLC0415
 
     data = p.get("data", {})
@@ -532,7 +631,7 @@ def _build_pairs_sparse_root_run(p: dict) -> None:
     pairs_main(argv)
 
 
-def _train_sparse_root_run(p: dict) -> None:
+def _train_sparse_root_run(p: dict[str, Any]) -> None:
     from VoxelTree.scripts.sparse_root.train import train_sparse_root  # noqa: PLC0415
 
     data = p.get("data", {})
@@ -551,7 +650,7 @@ def _train_sparse_root_run(p: dict) -> None:
     )
 
 
-def _export_sparse_root_run(p: dict) -> None:
+def _export_sparse_root_run(p: dict[str, Any]) -> None:
     from LODiffusion.models.export_sparse_root import export_sparse_root  # noqa: PLC0415
 
     train = p.get("train", {})
@@ -562,7 +661,7 @@ def _export_sparse_root_run(p: dict) -> None:
     )
 
 
-def _deploy_sparse_root_run(p: dict) -> None:
+def _deploy_sparse_root_run(p: dict[str, Any]) -> None:
     from LODiffusion.models.export_sparse_root import export_sparse_root  # noqa: PLC0415
 
     deploy = p.get("deploy", {})
@@ -577,7 +676,7 @@ def _deploy_sparse_root_run(p: dict) -> None:
     )
 
 
-def _distill_sparse_root_run(p: dict) -> None:
+def _distill_sparse_root_run(p: dict[str, Any]) -> None:
     from VoxelTree.scripts.sparse_root.distill import distill_sparse_root  # noqa: PLC0415
 
     data = p.get("data", {})
@@ -607,10 +706,36 @@ def _distill_sparse_root_run(p: dict) -> None:
 # ═══════════════════════════════════════════════════════════════════════════
 
 MODEL_TRACKS: list[ModelTrack] = [
+    # ── Octree ONNX Export (init/refine/leaf) ──────────────────────────────
+    # These steps wrap the existing export/deploy scripts in the pipeline.
+    ModelTrack(
+        track_id="init",
+        label="Octree Init",
+        swim_lane_color="#003030",
+        build_pairs_factory=None,
+        train_factory=None,
+        export_factory=_export_init_run,
+        deploy_factory=_deploy_init_run,
+    ),
+    ModelTrack(
+        track_id="refine",
+        label="Octree Refine",
+        swim_lane_color="#003040",
+        build_pairs_factory=None,
+        train_factory=None,
+        export_factory=_export_refine_run,
+        deploy_factory=_deploy_refine_run,
+    ),
+    ModelTrack(
+        track_id="leaf",
+        label="Octree Leaf",
+        swim_lane_color="#003050",
+        build_pairs_factory=None,
+        train_factory=None,
+        export_factory=_export_leaf_run,
+        deploy_factory=_deploy_leaf_run,
+    ),
     # ── Sparse Root ───────────────────────────────────────────────────────
-    # export and deploy are stubs until scripts exist:
-    #   TODO export: write scripts/sparse_root/export_sparse_root.py
-    #   TODO deploy: extend VoxelTree/scripts/deploy_models.py for sparse_root
     ModelTrack(
         track_id="sparse_root",
         label="SparseRoot",

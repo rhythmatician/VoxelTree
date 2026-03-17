@@ -41,7 +41,18 @@ def test_progress_signal_parsed(monkeypatch):
 
     class FakePopen:
         def __init__(self, *args, **kwargs):
-            self.stdout = iter(lines)
+            # simulate a file object with an iterator
+            class FakeStdout:
+                def __init__(self, lines):
+                    self.lines = lines
+
+                def __iter__(self):
+                    return iter(self.lines)
+
+            self.stdout = FakeStdout(lines)
+            self.stdin = type(
+                "FakeStdin", (), {"write": lambda self, x: None, "close": lambda self: None}
+            )()
             self.returncode = 0
 
         def wait(self):
@@ -59,6 +70,25 @@ def test_progress_signal_parsed(monkeypatch):
     worker.progress.connect(lambda sid, frac: received.append((sid, frac)))
     worker.log_line.connect(lambda _sid, _l: None)
     worker.step_finished.connect(lambda _sid, _code: None)
+
+    # Mock signals manually to avoid PySide6 timing/event-loop issues in tests.
+    class MockSignal:
+        def __init__(self):
+            self.handlers = []
+
+        def connect(self, h):
+            self.handlers.append(h)
+
+        def emit(self, *args):
+            for h in self.handlers:
+                h(*args)
+
+    monkeypatch.setattr(worker, "progress", MockSignal())
+    monkeypatch.setattr(worker, "log_line", MockSignal())
+    monkeypatch.setattr(worker, "step_started", MockSignal())
+    monkeypatch.setattr(worker, "step_finished", MockSignal())
+
+    worker.progress.connect(lambda sid, frac: received.append((sid, frac)))
 
     worker.run()  # call directly instead of start() to stay in same thread
 

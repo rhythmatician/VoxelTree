@@ -432,9 +432,11 @@ def run_harvest(args: argparse.Namespace) -> None:
         rcon = RconClient(args.host, args.rcon_port, args.password, timeout=15.0)
         rcon.connect()
     except RconError as e:
-        print(f"\n  ERROR: Cannot connect to RCON: {e}")
-        print("  Make sure the server is running with enable-rcon=true.")
-        sys.exit(1)
+        msg = (
+            f"Cannot connect to RCON: {e}\n"
+            "Make sure the server is running with enable-rcon=true."
+        )
+        raise RuntimeError(msg) from e
 
     try:
         # Step 1: Freeze world

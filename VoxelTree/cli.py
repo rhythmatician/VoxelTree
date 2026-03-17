@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from typing import Any
 
 # ---------------------------------------------------------------------------
 # Path helpers
@@ -45,7 +46,7 @@ def _repo_root() -> Path:
     return _profiles_dir().parent
 
 
-def _load_profile(name: str) -> dict:
+def _load_profile(name: str) -> dict[str, Any]:
     import yaml  # noqa: PLC0415
 
     profiles = _profiles_dir()

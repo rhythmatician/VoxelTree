@@ -37,13 +37,12 @@ def test_run_registry_persistence(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
     # default status for every active step must be not_run
     for step in run_registry.PIPELINE_STEPS:
         assert reg.get_status(step.id) == "not_run"
-    # sanity: ensure the split export/deploy steps are present
-    assert "export_init" in run_registry.STEP_BY_ID
-    assert "export_refine" in run_registry.STEP_BY_ID
-    assert "export_leaf" in run_registry.STEP_BY_ID
-    assert "deploy_init" in run_registry.STEP_BY_ID
-    assert "deploy_refine" in run_registry.STEP_BY_ID
-    assert "deploy_leaf" in run_registry.STEP_BY_ID
+    # sanity: ensure core track steps are present
+    assert "extract_octree" in run_registry.STEP_BY_ID
+    assert "build_pairs_sparse_root" in run_registry.STEP_BY_ID
+    assert "train_sparse_root" in run_registry.STEP_BY_ID
+    assert "export_sparse_root" in run_registry.STEP_BY_ID
+    assert "deploy_sparse_root" in run_registry.STEP_BY_ID
 
     # mark a couple of steps and check persistence
     reg.mark_success("pregen")
@@ -60,40 +59,6 @@ def test_run_registry_persistence(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
     reg2 = RunRegistry(profile)
     assert reg2.get_status("pregen") == "success"
     assert reg2.get_status("dumpnoise") == "failed"
-
-
-def test_command_factories_include_models_flag() -> None:
-    """Per-model export/deploy factories should emit the --models argument."""
-    from VoxelTree.gui.step_definitions import (
-        _deploy_init_cmd,
-        _deploy_leaf_cmd,
-        _deploy_refine_cmd,
-        _export_init_cmd,
-        _export_leaf_cmd,
-        _export_refine_cmd,
-    )
-
-    # simple check that the generated command strings include the right model
-    cmd_init = _export_init_cmd({})
-    assert "--models" in cmd_init
-    assert "init" in cmd_init
-    assert "--models" in _export_refine_cmd({})
-    assert "refine" in _export_refine_cmd({})
-    assert "--models" in _export_leaf_cmd({})
-    assert "leaf" in _export_leaf_cmd({})
-
-    # pass a profile to ensure checkpoint-dir derived from train.output_dir
-    profile = {"train": {"output_dir": "models/mycheck"}}
-    cmd_init2 = _export_init_cmd(profile)
-    assert "--checkpoint-dir" in cmd_init2
-    assert "models/mycheck" in cmd_init2
-
-    assert "--models" in _deploy_init_cmd({})
-    assert "init" in _deploy_init_cmd({})
-    assert "--models" in _deploy_refine_cmd({})
-    assert "refine" in _deploy_refine_cmd({})
-    assert "--models" in _deploy_leaf_cmd({})
-    assert "leaf" in _deploy_leaf_cmd({})
 
 
 def test_phase_export_and_deploy_args(monkeypatch, tmp_path):

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Any, Protocol, cast
 
 from PySide6.QtCore import Qt, QTimer, Signal, Slot
 from PySide6.QtGui import QFont, QTextCursor
@@ -28,6 +29,31 @@ from VoxelTree.gui.step_definitions import (
 )
 
 
+class _ParentInterface(Protocol):
+    """Protocol for DetailPanel's parent window interface.
+
+    Defines the methods that the parent (typically MainWindow) must implement
+    for DetailPanel to communicate step progress and completion back to the UI.
+    """
+
+    def on_step_progress(self, profile_name: str, step_id: str) -> None:
+        """Called when a step reports progress."""
+        ...
+
+    def on_step_finished(self, profile_name: str, step_id: str) -> None:
+        """Called when a step completes (success or failure)."""
+        ...
+
+    def get_profile_dict(self, profile_name: str) -> dict[str, Any] | None:
+        """Retrieve the full profile configuration for a named profile."""
+        ...
+
+    @property
+    def _dashboard(self) -> Any:
+        """Access to the dashboard for profile refresh operations."""
+        ...
+
+
 class DetailPanel(QDockWidget):
     """Dockable panel shown when the user clicks "Details" on a profile row.
 
@@ -37,8 +63,8 @@ class DetailPanel(QDockWidget):
     - Live log output (QTextEdit)
     """
 
-    def __init__(self, parent=None) -> None:
-        super().__init__("Details", parent)
+    def __init__(self, parent: _ParentInterface | None = None) -> None:
+        super().__init__("Details", parent)  # type: ignore[arg-type]
         self.setAllowedAreas(
             Qt.DockWidgetArea.RightDockWidgetArea | Qt.DockWidgetArea.BottomDockWidgetArea
         )
@@ -221,12 +247,13 @@ class DetailPanel(QDockWidget):
         """
         if self._registry:
             self._registry.set_progress(step_id, fraction)
-        parent = self.parent()
+        parent = cast(_ParentInterface, self.parent())
+        assert self._profile_name is not None
         if hasattr(parent, "on_step_progress"):
-            parent.on_step_progress(self._profile_name, step_id)  # type: ignore[arg-type]
+            parent.on_step_progress(self._profile_name, step_id)
         elif hasattr(parent, "_dashboard"):
             # fallback to directly refreshing the table row
-            parent._dashboard.refresh_profile(self._profile_name)  # type: ignore[arg-type]
+            parent._dashboard.refresh_profile(self._profile_name)
 
     def _on_edit(self) -> None:
         if self._edit_callback and self._profile_name:
@@ -310,7 +337,7 @@ class DetailPanel(QDockWidget):
         """Superseded by _run_from_targets logic in _on_step_finished.  Kept for safety."""
         pass
 
-    def _launch_worker(self, step_id: str, profile: dict) -> None:  # type: ignore[type-arg]
+    def _launch_worker(self, step_id: str, profile: dict[str, Any]) -> None:
         assert self._registry is not None
         self._registry.mark_started(step_id)
         self._refresh_buttons()
@@ -349,7 +376,8 @@ class DetailPanel(QDockWidget):
             m_chunky = re.search(r"\[Chunky\].*\((\d+\.?\d*)%\)", line)
             if m_chunky:
                 self._registry.set_progress(step_id, float(m_chunky.group(1)) / 100.0)
-                parent = self.parent()
+                parent = cast(_ParentInterface, self.parent())
+                assert self._profile_name is not None
                 if hasattr(parent, "on_step_progress"):
                     parent.on_step_progress(self._profile_name, step_id)
                 elif hasattr(parent, "_dashboard"):
@@ -392,7 +420,8 @@ class DetailPanel(QDockWidget):
                     self._run_step(sid)
 
         # Notify the parent window so the dashboard row refreshes
-        parent = self.parent()
+        parent = cast(_ParentInterface, self.parent())
+        assert self._profile_name is not None
         if hasattr(parent, "on_step_finished"):
             parent.on_step_finished(self._profile_name, step_id)
 
@@ -410,10 +439,11 @@ class DetailPanel(QDockWidget):
 
         QApplication.clipboard().setText(self._log.toPlainText())
 
-    def _get_profile_dict(self) -> dict | None:
+    def _get_profile_dict(self) -> dict[str, Any] | None:
         """Retrieve the loaded profile dict from the main window."""
-        parent = self.parent()
+        parent = cast(_ParentInterface, self.parent())
         if hasattr(parent, "get_profile_dict"):
+            assert self._profile_name is not None
             return parent.get_profile_dict(self._profile_name)
         return None
 
