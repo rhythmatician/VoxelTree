@@ -1,0 +1,266 @@
+graph TD
+    classDef done fill:#2d6a2d,stroke:#1a4a1a,color:#fff
+    classDef todo fill:#8b4513,stroke:#6b3410,color:#fff
+    classDef noise fill:#663399,stroke:#4a2d7a,color:#fff
+    classDef consumer fill:#1e6bb8,stroke:#0f3a66,color:#fff
+    classDef branch fill:#ff8c00,stroke:#cc6600,color:#fff
+    classDef bus fill:#333,stroke:#555,color:#fff,stroke-width:4px
+    classDef seed_style fill:#663300,stroke:#ff9900,color:#fff
+    classDef wrapper fill:#1a1a1a,stroke:#444,color:#eee,stroke-dasharray: 5 5
+    classDef transform fill:#2d5a2d,stroke:#1a3a1a,color:#fff
+
+    %% INPUTS
+    subgraph Inputs["🎯 World Generation Inputs"]
+        seed([WORLD SEED])
+        pos_xz([x, z coordinates])
+        pos_y([y coordinate])
+    end
+
+    %% STAGE 0: NOISE CONFIGURATION
+    seed --> noise_config{"RandomState<br/>(Seed → 15 DensityFunctions)"}
+    class seed seed_style
+
+    %% STAGE 1: XZ DISTORTION
+    subgraph Distortion["1️⃣ XZ Distortion (Shift Router)"]
+        direction LR
+        dist_p[["Noise Config<br/>(shifts @ 0.25 scale)"]]
+        dist_p --> shift_x["shift_x noise"]
+        dist_p --> shift_z["shift_z noise"]
+        shift_x & shift_z --> shifted_xz[/shifted x', z'<br/>@quart/]
+    end
+
+    noise_config --> Distortion
+
+    %% STAGE 2: 2D CLIMATE NOISE BANK
+    subgraph Climate_2D["2️⃣ 2D Climate Noise Bank"]
+        direction LR
+        climate_param[["Climate Noise Config<br/>via Splines"]]
+        climate_param --> continents["continents<br/>(terr. spread)"]
+        climate_param --> erosion["erosion<br/>(terrain shaping)"]
+        climate_param --> ridges["ridges/weirdness<br/>(terrain variety)"]
+        climate_param --> temperature["temperature"]
+        climate_param --> vegetation["vegetation<br/>(humidity)"]
+    end
+
+    shifted_xz --> Climate_2D
+    noise_config -.-> climate_param
+
+    continents --> S2_OUT["[Climate Bank Output]<br/>@quart res: 4×4 blocks"]
+    erosion --> S2_OUT
+    ridges --> S2_OUT
+    temperature --> S2_OUT
+    vegetation --> S2_OUT
+
+    %% STAGE 3: BIOME SELECTION (Climate Consumer)
+    subgraph Biomes["3️⃣ Biome Selection"]
+        direction TB
+        biome_in["Climate.TargetPoint<br/>(6D: temp, humid,<br/>continents, erosion,<br/>depth, weirdness)"]
+        biome_match["MultiNoiseBiomeSource<br/>(Parameter-space lookup)"]
+        biome_out["BiomeID<br/>per quart position"]
+        biome_in --> biome_match --> biome_out
+    end
+
+    S2_OUT --> Biomes
+    pos_y -.-> biome_in
+
+    class biome_match consumer
+    class Biomes wrapper
+
+    %% STAGE 4: PRELIMINARY SURFACE LEVEL (Depth calculatio)
+    subgraph Prelim_Surface["4️⃣ Preliminary Surface Level<br/>(Spline Transform)"]
+        direction LR
+        ps_in[["offset, factor<br/>(from continents+erosion)"]]
+        ps_spline["Spline Interpolation<br/>(offset, factor, depth)"]
+        ps_out["preliminarySurfaceLevel<br/>(estimated terrain height)"]
+        ps_in --> ps_spline --> ps_out
+    end
+
+    S2_OUT --> ps_in
+    ps_out -.-> Biomes
+
+    class ps_spline transform
+
+    %% STAGE 5: 3D VOLUMETRIC NOISE (Terrain Density)
+    subgraph Volumetric_3D["5️⃣ 3D Terrain Density Pipeline"]
+        direction TB
+
+        subgraph Terrain_Core["Core Density Functions"]
+            direction LR
+            base3d_param[["NoiseRouter Config<br/>(3D noise chains)"]]
+            base3d["Base3DNoise<br/>Sampler<br/>@0.25/0.125 scales"]
+            spline_offset["offset Spline<br/>(continents+erosion+ridges)"]
+            spline_factor["factor Spline<br/>(interpolation scale)"]
+            jaggedness["jaggedness Noise<br/>(terrain roughness)"]
+            depth_gradient["depth Gradient<br/>(Y-based, -64 to 320)"]
+
+            base3d_param --> base3d
+            base3d_param --> spline_offset
+            base3d_param --> spline_factor
+            base3d_param --> jaggedness
+            base3d_param --> depth_gradient
+        end
+
+        subgraph Cave_Functions["Cave Noise Functions<br/>(Subtractive)"]
+            direction TB
+            cave_param[["Cave Noise Config<br/>(via NoiseRouter)"]]
+            cave_param --> spaghetti2d["spaghetti2D<br/>(horizontal tunnels)<br/>@varied scale"]
+            cave_param --> spaghetti3d["spaghetti3D<br/>(3D tunnels)<br/>@varied scale"]
+            cave_param --> noodle["noodle<br/>(thin cave strings)<br/>@rare"]
+            cave_param --> pillars["pillars<br/>(cave decorations)<br/>@rare"]
+            cave_param --> entrances["entrances<br/>(cave openings)<br/>@varied"]
+        end
+
+        subgraph Density_Combine["Density Combination<br/>(Arithmetic)"]
+            direction LR
+            terrain_core["="]
+            density_eq["finalDensity = Base3DNoise<br/>+ noiseGradient(depth, factor,<br/>jaggedness)<br/><br/>Then subtract caves if<br/>finalDensity below threshold"]
+            terrain_core --> density_eq
+        end
+
+        Terrain_Core --> Density_Combine
+        Cave_Functions -.-> Density_Combine
+
+        density_eq --> final_density["finalDensity<br/>@cell res: 4×4×8 blocks<br/>interpolated to block-level"]
+    end
+
+    S2_OUT --> Volumetric_3D
+    ps_out -.-> Volumetric_3D
+    pos_xz -.-> Volumetric_3D
+    pos_y -.-> Volumetric_3D
+
+    class base3d,spline_offset,spline_factor,jaggedness,depth_gradient,spaghetti2d,spaghetti3d,noodle,pillars,entrances noise
+    class density_eq transform
+    class Volumetric_3D wrapper
+
+    %% STAGE 6: BLOCK STATE DECISION
+    final_density --> density_check{"finalDensity > 0?<br/>(SURFACE_DENSITY_THRESHOLD<br/>≈ 1.5625)"}
+    class density_check branch
+
+    %% SOLID PATH
+    density_check -->|YES: SOLID| solid_block["Solid Block<br/>(stone, deepslate, etc.)<br/>selected by biome + Y"]
+
+    %% FLUID/VOID PATH
+    density_check -->|NO: CHECK AQUIFER| aquifer_entry["[Pass to Aquifer<br/>System]"]
+
+    %% STAGE 7: AQUIFER SYSTEM (3 substeps)
+    subgraph Aquifer_System["6️⃣ Aquifer System<br/>(Water/Lava Placement)"]
+        direction TB
+
+        subgraph Aquifer_Step1["Step 1: Grid Sampling<br/>(Independent 16×12×16 Block Grid)"]
+            direction LR
+            aquifer_noise_param[["Aquifer Noise Config"]]
+            aquifer_noise_param --> barrier["barrierNoise<br/>(@0.5 scale)"]
+            aquifer_noise_param --> fluid_flood["fluidLevelFloodedness<br/>(@0.67 scale)"]
+            aquifer_noise_param --> fluid_spread["fluidLevelSpread<br/>(@0.714 scale)"]
+            aquifer_noise_param --> lava_noise["lavaNoise"]
+            aquifer_noise_param --> erosion_aqui["erosion<br/>(reused)"]
+            aquifer_noise_param --> depth_aqui["depth<br/>(reused)"]
+        end
+
+        subgraph Aquifer_Step2["Step 2: Voronoi Interpolation<br/>(Find 4 Nearest Centers)"]
+            direction LR
+            voronoi_in["Grid sample points<br/>→ Find 4 nearest<br/>water/lava centers"]
+            voronoi_calc["Voronoi distance<br/>weighting"]
+            voronoi_out["Interpolated<br/>fluid type + level"]
+            voronoi_in --> voronoi_calc --> voronoi_out
+        end
+
+        subgraph Aquifer_Step3["Step 3: Pressure Calculation<br/>(Depth-Based Interpolation)"]
+            direction LR
+            pressure_in["Interpolated level<br/>+ erosion gradient<br/>+ depth bias"]
+            pressure_calc["Calculate water/lava<br/>level at block position<br/>(pressure interpolation)"]
+            pressure_out["FluidStatus<br/>(Water/Lava/null)"]
+            pressure_in --> pressure_calc --> pressure_out
+        end
+
+        Aquifer_Step1 --> Aquifer_Step2
+        Aquifer_Step2 --> Aquifer_Step3
+    end
+
+    aquifer_entry --> Aquifer_System
+    noise_config -.-> aquifer_noise_param
+
+    pressure_out --> aquifer_block["Water/Lava Block<br/>or Air (null)"]
+
+    class Aquifer_System wrapper
+    class voronoi_calc,pressure_calc transform
+
+    %% MERGE PATHS
+    solid_block --> block_merge["[Block State<br/>Before Ore/Surface]"]
+    aquifer_block --> block_merge
+
+    %% STAGE 8: ORE VEIN SYSTEM
+    subgraph Ore_Veins["7️⃣ Ore Vein System<br/>(Copper/Iron Placement)"]
+        direction LR
+        ore_param[["Ore Noise Config<br/>(vein functions)"]]
+        ore_param --> vein_toggle["veinToggle<br/>(@1.5 frequency)"]
+        ore_param --> vein_ridged["veinRidged<br/>(@4.0 scale)"]
+        ore_param --> vein_gap["veinGap<br/>(spacing filter)"]
+
+        vein_toggle & vein_ridged & vein_gap --> ore_select["Select Ore Type<br/>(copper/iron/filler)<br/>@block-level"]
+        ore_select --> ore_out["Ore Block<br/>or unmodified"]
+    end
+
+    block_merge --> Ore_Veins
+    noise_config -.-> ore_param
+
+    ore_out --> after_ore["[Block State<br/>After Ore]"]
+
+    class Ore_Veins wrapper
+    class ore_select transform
+
+    %% STAGE 9: SURFACE RULES
+    subgraph Surface_Rules["8️⃣ Surface Rules<br/>(Biome Decoration)"]
+        direction LR
+        surface_param[["Surface Rule Config<br/>(biome-specific)"]
+        surface_param --> grass_rule["Grass/Mycelium<br/>Layer"]
+        surface_param --> sand_rule["Sand/Gravel<br/>Layer"]
+        surface_param --> special_rule["Biome-Specific<br/>Rules"]
+
+        grass_rule & sand_rule & special_rule --> surface_apply["Apply Rules<br/>to Top 1-3 blocks<br/>@block-level per column"]
+        surface_apply --> surface_out["Surface-Decorated<br/>Blocks"]
+    end
+
+    biome_out -.-> Surface_Rules
+    after_ore --> Surface_Rules
+
+    surface_out --> chunk_surf["[Chunk After<br/>Surface]"]
+
+    class Surface_Rules wrapper
+    class surface_apply transform
+
+    %% STAGE 10: CARVING
+    subgraph Carving_Stage["9️⃣ Carving System<br/>(Cave Structure)"]
+        direction LR
+        carver_config[["Carver Configuration<br/>(per chunk + 8×8 neighbors)"]]
+        carver_config --> carver_apply["For each Carver<br/>in Config:"]
+        carver_apply --> carver_rng["Seed RNG<br/>from world seed"]
+        carver_rng --> carver_exec["Carver.carve()<br/>replaces solid → air<br/>@block-level"]
+        carver_exec --> carver_out["Carved-Out<br/>Regions (air)"]
+    end
+
+    chunk_surf --> Carving_Stage
+
+    carver_out --> final_chunk["[Final Chunk<br/>with Caves]"]
+
+    class Carving_Stage wrapper
+    class carver_exec transform
+
+    %% STAGE 11: FINAL OUTPUT
+    subgraph Final_Output["✅ Final Chunk Output"]
+        direction LR
+        final_chunk --> prototchunk["ProtoChunk<br/>(ChunkAccess wrapper)<br/>16×16×384 blocks"]
+        prototchunk --> ready["Ready for:<br/>- Structure Generation<br/>- Entity Spawning<br/>- Persistence"]
+    end
+
+    class Final_Output wrapper
+
+    %% RESOLUTION LEGEND
+    subgraph Legend["📊 Resolution Levels Throughout Pipeline"]
+        direction LR
+        res_quart["🔷 Quart (@4×4 blocks):<br/>Climate, Biome, Prelim Surface"]
+        res_cell["🔶 Cell (@4×4×8 blocks):<br/>Terrain Density sampling"]
+        res_aquifer["🔶 Aquifer Grid (@16×12×16 blocks):<br/>Water/Lava centers (sparse)"]
+        res_block["🔹 Block (@1×1×1):<br/>Final output, Ore, Surface, Carve"]
+    end
+
