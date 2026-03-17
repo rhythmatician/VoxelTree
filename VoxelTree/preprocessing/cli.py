@@ -126,9 +126,8 @@ DEFAULT_VOXY_DIR = (
     else _REPO_ROOT.parent / "LODiffusion" / "run" / "saves"
 )
 
-#: Ordered list of dataprep steps.
+#: Ordered list of dataprep steps (pregen is now handled by the standalone 'pregen' GUI step).
 DATAPREP_STEPS = [
-    "pregen",
     "voxy-import",
     "dumpnoise",
     "extract-octree",
@@ -229,143 +228,9 @@ def _run_commands(
                 print(f"  {tick}  {desc}")
 
 
-def build_pregen_commands(cfg: PipelineConfig) -> list[tuple[str, str]]:
-    """Build the Chunky command sequence for pregeneration using explicit corners.
-
-    Uses ``/chunky corners`` to define an exact square grid rather than
-    radius+shape, which avoids the ring/circle artefact that some Chunky
-    versions produce with ``/chunky shape circle`` (the default when Chunky
-    State is reset between server restarts).
-    """
-    x1 = cfg.center_x - cfg.radius
-    z1 = cfg.center_z - cfg.radius
-    x2 = cfg.center_x + cfg.radius - 1
-    z2 = cfg.center_z + cfg.radius - 1
-    chunk_side = (cfg.radius * 2 + 15) // 16
-    return [
-        (f"chunky world {cfg.world}", f"Target world: {cfg.world}"),
-        (
-            f"chunky corners {x1} {z1} {x2} {z2}",
-            f"Square: {chunk_side}x{chunk_side} chunks  ({x1},{z1}) -> ({x2},{z2})",
-        ),
-        ("chunky start", "Start pregeneration"),
-    ]
-
-
 # ---------------------------------------------------------------------------
 # Subcommand handlers
 # ---------------------------------------------------------------------------
-
-
-def cmd_freeze(cfg: PipelineConfig) -> None:
-    """Apply world-freeze gamerules to stop world state from evolving."""
-    _run_commands(FREEZE_COMMANDS, cfg, "Freeze — locking world state")
-    if not cfg.dry_run:
-        print("  World is now frozen. Run 'pregen' to start chunk generation.")
-
-
-def cmd_unfreeze(cfg: PipelineConfig) -> None:
-    """Restore default gamerules after data collection is complete."""
-    _run_commands(UNFREEZE_COMMANDS, cfg, "Unfreeze — restoring world state")
-    if not cfg.dry_run:
-        print("  World gamerules restored to defaults.")
-
-
-def cmd_pregen(cfg: PipelineConfig) -> None:
-    """Configure Chunky and start pregeneration. Optionally polls for completion."""
-    # 1. Freeze first
-    print("\nStep 1: Freeze world state...")
-    _run_commands(FREEZE_COMMANDS, cfg, "Freeze")
-
-    # 2. Configure and start Chunky
-    print("\nStep 2: Configure and start Chunky...")
-    pregen_cmds = build_pregen_commands(cfg)
-    _run_commands(pregen_cmds, cfg, "Chunky Pregen")
-
-    if cfg.dry_run:
-        return
-
-    # 3. Poll Chunky for progress
-    print("\nStep 3: Monitoring progress (Ctrl-C to stop polling)...")
-    try:
-        with RconClient(cfg.host, cfg.port, cfg.password) as rcon:
-            while True:
-                resp = rcon.command("chunky progress")
-                if resp:
-                    print(f"  [{time.strftime('%H:%M:%S')}] {resp.strip()}")
-                    if "complete" in resp.lower() or "done" in resp.lower() or "100%" in resp:
-                        print("\n  Pregeneration complete!")
-                        break
-                time.sleep(5)
-    except KeyboardInterrupt:
-        print("\n  Polling stopped. Chunky continues running in the background.")
-        print("  Run 'status' to check progress, or 'cancel' in-game via /chunky cancel.")
-    if not cfg.dry_run:
-        print(
-            "\n  Next step: connect your Minecraft client so Voxy can scan the"
-            " pre-generated chunks, then extract training data:\n"
-            "    1) Connect client to localhost:25565 — Voxy auto-populates its DB\n"
-            "    2) python data-cli.py voxy-import  (polls for DB to appear)\n"
-            "    3) python data-cli.py dataprep --from-step extract-octree"
-        )
-
-
-def cmd_pregen_with_callback(cfg: PipelineConfig, progress_callback=None) -> None:
-    """Configure Chunky and start pregeneration, calling callback with progress updates.
-
-    Args:
-        cfg: Pipeline configuration
-        progress_callback: Optional callback(percentage: float, status_text: str) called with
-                         progress updates extracted from Chunky response. Percentage is 0-100.
-    """
-    import re
-
-    # 1. Freeze first
-    if progress_callback:
-        progress_callback(0.0, "Freezing world state...")
-    _run_commands(FREEZE_COMMANDS, cfg, "Freeze")
-
-    # 2. Configure and start Chunky
-    if progress_callback:
-        progress_callback(5.0, "Configuring Chunky...")
-    pregen_cmds = build_pregen_commands(cfg)
-    _run_commands(pregen_cmds, cfg, "Chunky Pregen")
-
-    if cfg.dry_run:
-        if progress_callback:
-            progress_callback(100.0, "Dry run complete (no actual pregeneration)")
-        return
-
-    # 3. Poll Chunky for progress
-    if progress_callback:
-        progress_callback(10.0, "Starting pregeneration...")
-
-    try:
-        with RconClient(cfg.host, cfg.port, cfg.password) as rcon:
-            while True:
-                resp = rcon.command("chunky progress")
-                if resp:
-                    # Extract percentage from response like:
-                    # "Task running for minecraft:overworld. Processed: X chunks (Y.YY%), ..."
-                    match = re.search(r"\((\d+\.?\d*?)%\)", resp)
-                    if match:
-                        percentage = float(match.group(1))
-                        if progress_callback:
-                            # Format status text from the response
-                            status_text = resp.strip()
-                            progress_callback(
-                                max(10.0, percentage),  # Never go below 10% (freeze + config)
-                                status_text,
-                            )
-                    if "complete" in resp.lower() or "done" in resp.lower() or "100%" in resp:
-                        if progress_callback:
-                            progress_callback(100.0, "Pregeneration complete!")
-                        break
-                time.sleep(5)
-    except KeyboardInterrupt:
-        if progress_callback:
-            progress_callback(0.0, "Pregeneration cancelled by user")
-        raise
 
 
 def cmd_voxy_import(cfg: PipelineConfig) -> None:
@@ -438,17 +303,6 @@ def cmd_voxy_import(cfg: PipelineConfig) -> None:
         f"\n  Timed out after {timeout}s."
         "\n  Once Voxy has data, re-run: dataprep --from-step extract-octree"
     )
-
-
-def cmd_harvest(args: argparse.Namespace) -> None:
-    """Automated Voxy import via RCON teleport spiral + DB monitoring.
-
-    Wraps :mod:`VoxelTree.preprocessing.harvest` as a CLI subcommand so the
-    full harvest pipeline can be invoked from the unified CLI.
-    """
-    from VoxelTree.preprocessing.harvest import run_harvest
-
-    run_harvest(args)
 
 
 def cmd_dumpnoise(cfg: PipelineConfig) -> None:
@@ -571,220 +425,6 @@ def cmd_dumpnoise(cfg: PipelineConfig) -> None:
     print("\n  Noise consolidation complete:")
     print(f"    [OK] Stage1:    <game_dir>/stage1_dumps/ ({total_chunks:,} files)")
     print(f"    [OK] SparseRoot: <game_dir>/sparse_root_dumps/ ({total_sections:,} files)")
-
-
-# ---------------------------------------------------------------------------
-# Freeze-on-load datapack
-# ---------------------------------------------------------------------------
-
-# Minecraft #minecraft:load functions run every time the world is loaded,
-# meaning these commands fire before the first server tick and before Chunky
-# is even started.  The gamerules persist in level.dat, so re-running them
-# each load is harmless and guarantees a fresh world can never accumulate
-# mobs between server start and the RCON freeze sent by "pregen" / "dumpnoise".
-
-_FREEZE_DATAPACK_FILES: dict[str, str] = {
-    "pack.mcmeta": '{\n  "pack": {\n    "pack_format": 61,\n    "supported_formats": [26, 9999],\n    "description": "Auto-freeze world on load (VoxelTree data pipeline)"\n  }\n}\n',
-    "data/minecraft/tags/functions/load.json": '{\n  "values": ["voxeltree:freeze_on_load"]\n}\n',
-    "data/voxeltree/functions/freeze_on_load.mcfunction": (
-        "# VoxelTree auto-freeze: runs on every world load via #minecraft:load\n"
-        "# Carpet tick freeze  - stops all game ticks (lava, fluid, block updates)\n"
-        "tick freeze\n"
-        "# Carpet gamerule overrides\n"
-        "carpet randomTickSpeed 0\n"
-        "# Vanilla gamerules (persist in level.dat)\n"
-        "gamerule doFireTick false\n"
-        "gamerule mobGriefing false\n"
-        "gamerule doMobSpawning false\n"
-        "gamerule doDaylightCycle false\n"
-        "gamerule doWeatherCycle false\n"
-        "gamerule randomTickSpeed 0\n"
-    ),
-}
-
-
-def _install_freeze_datapack(world_dir: Path, *, verbose: bool = True) -> None:
-    """Write the freeze-on-load datapack into ``<world_dir>/datapacks/``.
-
-    Safe to call on an existing world — only writes/overwrites the three
-    datapack files; nothing else in the world directory is touched.
-    """
-    dp_root = world_dir / "datapacks" / "freeze_on_load"
-    for rel, content in _FREEZE_DATAPACK_FILES.items():
-        dest = dp_root / Path(rel)
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        dest.write_text(content, encoding="utf-8")
-    if verbose:
-        print(f"  Installed freeze datapack -> {dp_root}")
-
-
-def cmd_install_datapack(args: argparse.Namespace) -> None:
-    """Install (or reinstall) the freeze-on-load datapack into the server world.
-
-    The datapack runs ``#minecraft:load`` functions every time the world
-    loads, applying all freeze gamerules before the first server tick.  This
-    prevents mobs accumulating in pre-generated chunks and stops lava from
-    spreading between server start and the RCON freeze sent by *pregen* or
-    *dumpnoise*.
-
-    Safe to run on a live world — the datapack only becomes active after the
-    next server restart.
-    """
-    server_dir: Path = getattr(args, "server_dir", None) or DEFAULT_SERVER_DIR
-    server_props = server_dir / "server.properties"
-
-    level_name = "world"
-    if server_props.is_file():
-        for line in server_props.read_text(encoding="utf-8").splitlines():
-            if line.startswith("level-name="):
-                level_name = line.split("=", 1)[1].strip()
-                break
-
-    world_dir = server_dir / level_name
-    _install_freeze_datapack(world_dir, verbose=True)
-    print("  Restart the server to activate the datapack.")
-
-
-def cmd_purge(args: argparse.Namespace) -> None:
-    """Delete stale server world + training data so the pipeline can start fresh.
-
-    Removes:
-    * Server world folder (``<server-dir>/<level-name>/``)
-    * Server noise dump directory (``<server-dir>/noise_dumps/``)
-    * Optionally NPZ training data (``data/voxy_octree/``)
-
-    If ``--seed`` is given, also rewrites ``level-seed`` in server.properties.
-    The server must be **restarted** after purging so Minecraft regenerates the
-    world with the new seed.
-    """
-    import re
-    import shutil
-
-    server_dir: Path = getattr(args, "server_dir", None) or DEFAULT_SERVER_DIR
-    server_props = server_dir / "server.properties"
-    new_seed: str | None = getattr(args, "seed", None)
-    clean_data: bool = getattr(args, "clean_data", False)
-    data_dir: Path = getattr(args, "data_dir", DEFAULT_DATA_DIR)
-    yes: bool = getattr(args, "yes", False)
-
-    # Read level-name from server.properties
-    level_name = "world"
-    if server_props.is_file():
-        for line in server_props.read_text(encoding="utf-8").splitlines():
-            if line.startswith("level-name="):
-                level_name = line.split("=", 1)[1].strip()
-                break
-
-    world_dir = server_dir / level_name
-    noise_dir = server_dir / "noise_dumps"
-
-    # Build action list
-    actions: list[tuple[str, Path, str]] = []
-    if world_dir.exists():
-        actions.append(("DELETE", world_dir, f"Server world ({level_name})"))
-    else:
-        print(f"  (skip) World dir not found: {world_dir}")
-    if noise_dir.exists():
-        actions.append(("DELETE", noise_dir, "Noise dump JSON files"))
-    else:
-        print(f"  (skip) Noise dump dir not found: {noise_dir}")
-    if clean_data:
-        if data_dir.exists():
-            actions.append(("DELETE", data_dir, "NPZ octree training data"))
-        else:
-            print(f"  (skip) Data dir not found: {data_dir}")
-    if new_seed:
-        actions.append(("UPDATE", server_props, f"level-seed → {new_seed}"))
-
-    if not actions:
-        print("Nothing to purge.")
-        return
-
-    print("\nPURGE PLAN")
-    print("=" * 56)
-    for action, path, desc in actions:
-        print(f"  {action:<8}  {path}")
-        print(f"           ({desc})")
-    print("=" * 56)
-
-    if not yes:
-        try:
-            confirm = input("\nProceed? [y/N] ").strip().lower()
-        except (EOFError, KeyboardInterrupt):
-            print("\nAborted.")
-            return
-        if confirm not in ("y", "yes"):
-            print("Aborted.")
-            return
-
-    for action, path, desc in actions:
-        if action == "DELETE":
-            if path.is_dir():
-                shutil.rmtree(path)
-            else:
-                path.unlink(missing_ok=True)
-            print(f"  Deleted:  {path}")
-        elif action == "UPDATE":
-            content = server_props.read_text(encoding="utf-8")
-            content = re.sub(
-                r"^level-seed=.*$", f"level-seed={new_seed}", content, flags=re.MULTILINE
-            )
-            server_props.write_text(content, encoding="utf-8")
-            print(f"  Updated:  {path}  ({desc})")
-
-    print("\nPurge complete.")
-    if new_seed:
-        print(f"  New seed : {new_seed}")
-
-    # Pre-install the freeze datapack so the very first server tick after
-    # restarting already has doMobSpawning=false, doFireTick=false, etc.
-    # Minecraft will find world/datapacks/ even when the rest of the world
-    # directory is created fresh on first boot.
-    _install_freeze_datapack(world_dir, verbose=True)
-
-    print("  ACTION REQUIRED: Restart the Fabric server before running 'pregen'.")
-
-
-def cmd_status(cfg: PipelineConfig) -> None:
-    """Query Chunky pregeneration progress."""
-    if cfg.dry_run:
-        print("\n  [DRY-RUN] Would send: chunky progress")
-        return
-
-    if not cfg.password:
-        print("ERROR: --password required.")
-        sys.exit(1)
-
-    with RconClient(cfg.host, cfg.port, cfg.password) as rcon:
-        resp = rcon.command("chunky progress")
-        print(f"\n  Chunky status: {resp.strip() or '(no response)'}")
-
-
-def cmd_info(cfg: PipelineConfig) -> None:  # noqa: ARG001
-    """Print the full pipeline plan without connecting."""
-    print(
-        textwrap.dedent(
-            f"""
-        LODiffusion Freeze + Pregen Pipeline
-        =====================================
-        World       : {cfg.world}
-        Center      : ({cfg.center_x}, {cfg.center_z})
-        Radius      : {cfg.radius} blocks
-
-        Grid: {(cfg.radius * 2 + 15) // 16}\u00d7{(cfg.radius * 2 + 15) // 16} chunks
-            = {int((cfg.radius * 2 / 16) ** 2):,} total
-            corners: ({cfg.center_x - cfg.radius},{cfg.center_z - cfg.radius})
-                  to ({cfg.center_x + cfg.radius - 1},{cfg.center_z + cfg.radius - 1})
-
-        Step 1 — freeze ({len(FREEZE_COMMANDS)} gamerule commands)
-        Step 2 — Chunky pregen ({len(build_pregen_commands(cfg))} Chunky commands)
-        Step 3 — poll for completion
-
-        Run with --dry-run to preview all commands.
-        Run with --host / --port / --password to execute against a live server.
-    """
-        ).strip()
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -1115,7 +755,6 @@ def cmd_dataprep(args: argparse.Namespace) -> None:
     t0 = time.time()
 
     step_runners = {
-        "pregen": lambda: cmd_pregen(cfg),
         "voxy-import": lambda: cmd_voxy_import(cfg),
         "dumpnoise": lambda: cmd_dumpnoise(cfg),
         "extract-octree": lambda: _step_extract_octree(args),
@@ -1481,19 +1120,6 @@ def main(argv: list[str] | None = None) -> None:
         cmd_dataprep(args)
         return
 
-    # harvest uses args directly (delegates to harvest.py)
-    if args.subcommand == "harvest":
-        cmd_harvest(args)
-        return
-
-    # purge / install-datapack use args directly (no RCON/PipelineConfig needed)
-    if args.subcommand == "purge":
-        cmd_purge(args)
-        return
-    if args.subcommand == "install-datapack":
-        cmd_install_datapack(args)
-        return
-
     cfg = PipelineConfig(
         host=getattr(args, "host", "localhost"),
         port=getattr(args, "port", 25575),
@@ -1509,13 +1135,8 @@ def main(argv: list[str] | None = None) -> None:
     )
 
     dispatch = {
-        "freeze": cmd_freeze,
-        "unfreeze": cmd_unfreeze,
-        "pregen": cmd_pregen,
         "voxy-import": cmd_voxy_import,
         "dumpnoise": cmd_dumpnoise,
-        "status": cmd_status,
-        "info": cmd_info,
     }
     dispatch[args.subcommand](cfg)
 

@@ -322,7 +322,7 @@ def _dumpnoise_cmd(p: dict) -> list[str]:
     return [
         _python(),
         "-m",
-        "VoxelTree",
+        "VoxelTree.preprocessing.cli",
         "dumpnoise",
         "--radius",
         str(world.get("radius", 2048)),
@@ -342,7 +342,7 @@ def _extract_octree_cmd(p: dict) -> list[str]:
     cmd = [
         _python(),
         "-m",
-        "VoxelTree",
+        "VoxelTree.preprocessing.cli",
         "dataprep",
         "--from-step",
         "extract-octree",
@@ -363,7 +363,7 @@ def _column_heights_cmd(p: dict) -> list[str]:
     cmd = [
         _python(),
         "-m",
-        "VoxelTree",
+        "VoxelTree.preprocessing.cli",
         "dataprep",
         "--from-step",
         "column-heights-octree",
