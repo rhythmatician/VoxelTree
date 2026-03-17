@@ -5,7 +5,7 @@ graph TD
     pos_y([y])
     lod([lod_level])
 
-    seed -->|once per world| noise_params[/"NoiseRouterExtractor<br/>→ SSBOs 0–6"/]
+    seed -->|once per world| noise_params[/"ShadowRouterExtractor<br/>→ SSBOs 0–6"/]
 
     %% ──────────────── XZ DISTORTION (GLSL — TODO) ────────────────
     pos_xz --> shift_a[mc_normal_noise<br/>shift_a]
