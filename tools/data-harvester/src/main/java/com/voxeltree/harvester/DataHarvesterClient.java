@@ -2,6 +2,7 @@ package com.voxeltree.harvester;
 
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
+import com.voxeltree.harvester.ingest.IngestClientHandler;
 import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import org.slf4j.Logger;
@@ -53,6 +54,10 @@ public class DataHarvesterClient implements ClientModInitializer {
     @Override
     public void onInitializeClient() {
         LOGGER.info("[DataHarvester] Initializing...");
+
+        // Register client-side ingest handler (always, even without auto-connect)
+        IngestClientHandler.init();
+
         config = loadConfig();
         LOGGER.info("[DataHarvester] Config: server={}, autoConnect={}, delay={}s",
                 config.serverAddress, config.autoConnect, config.autoConnectDelaySec);

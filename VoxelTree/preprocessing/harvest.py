@@ -331,6 +331,50 @@ def run_teleport_spiral(
     print("  Teleport spiral complete!")
 
 
+def run_ingestall(
+    rcon: RconClient,
+    radius_blocks: int,
+    poll_interval: float = 10.0,
+    timeout: int = 7200,
+) -> bool:
+    """Send ``/ingestall`` via RCON and poll until complete.
+
+    The ``/ingestall`` command scans pre-generated region files on the
+    server, serialises each chunk's block-state/biome/light data, and
+    sends it to connected clients as network packets.  The client-side
+    Voxy then ingests them through its standard pipeline — identical
+    to normal VoxyWorldGen gameplay, but without any teleporting.
+
+    Returns ``True`` when the ingest finishes (or was already done),
+    ``False`` on timeout or error.
+    """
+    radius_chunks = max(1, radius_blocks // 16)
+    resp = rcon_command(rcon, f"ingestall {radius_chunks}")
+    print(f"  Server: {resp}")
+
+    if "no chunks found" in resp.lower():
+        print("  No pre-generated chunks found. Run Chunky pregen first.")
+        return False
+    if "already running" in resp.lower():
+        print("  Ingest already in progress — attaching to monitor.")
+
+    start = time.time()
+    while time.time() - start < timeout:
+        time.sleep(poll_interval)
+        status = rcon_command(rcon, "ingestall status", quiet=True)
+        print(f"  {status}")
+
+        if "no ingest running" in status.lower():
+            return True
+        if "complete" in status.lower():
+            return True
+
+    print(f"\n  /ingestall timed out after {timeout}s.")
+    # Stop the ingest gracefully
+    rcon_command(rcon, "ingestall stop")
+    return False
+
+
 # ---------------------------------------------------------------------------
 # Freeze helpers (from cli.py)
 # ---------------------------------------------------------------------------
@@ -422,18 +466,32 @@ def run_harvest(args: argparse.Namespace) -> None:
                 print("  ERROR: No player connected. Connect a client first.")
                 return
 
-        # Step 4: Teleport spiral
+        # Step 4: Ingest chunks into client-side Voxy
         print(f"\n{'─' * 65}")
-        print("  STEP 3: Teleport Spiral")
-        print(f"{'─' * 65}")
-        run_teleport_spiral(
-            rcon,
-            radius_blocks=args.radius,
-            step_blocks=args.step,
-            center_x=args.center_x,
-            center_z=args.center_z,
-            dwell_seconds=args.dwell,
-        )
+        if args.legacy_spiral:
+            print("  STEP 3: Teleport Spiral (legacy mode)")
+            print(f"{'─' * 65}")
+            run_teleport_spiral(
+                rcon,
+                radius_blocks=args.radius,
+                step_blocks=args.step,
+                center_x=args.center_x,
+                center_z=args.center_z,
+                dwell_seconds=args.dwell,
+            )
+        else:
+            print("  STEP 3: /ingestall — Server-to-Client Chunk Broadcast")
+            print(f"{'─' * 65}")
+            print("  Sending pre-generated chunks directly to client Voxy.")
+            print("  No teleporting needed — player can sit still.")
+            ok = run_ingestall(
+                rcon,
+                radius_blocks=args.radius,
+                timeout=args.voxy_timeout,
+            )
+            if not ok and not args.force:
+                print("  /ingestall did not complete. Use --force to continue.")
+                return
 
         # Step 5: Wait for Voxy DB to stabilise
         print(f"\n{'─' * 65}")
@@ -555,6 +613,11 @@ def main() -> None:
         "--spiral-only",
         action="store_true",
         help="Skip pregen and player wait; just run spiral + monitor",
+    )
+    parser.add_argument(
+        "--legacy-spiral",
+        action="store_true",
+        help="Use teleport spiral instead of /ingestall (slower, for debugging)",
     )
     parser.add_argument(
         "--monitor-only", action="store_true", help="Only monitor Voxy DB growth, no RCON"
