@@ -55,13 +55,20 @@ import time
 from pathlib import Path
 
 # ------------------------------------------------------------------
+# Path anchors — pipeline.py lives at VoxelTree/VoxelTree/preprocessing/
+# ------------------------------------------------------------------
+
+_PKG_DIR = Path(__file__).resolve().parent.parent  # VoxelTree/VoxelTree/ (the package)
+_REPO_ROOT = _PKG_DIR.parent  # VoxelTree/ (repo root)
+
+# ------------------------------------------------------------------
 # Defaults
 # ------------------------------------------------------------------
 
-VOXY_VOCAB_PATH = Path("config/voxy_vocab.json")
-DEFAULT_DATA_DIR = Path("data/voxy_octree")
-DEFAULT_MODEL_DIR = Path("models/voxy_octree")
-DEFAULT_EXPORT_DIR = Path("production")
+VOXY_VOCAB_PATH = _PKG_DIR / "config" / "voxy_vocab.json"
+DEFAULT_DATA_DIR = _REPO_ROOT / "data" / "voxy_octree"
+DEFAULT_MODEL_DIR = _REPO_ROOT / "models" / "voxy_octree"
+DEFAULT_EXPORT_DIR = _REPO_ROOT / "production"
 
 
 # ==================================================================

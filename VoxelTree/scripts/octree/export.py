@@ -159,7 +159,7 @@ def collect_export_provenance() -> Dict[str, Any]:
 def embed_block_mapping(config_dict: Dict[str, Any]) -> Dict[str, Any]:
     """Embed Voxy vocabulary into a config dict for self-contained export."""
     try:
-        vocab_path = Path("config/voxy_vocab.json")
+        vocab_path = Path(__file__).resolve().parent.parent.parent / "config" / "voxy_vocab.json"
         if vocab_path.exists():
             with open(vocab_path, "r") as f:
                 block_mapping = json.load(f)

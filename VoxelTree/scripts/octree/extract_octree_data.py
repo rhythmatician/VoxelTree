@@ -53,7 +53,7 @@ from VoxelTree.scripts.voxy_reader import VoxyReader
 # ---------------------------------------------------------------------------
 
 MAX_LOD_LEVEL = 4
-_PKG_DIR = Path(__file__).resolve().parent.parent  # VoxelTree/
+_PKG_DIR = Path(__file__).resolve().parent.parent.parent  # VoxelTree/VoxelTree/ (the package)
 DEFAULT_VOCAB_PATH = _PKG_DIR / "config" / "voxy_vocab.json"
 DEFAULT_OUTPUT_DIR = Path("data/voxy_octree")
 

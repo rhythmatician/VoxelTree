@@ -4,6 +4,7 @@
 
 # Python cache and artifacts
 *.pyc
+*.egg-info/
 tests/__pycache__/*
 *.log
 logs/
