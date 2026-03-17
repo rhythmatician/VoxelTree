@@ -235,6 +235,7 @@ graph TD
         carver_config[["Carver Configuration<br/>(per chunk + 8×8 neighbors)"]]
         carver_config --> carver_apply["For each Carver<br/>in Config:"]
         carver_apply --> carver_rng["Seed RNG<br/>from world seed"]
+        seed --> carver_rng
         carver_rng --> carver_exec["Carver.carve()<br/>replaces solid → air<br/>@block-level"]
         carver_exec --> carver_out["Carved-Out<br/>Regions (air)"]
     end
