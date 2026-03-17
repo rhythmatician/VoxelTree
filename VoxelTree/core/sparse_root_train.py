@@ -235,7 +235,9 @@ def _update_batch_metrics(
         if leaf_mask.any():
             label_tgt = targets[lvl]["label"].to(label_pred.device)
             accum["leaf_total"] += float(leaf_mask.sum().item())
-            accum["leaf_correct"] += float((label_pred[leaf_mask] == label_tgt[leaf_mask]).sum().item())
+            accum["leaf_correct"] += float(
+                (label_pred[leaf_mask] == label_tgt[leaf_mask]).sum().item()
+            )
 
 
 def _finalize_metrics(accum: Dict[str, float]) -> Dict[str, float]:

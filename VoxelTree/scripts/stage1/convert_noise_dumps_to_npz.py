@@ -171,9 +171,7 @@ def parse_chunk(data: dict, subchunk_mode: bool = False) -> tuple[np.ndarray, np
         surface_tensors.append(surf3d)  # each (4,48,4)
 
     # y_norm: broadcast (48,) → (4, 48, 4)
-    y3d = np.broadcast_to(
-        y_norm[np.newaxis, :, np.newaxis], (CX_CELLS, CY_CELLS, CZ_CELLS)
-    ).copy()
+    y3d = np.broadcast_to(y_norm[np.newaxis, :, np.newaxis], (CX_CELLS, CY_CELLS, CZ_CELLS)).copy()
 
     if not subchunk_mode:
         # --- stack → (4, 48, 4, 7) --------------------------------------------------
@@ -193,7 +191,9 @@ def parse_chunk(data: dict, subchunk_mode: bool = False) -> tuple[np.ndarray, np
     ys = np.linspace(-64.0, 319.0, num=384, dtype=np.float32)
     # Normalize block Y over full world height range (-64..319)
     y_norm_blocks = (ys + 64.0) / (319.0 + 64.0) * 2.0 - 1.0
-    y_block = np.broadcast_to(y_norm_blocks[np.newaxis, :, np.newaxis], (16, 384, 16)).astype(np.float32)
+    y_block = np.broadcast_to(y_norm_blocks[np.newaxis, :, np.newaxis], (16, 384, 16)).astype(
+        np.float32
+    )
     block_inputs.append(y_block)
 
     # final density: trilinear interpolation from cell grid

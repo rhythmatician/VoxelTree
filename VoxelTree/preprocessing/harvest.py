@@ -52,7 +52,6 @@ if str(_PKG_ROOT) not in sys.path:
 
 from VoxelTree.preprocessing.rcon import RconClient, RconError  # noqa: E402
 
-
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------

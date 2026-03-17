@@ -108,9 +108,7 @@ def main():
         val_loss /= max(1, (X_val_t.shape[0] // args.batch_size))
         val_losses.append(val_loss)
 
-        print(
-            f"Epoch {epoch+1}/{args.epochs} - train={train_loss:.5f} val={val_loss:.5f}"
-        )
+        print(f"Epoch {epoch+1}/{args.epochs} - train={train_loss:.5f} val={val_loss:.5f}")
 
     print("Done.")
 
