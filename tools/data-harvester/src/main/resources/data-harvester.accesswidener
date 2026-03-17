@@ -1,0 +1,11 @@
+accessWidener v2 named
+
+# Allow mod code to call NoiseChunk.getInterpolatedState() (protected)
+# Used by WorldNoiseAccess.sampleBothHeightmaps() to drive the same
+# populateNoise() interpolation loop without writing blocks.
+accessible method net/minecraft/world/level/levelgen/NoiseChunk getInterpolatedState ()Lnet/minecraft/world/level/block/state/BlockState;
+
+# Allow mod code to reference the no-op BeardifierMarker singleton.
+# BeardifierMarker.INSTANCE is the zero-structure-weight placeholder used by
+# NoiseBasedChunkGenerator — identical semantics for our use case.
+accessible class net/minecraft/world/level/levelgen/DensityFunctions$BeardifierMarker

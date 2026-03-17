@@ -82,7 +82,7 @@ public class AutoConnectHandler {
                         config.serverAddress);
                 reconnectTickCounter = 0;
                 // Return to title screen first, then connect
-                client.disconnect();
+                client.disconnect(null, false);
                 connect(client);
             } else if (reconnectTickCounter == 1) {
                 LOGGER.info("[DataHarvester] Disconnected. Will reconnect in {}s.",

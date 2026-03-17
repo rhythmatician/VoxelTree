@@ -61,3 +61,10 @@ tools/fabric-server/runtime/sparse_root_dumps/
 tools/fabric-server/runtime/config/lodiffusion/
 # Intermediate model artifacts (eg. created by training scripts)
 stage1_model/
+
+# Gradle build artifacts (data-harvester mod)
+tools/data-harvester/.gradle/
+tools/data-harvester/build/
+
+# Extracted Minecraft decompiled sources (for reference only)
+tools/data-harvester/net/
