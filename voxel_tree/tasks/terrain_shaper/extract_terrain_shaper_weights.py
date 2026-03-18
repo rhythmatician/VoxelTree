@@ -132,15 +132,8 @@ def extract_weights(checkpoint_path, output_path_bin, output_path_cpp):
 
 
 def main():
-    base_path = (
-        Path(__file__).parent.parent
-        / "src"
-        / "main"
-        / "resources"
-        / "assets"
-        / "lodiffusion"
-        / "models"
-    )
+    base_path = Path(__file__).parent / "model"
+    base_path.mkdir(parents=True, exist_ok=True)
 
     checkpoint_path = base_path / "terrain_shaper.pth"
     output_bin = base_path / "terrain_shaper_weights.bin"

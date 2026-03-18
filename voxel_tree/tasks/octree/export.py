@@ -838,8 +838,8 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument(
         "--out-dir",
         type=Path,
-        default=Path("production"),
-        help="Output directory for ONNX files (default: production/)",
+        default=Path(__file__).parent / "model",
+        help="Output directory for ONNX files (default: <task>/model/)",
     )
     parser.add_argument(
         "--models",

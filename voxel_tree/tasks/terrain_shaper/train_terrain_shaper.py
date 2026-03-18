@@ -889,15 +889,7 @@ def _main():
         ckpt = torch.load(checkpoint_path, weights_only=False)
         model.load_state_dict(ckpt["model_state"])
 
-        output_dir = (
-            Path(__file__).parent.parent
-            / "src"
-            / "main"
-            / "resources"
-            / "assets"
-            / "lodiffusion"
-            / "models"
-        )
+        output_dir = Path(__file__).parent / "model"
         output_dir.mkdir(parents=True, exist_ok=True)
 
         onnx_path = Path(args.onnx_path) if args.onnx_path else output_dir / "terrain_shaper.onnx"
@@ -945,15 +937,7 @@ def _main():
         checkpoint_interval=50,
     )
 
-    output_dir = (
-        Path(__file__).parent.parent
-        / "src"
-        / "main"
-        / "resources"
-        / "assets"
-        / "lodiffusion"
-        / "models"
-    )
+    output_dir = Path(__file__).parent / "model"
     output_dir.mkdir(parents=True, exist_ok=True)
 
     model.cpu()

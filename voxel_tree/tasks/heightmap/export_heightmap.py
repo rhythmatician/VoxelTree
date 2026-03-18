@@ -110,7 +110,7 @@ def main(argv: list[str] | None = None) -> None:
                         default=Path("models/heightmap/heightmap_predictor.pt"),
                         help="Trained HeightmapPredictor checkpoint")
     parser.add_argument("--out-dir", type=Path,
-                        default=Path("exports/heightmap"),
+                        default=Path(__file__).parent / "model",
                         help="Output directory for ONNX + sidecar")
     args = parser.parse_args(argv)
 

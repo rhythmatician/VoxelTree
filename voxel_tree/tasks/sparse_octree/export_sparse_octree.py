@@ -469,8 +469,9 @@ def _parse_args() -> argparse.Namespace:
     )
     p.add_argument(
         "--out-dir",
-        required=True,
+        required=False,
         type=Path,
+        default=Path(__file__).parent / "model",
         help="Output directory (will be created).  "
         "Writes sparse_octree.onnx and sparse_octree_config.json here.",
     )
