@@ -1,5 +1,7 @@
 # Octree Model — Complete Track
 
+WARNING: This family of models is defunct for now.  We might re-implement it now, but the model you're looking for is probably sparse_octree
+
 ## Overview
 The octree model is a 3-model architecture for generating Minecraft terrain at multiple detail levels (L0-L4).
 
