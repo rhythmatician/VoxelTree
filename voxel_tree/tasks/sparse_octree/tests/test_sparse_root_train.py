@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+import tempfile
+from pathlib import Path
+
+import numpy as np
 import torch
 
 # sparse_octree.py now lives at voxel_tree/tasks/sparse_octree/sparse_octree.py;
 # no LODiffusion stub is needed — the module is in the same package.
 
 from voxel_tree.tasks.sparse_octree.sparse_octree_train import (
+    SparseOctreeDataset,
     _finalize_metrics,
     _sparse_octree_loss,
     _update_batch_metrics,
@@ -99,3 +104,40 @@ def test_batch_metric_accumulator_reports_split_and_leaf_quality() -> None:
     assert metrics["split_under_rate"] == 0.5
     assert metrics["leaf_acc"] == 1.0
     assert metrics["leaf_node_ratio"] == 1.0
+
+
+def test_sparse_octree_dataset_handles_missing_noise_2d() -> None:
+    """v7 NPZs have no noise_2d key — dataset must zero-fill with shape (N, 0, 4, 4)."""
+    n = 4
+    with tempfile.TemporaryDirectory() as tmpdir:
+        npz_path = Path(tmpdir) / "test.npz"
+        np.savez_compressed(
+            npz_path,
+            subchunk16=np.zeros((n, 16, 16, 16), dtype=np.int32),
+            noise_3d=np.random.randn(n, 15, 4, 4, 4).astype(np.float32),
+            biome_ids=np.zeros((n, 4, 4, 4), dtype=np.int32),
+        )
+        ds = SparseOctreeDataset(npz_path, cache_targets=False)
+        assert ds.noise_2d.shape == (n, 0, 4, 4)
+        assert ds.noise_3d.shape == (n, 15, 4, 4, 4)
+        assert ds.spatial_y == 4
+        assert len(ds) == n
+
+
+def test_sparse_octree_dataset_loads_noise_2d_when_present() -> None:
+    """Legacy NPZs that include noise_2d should load it normally."""
+    n = 3
+    c2d = 6
+    with tempfile.TemporaryDirectory() as tmpdir:
+        npz_path = Path(tmpdir) / "test.npz"
+        np.savez_compressed(
+            npz_path,
+            subchunk16=np.zeros((n, 16, 16, 16), dtype=np.int32),
+            noise_2d=np.random.randn(n, c2d, 4, 4).astype(np.float32),
+            noise_3d=np.random.randn(n, 13, 4, 2, 4).astype(np.float32),
+        )
+        ds = SparseOctreeDataset(npz_path, cache_targets=False)
+        assert ds.noise_2d.shape == (n, c2d, 4, 4)
+        assert ds.noise_3d.shape == (n, 13, 4, 2, 4)
+        assert ds.spatial_y == 2
+        assert len(ds) == n

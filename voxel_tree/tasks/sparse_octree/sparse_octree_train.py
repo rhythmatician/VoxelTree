@@ -43,10 +43,15 @@ class SparseOctreeDataset(Dataset):  # type: ignore[type-arg]
     def __init__(self, npz_path: Path, air_id: int = 0, cache_targets: bool = True) -> None:
         data = np.load(npz_path)
         self.subchunks = data["subchunk16"].astype(np.int32)  # (N,16,16,16)
-        self.noise_2d = data["noise_2d"].astype(np.float32)  # (N,C2,4,4)
         self.noise_3d = data["noise_3d"].astype(np.float32)  # (N,C3,4,Y,4)
         # Detect spatial_y from noise_3d shape (index 2 = X=4, index 3 = Y)
         self.spatial_y = self.noise_3d.shape[3]  # 4 for v7, 2 for legacy
+        if "noise_2d" in data:
+            self.noise_2d = data["noise_2d"].astype(np.float32)  # (N,C2,4,4)
+        else:
+            # v7 pipeline has no 2D noise channels — zero-length placeholder.
+            n = len(self.subchunks)
+            self.noise_2d = np.zeros((n, 0, 4, 4), dtype=np.float32)
         if "biome_ids" in data:
             self.biome_ids = data["biome_ids"].astype(np.int32)  # (N,4,Y,4)
         else:
