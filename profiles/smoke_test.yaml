@@ -7,20 +7,21 @@
 #
 # Pipeline:
 #   pregen → dumpnoise_v7 → build_v7_pairs
-#     → [density_v2 | biome_classifier | heightmap_predictor | sparse_octree_v7]
+#     → [density | biome_classifier | heightmap_predictor | sparse_octree_v7]
 #       × [build_pairs → train → export → deploy]
 
 dag:
   steps:
     # ── v7 Data Acquisition ───────────────────────────────────
     - id: pregen
+    - id: harvest
     - id: dumpnoise_v7
     - id: build_v7_pairs
-    # ── Density V2 ────────────────────────────────────────────
-    - id: build_pairs_density_v2
-    - id: train_density_v2
-    - id: export_density_v2
-    - id: deploy_density_v2
+    # ── Density ───────────────────────────────────────────────
+    - id: build_pairs_density
+    - id: train_density
+    - id: export_density
+    - id: deploy_density
     # ── Biome Classifier ──────────────────────────────────────
     - id: build_pairs_biome_classifier
     - id: train_biome_classifier
@@ -40,7 +41,7 @@ dag:
 name: smoke_test
 description: >
   Smoke test — tiny dataset, minimum epochs, verifies that all four v7 models
-  (density_v2, biome_classifier, heightmap_predictor, sparse_octree_v7) can be
+  (density, biome_classifier, heightmap_predictor, sparse_octree_v7) can be
   trained and exported end-to-end.  Use the "train" world role in the server
   status bar.  Not intended for production-quality model weights.
 

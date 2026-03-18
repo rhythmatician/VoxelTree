@@ -44,8 +44,7 @@
 # ## Track IDs in use (add new tracks to this list when you create them)
 #
 #   "sparse_octree"       — Sparse Octree hierarchy classifier (5-level octree, legacy 13ch/4×2×4)
-#   "terrain_shaper"      — Terrain Shaper + Density NN (legacy)
-#   "density_v2"          — v7 Density predictor (6 climate → 2 density fields)
+#   "density"             — Density predictor (6 climate → 2 density fields)
 #   "biome_classifier"    — v7 Biome classifier (6 climate → 54 biome classes)
 #   "heightmap_predictor" — v7 Heightmap predictor (96 climate → 32 height values)
 #   "sparse_octree_v7"    — v7 Sparse Octree (15ch/4×4×4 → block hierarchy)
@@ -55,7 +54,6 @@
 
 from __future__ import annotations
 
-import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
@@ -451,76 +449,6 @@ def _harvest_run(p: dict[str, Any]) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Step runners — Terrain Shaper + Density NN
-# ---------------------------------------------------------------------------
-
-
-def _train_terrain_shaper_density_run(p: dict[str, Any]) -> None:
-    from voxel_tree.tasks.density.train_density import main as train_main  # noqa: PLC0415
-
-    data = p.get("data", {})
-    train = p.get("train", {})
-    argv: list[str] = []
-    if data.get("terrain_shaper_dump_dir"):
-        argv += ["--data-dir", str(data["terrain_shaper_dump_dir"])]
-    if train.get("output_dir"):
-        argv += ["--out-dir", str(train["output_dir"])]
-    if train.get("epochs") is not None:
-        argv += ["--epochs", str(train["epochs"])]
-    if train.get("batch_size") is not None:
-        argv += ["--batch-size", str(train["batch_size"])]
-    if train.get("lr") is not None:
-        argv += ["--lr", str(train["lr"])]
-    if train.get("target_mse") is not None:
-        argv += ["--target-mse", str(train["target_mse"])]
-    train_main(argv)
-
-
-def _extract_terrain_shaper_weights_run(p: dict[str, Any]) -> None:
-    """Export weights only (do not deploy)."""
-    from voxel_tree.tasks.density.extract_density_weights import (
-        main as extract_main,
-    )  # noqa: PLC0415
-
-    train = p.get("train", {})
-    extract = p.get("extract", {})
-    argv = ["--no-deploy"]
-    model_dir = train.get("output_dir")
-    if model_dir:
-        argv += ["--model-dir", str(model_dir)]
-    if extract.get("output_dir"):
-        argv += ["--out-dir", str(extract["output_dir"])]
-    extract_main(argv)
-
-
-def _build_pairs_terrain_shaper_run(p: dict[str, Any]) -> None:
-    """Validate that terrain shaper noise dumps exist."""
-    data = p.get("data", {})
-    dump_dir = Path(data.get("terrain_shaper_dump_dir", "terrain_shaper_dumps"))
-    files = list(dump_dir.glob("chunk_*.json"))
-    if not files:
-        print(f"No terrain shaper dumps found in {dump_dir}", file=sys.stderr)
-        sys.exit(1)
-
-
-def _deploy_terrain_shaper_run(p: dict[str, Any]) -> None:
-    """Deploy weights to LODiffusion resources."""
-    from voxel_tree.tasks.density.extract_density_weights import (
-        main as extract_main,
-    )  # noqa: PLC0415
-
-    train = p.get("train", {})
-    extract = p.get("extract", {})
-    argv: list[str] = []
-    model_dir = train.get("output_dir")
-    if model_dir:
-        argv += ["--model-dir", str(model_dir)]
-    if extract.get("output_dir"):
-        argv += ["--out-dir", str(extract["output_dir"])]
-    extract_main(argv)
-
-
-# ---------------------------------------------------------------------------
 # Step runners — Octree export/deploy (init/refine/leaf)
 # ---------------------------------------------------------------------------
 
@@ -532,7 +460,7 @@ def _export_octree_run(p: dict[str, Any], model: str) -> None:
     train = p.get("train", {})
     export = p.get("export", {})
     checkpoint_dir = Path(train.get("output_dir")) if train.get("output_dir") else None
-    export_dir = Path(export.get("output_dir", "production"))
+    export_dir = Path(export["output_dir"]) if export.get("output_dir") else Path(__file__).parent.parent / "tasks" / "octree" / "model"
     phase3_export(None, export_dir, checkpoint_dir=checkpoint_dir, models=[model])
 
 
@@ -542,7 +470,7 @@ def _deploy_octree_run(p: dict[str, Any], model: str) -> None:
 
     export = p.get("export", {})
     deploy = p.get("deploy", {})
-    export_dir = Path(export.get("output_dir", "production"))
+    export_dir = Path(export["output_dir"]) if export.get("output_dir") else Path(__file__).parent.parent / "tasks" / "octree" / "model"
     dest = Path(deploy.get("target_dir")) if deploy.get("target_dir") else None
     phase4_deploy(export_dir, dest, models=[model])
 
@@ -607,30 +535,6 @@ def _deploy_leaf_cmd(profile: dict[str, Any]) -> list[str]:
     return ["--models", "leaf"]
 
 
-def _distill_density_run(p: dict[str, Any]) -> None:
-    from voxel_tree.tasks.density.distill_density import distill_student  # noqa: PLC0415
-
-    train = p.get("train", {})
-    distill = p.get("distill", {})
-    distill_student(
-        teacher_name=distill.get("teacher", "unet"),
-        student_name=distill.get("student", "sep"),
-        epochs=distill.get("epochs", 120),
-        alpha=distill.get("alpha", 0.5),
-        lr=distill.get("lr", 2e-3),
-        device=train.get("device", "auto"),
-    )
-
-
-def _train_terrain_shaper_run(_: dict[str, Any]) -> None:
-    """Train the TerrainShaper spline-approximation MLP."""
-    from voxel_tree.tasks.terrain_shaper.train_terrain_shaper import (
-        main as shaper_main,
-    )  # noqa: PLC0415
-
-    shaper_main()
-
-
 # ---------------------------------------------------------------------------
 # Step runners — Sparse Octree
 # ---------------------------------------------------------------------------
@@ -674,9 +578,10 @@ def _export_sparse_octree_run(p: dict[str, Any]) -> None:
 
     train = p.get("train", {})
     export = p.get("export", {})
+    _out = export.get("output_dir")
     export_sparse_octree(
         checkpoint=Path(train.get("output_dir", ".")) / "sparse_octree_model.pt",
-        out_dir=Path(export.get("output_dir") or "LODiffusion/run/models"),
+        out_dir=Path(_out) if _out else Path(__file__).parent.parent / "tasks" / "sparse_octree" / "model",
     )
 
 
@@ -689,11 +594,10 @@ def _deploy_sparse_octree_run(p: dict[str, Any]) -> None:
     out_dir = (
         deploy.get("target_dir")
         or p.get("export", {}).get("output_dir")
-        or "LODiffusion/run/models"
     )
     export_sparse_octree(
         checkpoint=Path(p.get("train", {}).get("output_dir", ".")) / "sparse_octree_model.pt",
-        out_dir=Path(out_dir),
+        out_dir=Path(out_dir) if out_dir else Path(__file__).parent.parent / "tasks" / "sparse_octree" / "model",
     )
 
 
@@ -749,7 +653,17 @@ def _dumpnoise_v7_run(p: dict[str, Any]) -> None:
 
 
 def _build_v7_pairs_run(p: dict[str, Any]) -> None:
-    """Build v7 training pairs NPZ from v7 section dumps."""
+    """Build v7 training pairs NPZ from v7 noise dumps + Voxy L4 sections.
+
+    Requires both:
+      - v7 noise dumps  (section_*.json from dumpnoise_v7)
+      - Voxy L4 data    (voxy_L4_*.npz from harvest)
+
+    Voxy dir resolution mirrors ``_harvest_run``:
+      1. Explicit ``data.voxy_dir`` in the profile.
+      2. Derived from the active server port in ``server.properties``.
+      3. CLI default when neither is set.
+    """
     from voxel_tree.tasks.sparse_octree.build_sparse_octree_pairs import (  # noqa: PLC0415
         main as pairs_main,
     )
@@ -758,27 +672,41 @@ def _build_v7_pairs_run(p: dict[str, Any]) -> None:
     argv: list[str] = []
     dumps_dir = data.get("v7_dumps_dir", "v7_dumps")
     argv += ["--dumps", str(dumps_dir)]
+
+    # Resolve voxy-dir: explicit profile value → active server port → CLI default.
+    voxy_dir = data.get("voxy_dir")
+    if not voxy_dir:
+        from voxel_tree.gui.server_manager import read_server_property  # noqa: PLC0415
+
+        server_port = read_server_property("server-port", "25565")
+        if server_port:
+            from voxel_tree.preprocessing.harvest import MODRINTH_VOXY_SAVES  # noqa: PLC0415
+
+            voxy_dir = str(MODRINTH_VOXY_SAVES / f"localhost_{server_port}")
+    if voxy_dir:
+        argv += ["--voxy", str(voxy_dir)]
+
     if data.get("v7_pairs_output"):
         argv += ["--output", str(data["v7_pairs_output"])]
     pairs_main(argv)
 
 
 # ---------------------------------------------------------------------------
-# Step runners — v7 Density V2
+# Step runners — Density MLP
 # ---------------------------------------------------------------------------
 
 
-def _build_pairs_density_v2_run(p: dict[str, Any]) -> None:
+def _build_pairs_density_run(p: dict[str, Any]) -> None:
     """Validate v7 pairs NPZ exists (pairs built by shared build_v7_pairs)."""
     data = p.get("data", {})
     npz = Path(data.get("v7_pairs_npz", "sparse_octree_pairs_v7.npz"))
     if not npz.exists():
         raise FileNotFoundError(f"v7 pairs NPZ not found: {npz}")
-    print(f"[density_v2] v7 pairs validated: {npz}")
+    print(f"[density] v7 pairs validated: {npz}")
 
 
-def _train_density_v2_run(p: dict[str, Any]) -> None:
-    from voxel_tree.tasks.density_v2.train_density_v2 import main as train_main  # noqa: PLC0415
+def _train_density_run(p: dict[str, Any]) -> None:
+    from voxel_tree.tasks.density.train_density import main as train_main  # noqa: PLC0415
 
     data = p.get("data", {})
     train = p.get("train", {})
@@ -796,19 +724,20 @@ def _train_density_v2_run(p: dict[str, Any]) -> None:
     train_main(argv)
 
 
-def _export_density_v2_run(p: dict[str, Any]) -> None:
-    from voxel_tree.tasks.density_v2.export_density_v2 import main as export_main  # noqa: PLC0415
+def _export_density_run(p: dict[str, Any]) -> None:
+    from voxel_tree.tasks.density.export_density import main as export_main  # noqa: PLC0415
 
     train = p.get("train", {})
     export = p.get("export", {})
-    checkpoint = Path(train.get("output_dir", ".")) / "density_v2_best.pt"
-    out_dir = Path(export.get("output_dir") or "LODiffusion/run/models")
+    checkpoint = Path(train.get("output_dir", ".")) / "density_best.pt"
+    _out = export.get("output_dir")
+    out_dir = Path(_out) if _out else Path(__file__).parent.parent / "tasks" / "density" / "model"
     export_main(["--checkpoint", str(checkpoint), "--out-dir", str(out_dir)])
 
 
-def _deploy_density_v2_run(p: dict[str, Any]) -> None:
-    """Deploy density_v2 (re-export to deploy target dir)."""
-    _export_density_v2_run(p)
+def _deploy_density_run(p: dict[str, Any]) -> None:
+    """Deploy density (re-export to deploy target dir)."""
+    _export_density_run(p)
 
 
 # ---------------------------------------------------------------------------
@@ -850,7 +779,8 @@ def _export_biome_classifier_run(p: dict[str, Any]) -> None:
     train = p.get("train", {})
     export = p.get("export", {})
     checkpoint = Path(train.get("output_dir", ".")) / "biome_classifier_best.pt"
-    out_dir = Path(export.get("output_dir") or "LODiffusion/run/models")
+    _out = export.get("output_dir")
+    out_dir = Path(_out) if _out else Path(__file__).parent.parent / "tasks" / "biome" / "model"
     export_main(["--checkpoint", str(checkpoint), "--out-dir", str(out_dir)])
 
 
@@ -898,7 +828,8 @@ def _export_heightmap_run(p: dict[str, Any]) -> None:
     train = p.get("train", {})
     export = p.get("export", {})
     checkpoint = Path(train.get("output_dir", ".")) / "heightmap_predictor_best.pt"
-    out_dir = Path(export.get("output_dir") or "LODiffusion/run/models")
+    _out = export.get("output_dir")
+    out_dir = Path(_out) if _out else Path(__file__).parent.parent / "tasks" / "heightmap" / "model"
     export_main(["--checkpoint", str(checkpoint), "--out-dir", str(out_dir)])
 
 
@@ -947,9 +878,10 @@ def _export_sparse_octree_v7_run(p: dict[str, Any]) -> None:
 
     train = p.get("train", {})
     export = p.get("export", {})
+    _out = export.get("output_dir")
     export_sparse_octree(
         checkpoint=Path(train.get("output_dir", ".")) / "sparse_octree_v7_model.pt",
-        out_dir=Path(export.get("output_dir") or "LODiffusion/run/models"),
+        out_dir=Path(_out) if _out else Path(__file__).parent.parent / "tasks" / "sparse_octree" / "model",
         n3d=15,
         spatial_y=4,
     )
@@ -999,61 +931,15 @@ MODEL_TRACKS: list[ModelTrack] = [
             ),
         ],
     ),
-    # ── Terrain Shaper + Density NN ───────────────────────────
-    # Predates ModelTrack; id_overrides preserve legacy run-state JSON keys.
-    # build_pairs_consumes={"noise_dumps"} because the training script reads
-    # the noise-dump JSONs directly — no explicit pair-building step is needed.
-    # export is via extract_terrain_shaper_weights (uses --no-deploy).
-    # deploy runs extract_terrain_shaper_weights without --no-deploy to push into LODiffusion resources.
+    # ── Density (climate → density prediction) ────────────────────────
     ModelTrack(
-        track_id="terrain_shaper",
-        label="TerrainShaper",
-        swim_lane_color="#00202a",
-        build_pairs_factory=_build_pairs_terrain_shaper_run,
-        train_factory=_train_terrain_shaper_density_run,
-        export_factory=_extract_terrain_shaper_weights_run,
-        deploy_factory=_deploy_terrain_shaper_run,
-        contract_name="terrain_shaper",
-        contract_revision=0,
-        id_overrides={
-            "build_pairs": "build_pairs_terrain_shaper",
-            "train": "train_terrain_shaper_density",
-            "export": "extract_terrain_shaper_weights",
-            "deploy": "deploy_terrain_shaper",
-        },
-        build_pairs_consumes=frozenset({"noise_dumps"}),
-        extra_steps=[
-            StepDef(
-                id="distill_density",
-                label="Distill",
-                prereqs=[],
-                run_fn=_distill_density_run,
-                track="terrain_shaper",
-                phase="distill",
-                produces=frozenset({"terrain_shaper_distilled"}),
-                consumes=frozenset({"terrain_shaper_checkpoint"}),
-            ),
-            StepDef(
-                id="train_terrain_shaper",
-                label="T·Shaper",
-                prereqs=[],
-                run_fn=_train_terrain_shaper_run,
-                track="terrain_shaper",
-                phase="train_terrain_shaper",
-                produces=frozenset({"terrain_shaper_spline_checkpoint"}),
-                consumes=frozenset({"noise_dumps"}),
-            ),
-        ],
-    ),
-    # ── v7 Density V2 (climate → density prediction) ─────────────────
-    ModelTrack(
-        track_id="density_v2",
-        label="DensityV2",
+        track_id="density",
+        label="Density",
         swim_lane_color="#1a2a00",
-        build_pairs_factory=_build_pairs_density_v2_run,
-        train_factory=_train_density_v2_run,
-        export_factory=_export_density_v2_run,
-        deploy_factory=_deploy_density_v2_run,
+        build_pairs_factory=_build_pairs_density_run,
+        train_factory=_train_density_run,
+        export_factory=_export_density_run,
+        deploy_factory=_deploy_density_run,
         build_pairs_consumes=frozenset({"v7_pairs_npz"}),
         contract_name="density",
         contract_revision=1,
@@ -1173,7 +1059,7 @@ _DATA_ACQ_STEPS: list[StepDef] = [
         run_fn=_build_v7_pairs_run,
         phase="data_acq",
         produces=frozenset({"v7_pairs_npz"}),
-        consumes=frozenset({"v7_noise_dumps"}),
+        consumes=frozenset({"v7_noise_dumps", "voxy_db"}),
     ),
 ]
 

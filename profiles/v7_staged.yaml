@@ -4,7 +4,7 @@
 #   1. Dump v7 noise fields (15 RouterField channels, 4×4×4 spatial)
 #   2. Build shared v7 pairs NPZ
 #   3. Train 4 independent models in parallel:
-#      - density_v2      (6 climate → 2 density values)
+#      - density          (6 climate → 2 density values)
 #      - biome_classifier (6 climate → 54 biome classes)
 #      - heightmap_predictor (96 → 32 height values)
 #      - sparse_octree_v7 (15ch/4×4×4 → 5-level block hierarchy)
@@ -15,13 +15,14 @@ dag:
   steps:
     # ── v7 Data Acquisition ───────────────────────────────────
     - id: pregen
+    - id: harvest
     - id: dumpnoise_v7
     - id: build_v7_pairs
-    # ── Density V2 ────────────────────────────────────────────
-    - id: build_pairs_density_v2
-    - id: train_density_v2
-    - id: export_density_v2
-    - id: deploy_density_v2
+    # ── Density ───────────────────────────────────────────────
+    - id: build_pairs_density
+    - id: train_density
+    - id: export_density
+    - id: deploy_density
     # ── Biome Classifier ──────────────────────────────────────
     - id: build_pairs_biome_classifier
     - id: train_biome_classifier
@@ -41,7 +42,7 @@ dag:
 name: v7_staged
 description: >
   Full v7 staged pipeline — 15 RouterField channels, 4×4×4 spatial resolution.
-  Trains 4 independent models (density_v2, biome_classifier, heightmap_predictor,
+  Trains 4 independent models (density, biome_classifier, heightmap_predictor,
   sparse_octree_v7) from a shared v7 pairs NPZ.  Each model uses opset-18 ONNX
   with lodiffusion.v7.* contracts.
 
