@@ -19,14 +19,14 @@ dependencies = [
 ]
 
 [project.scripts]
-voxel-tree = "VoxelTree.cli:main"
+voxel-tree = "voxel_tree.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["VoxelTree*"]
+include = ["voxel_tree*"]
 
 [tool.setuptools.package-data]
-"VoxelTree.config" = ["*.json"]
+"voxel_tree.config" = ["*.json"]
 
 [tool.black]
 line-length = 100

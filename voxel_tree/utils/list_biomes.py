@@ -6,7 +6,7 @@ import sys
 # Add VoxelTree/scripts to sys.path for direct import
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../scripts")))
 try:
-    from VoxelTree.voxel_tree.utils.biome_mapping import BIOME_ID_TO_NAME
+    from voxel_tree.utils.biome_mapping import BIOME_ID_TO_NAME
 except ImportError:
     print("Could not import BIOME_ID_TO_NAME from biome_mapping.py")
     sys.exit(1)
