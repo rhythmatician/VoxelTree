@@ -34,30 +34,44 @@ from voxel_tree.utils.rcon import RconClient
 # ---------------------------------------------------------------------------
 # World-freeze gamerule commands sent automatically after server startup.
 # Format: (rcon_command, human_description)
+# Uses Carpet mod's /tick freeze for comprehensive world state freezing.
+# Fallback gamerules for vanilla/compatibility.
 # ---------------------------------------------------------------------------
 FREEZE_COMMANDS: list[tuple[str, str]] = [
-    ("gamerule doFireTick false", "disable fire spread"),
-    ("gamerule doMobSpawning false", "disable mob spawning"),
-    ("gamerule doWeatherCycle false", "freeze weather"),
-    ("gamerule doDaylightCycle false", "freeze time"),
-    ("gamerule randomTickSpeed 0", "disable random ticks"),
-    ("gamerule doEntityDrops false", "disable entity drops"),
-    ("gamerule doTileDrops false", "disable tile drops"),
-    ("gamerule doMobLoot false", "disable mob loot"),
+    # Primary: Carpet mod command (freezes all ticks/updates)
+    ("tick freeze", "freeze all world updates (Carpet)"),
+    # Fallback gamerules with correct 1.21.11+ naming
+    ("gamerule advance_time false", "freeze time"),
+    ("gamerule advance_weather false", "freeze weather"),
+    ("gamerule random_tick_speed 0", "disable random ticks"),
+    ("gamerule mob_drops false", "disable entity drops"),
+    ("gamerule entity_drops false", "disable tile drops"),
+    ("gamerule spawn_mobs false", "disable mob spawning"),
+    ("gamerule spawn_monsters false", "disable hostile mobs"),
+    ("gamerule spawn_patrols false", "disable patrols"),
+    ("gamerule spawn_phantoms false", "disable phantoms"),
+    ("gamerule spawn_wandering_traders false", "disable wandering traders"),
+    ("gamerule spawn_wardens false", "disable wardens"),
     ("difficulty peaceful", "set peaceful difficulty"),
     ("time set 6000", "set noon"),
     ("weather clear", "clear weather"),
 ]
 
 UNFREEZE_COMMANDS: list[tuple[str, str]] = [
-    ("gamerule doFireTick true", "restore fire spread"),
-    ("gamerule doMobSpawning true", "restore mob spawning"),
-    ("gamerule doWeatherCycle true", "restore weather cycle"),
-    ("gamerule doDaylightCycle true", "restore day/night cycle"),
-    ("gamerule randomTickSpeed 3", "restore random ticks"),
-    ("gamerule doEntityDrops true", "restore entity drops"),
-    ("gamerule doTileDrops true", "restore tile drops"),
-    ("gamerule doMobLoot true", "restore mob loot"),
+    # Primary: Carpet mod command (unfreezes all ticks/updates)
+    ("tick unfreeze", "unfreeze all world updates (Carpet)"),
+    # Fallback gamerules with correct 1.21.11+ naming
+    ("gamerule advance_time true", "restore time advancement"),
+    ("gamerule advance_weather true", "restore weather cycle"),
+    ("gamerule random_tick_speed 3", "restore random ticks"),
+    ("gamerule mob_drops true", "restore entity drops"),
+    ("gamerule entity_drops true", "restore tile drops"),
+    ("gamerule spawn_mobs true", "restore mob spawning"),
+    ("gamerule spawn_monsters true", "restore hostile mobs"),
+    ("gamerule spawn_patrols true", "restore patrols"),
+    ("gamerule spawn_phantoms true", "restore phantoms"),
+    ("gamerule spawn_wandering_traders true", "restore wandering traders"),
+    ("gamerule spawn_wardens true", "restore wardens"),
 ]
 
 
