@@ -5,10 +5,10 @@ stdout/stderr capture.  Detects startup completion via RCON port polling
 (no log-line parsing needed — works regardless of RCON credential changes).
 
 The single source of truth for RCON credentials (host, port, password) is
-``tools/fabric-server/runtime/server.properties``.  Call
-:meth:`ServerManager.configure_for_role` (or set ``server_role`` in the profile
-YAML) **before** calling :meth:`ServerManager.start`; the manager will patch
-``server.properties`` with the role's seed, level-name, and network ports.
+``tools/fabric-server/runtime/server.properties``.  The server status bar's
+world selector calls :meth:`ServerManager.configure_for_role` **before**
+:meth:`ServerManager.start`; the manager will patch ``server.properties``
+with the role's seed, level-name, and network ports.
 
 Usage
 -----
@@ -270,11 +270,11 @@ class ServerManager(QObject):
         )
 
     def configure_for_profile(self, profile: dict) -> None:
-        """Configure the server from the ``server_role`` key in a profile dict.
+        """Deprecated -- prefer configure_for_role() directly.
 
-        Reads ``profile.get("server_role")`` and delegates to
-        :meth:`configure_for_role`.  Falls back to ``"train"`` when the key is
-        absent.
+        The server world/role is now a server-level setting (selected via the
+        status bar combo), not a per-profile setting.  Kept for backward
+        compatibility.  Falls back to "train" when server_role is absent.
         """
         if not isinstance(profile, dict):
             raise TypeError(f"Expected dict profile, got {type(profile)}")

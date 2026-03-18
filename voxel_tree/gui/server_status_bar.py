@@ -12,12 +12,14 @@ from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal, Slot
 from PySide6.QtWidgets import (
+    QComboBox,
     QHBoxLayout,
     QLabel,
     QPushButton,
     QWidget,
 )
 
+from voxel_tree.gui.server_config import list_role_names
 from voxel_tree.gui.server_manager import ServerManager
 
 _STATUS_COLORS = {
@@ -66,6 +68,21 @@ class ServerStatusBar(QWidget):
 
         sep1 = _Sep()
 
+        # ── World selector (train / validate) ──
+        world_label = QLabel("World:")
+        world_label.setStyleSheet("color:#aaa; font-size:11px;")
+        self._world_combo = QComboBox()
+        self._world_combo.setFixedHeight(24)
+        self._world_combo.setStyleSheet(
+            "QComboBox { background:#2a2a2a; color:#ccc; border:1px solid #444;"
+            " border-radius:4px; padding:0px 6px; min-width:80px; }"
+            "QComboBox QAbstractItemView { background:#2a2a2a; color:#ccc; }"
+        )
+        for role in list_role_names() or ["train"]:
+            self._world_combo.addItem(role)
+
+        sep1b = _Sep()
+
         # ── Start / Stop buttons ──
         self._start_btn = QPushButton("Start Server")
         self._start_btn.setFixedHeight(24)
@@ -107,6 +124,9 @@ class ServerStatusBar(QWidget):
             self._dot,
             self._status_lbl,
             sep1,
+            world_label,
+            self._world_combo,
+            sep1b,
             self._start_btn,
             self._stop_btn,
             sep2,
@@ -126,7 +146,7 @@ class ServerStatusBar(QWidget):
         self.setFixedHeight(36)
 
         # ── Connections ──
-        self._start_btn.clicked.connect(self._server.start)
+        self._start_btn.clicked.connect(self._on_start_clicked)
         self._stop_btn.clicked.connect(self._server.stop)
         self._session_btn.clicked.connect(self._on_session_clicked)
         self._server.status_changed.connect(self._on_status_changed)
@@ -141,6 +161,11 @@ class ServerStatusBar(QWidget):
         """Update the active profile (shown on the session button)."""
         self._active_profile = profile_name
         self._refresh_session_btn()
+
+    @property
+    def selected_role(self) -> str:
+        """Return the currently selected server world/role name."""
+        return self._world_combo.currentText()
 
     # ------------------------------------------------------------------
     # Slots
@@ -157,12 +182,20 @@ class ServerStatusBar(QWidget):
         is_running = status == "running"
         self._start_btn.setEnabled(is_stopped)
         self._stop_btn.setEnabled(is_running or status == "starting")
+        # Disable world selector while the server is not stopped
+        self._world_combo.setEnabled(is_stopped)
         self._refresh_session_btn()
 
     @Slot()
     def _on_session_clicked(self) -> None:
         if self._active_profile:
             self.run_server_session_requested.emit(self._active_profile)
+
+    @Slot()
+    def _on_start_clicked(self) -> None:
+        """Configure the server for the selected world/role, then start."""
+        self._server.configure_for_role(self.selected_role)
+        self._server.start()
 
     # ------------------------------------------------------------------
 

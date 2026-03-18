@@ -410,10 +410,11 @@ def _harvest_run(p: dict[str, Any]) -> None:
 
     The voxy-dir is resolved in priority order:
       1. Explicit ``data.voxy_dir`` in the profile.
-      2. Derived from ``server_role`` via ServerRole.voxy_save_key.
+      2. Derived from the active server port in ``server.properties``
+         (set by :meth:`ServerManager.configure_for_role` before launch).
       3. harvest.py's own default when neither is set.
     """
-    from voxel_tree.gui.server_manager import get_rcon_settings  # noqa: PLC0415
+    from voxel_tree.gui.server_manager import get_rcon_settings, read_server_property  # noqa: PLC0415
     from voxel_tree.preprocessing.harvest import main as harvest_main  # noqa: PLC0415
 
     world = p.get("world", {})
@@ -432,16 +433,14 @@ def _harvest_run(p: dict[str, Any]) -> None:
         str(rcon_timeout),
     ]
 
-    # Resolve voxy-dir: explicit profile value → role-derived → harvest default.
+    # Resolve voxy-dir: explicit profile value → active server port → harvest default.
     voxy_dir = data.get("voxy_dir")
     if not voxy_dir:
-        role_name = p.get("server_role")
-        if role_name:
-            from voxel_tree.gui.server_config import get_role  # noqa: PLC0415
+        server_port = read_server_property("server-port", "25565")
+        if server_port:
             from voxel_tree.preprocessing.harvest import MODRINTH_VOXY_SAVES  # noqa: PLC0415
 
-            role = get_role(role_name)
-            voxy_dir = str(MODRINTH_VOXY_SAVES / role.voxy_save_key)
+            voxy_dir = str(MODRINTH_VOXY_SAVES / f"localhost_{server_port}")
 
     if voxy_dir:
         argv += ["--voxy-dir", str(voxy_dir)]

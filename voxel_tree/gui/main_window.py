@@ -251,10 +251,10 @@ class MainWindow(QMainWindow):
         if profile_name not in self._profiles:
             return
 
-        profile = self._profiles[profile_name]
-
-        # Patch server.properties for this profile's role before launching.
-        self._server.configure_for_profile(profile)
+        # Configure the server for the world/role selected in the status bar,
+        # then start.  The role is a server-level setting (shared across all
+        # profiles), not a per-profile one.
+        self._server.configure_for_role(self._server_bar.selected_role)
         self._server.start()
 
         # Load the detail panel for this profile (so we can run steps).
