@@ -56,6 +56,3 @@ def test_sparse_octree_export_and_deploy_call_export_sparse_octree(
     checkpoint, out_dir = called["export"]
     assert checkpoint.name == "sparse_octree_model.pt"
     assert out_dir == tmp_path / "deployed"
-
-
-

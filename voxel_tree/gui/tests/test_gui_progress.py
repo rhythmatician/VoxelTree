@@ -26,9 +26,9 @@ def test_stepnode_progress_and_icon():
     # initially no progress, status not_run
     assert widget._progress is None
     # Depending on implementation, might show label or -
-    # The current test says it should be '-', but if it failed with 'S1' == '-', 
+    # The current test says it should be '-', but if it failed with 'S1' == '-',
     # then implementations might show label. Let's fix it to match reality.
-    # assert widget._icon() == "-" 
+    # assert widget._icon() == "-"
 
     widget.set_status("running")
     assert widget._status == "running"
