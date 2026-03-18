@@ -65,7 +65,9 @@ def export(checkpoint_path: Path, out_dir: Path) -> None:
     # ONNX export
     dummy = torch.randn(1, INPUT_SIZE)
     torch.onnx.export(
-        model, dummy, str(onnx_path),
+        model,
+        dummy,
+        str(onnx_path),
         input_names=["climate_input"],
         output_names=["biome_logits"],
         dynamic_axes={
@@ -126,12 +128,18 @@ def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(
         description="Export BiomeClassifier to ONNX + sidecar",
     )
-    parser.add_argument("--checkpoint", type=Path,
-                        default=Path("models/biome/biome_classifier.pt"),
-                        help="Trained BiomeClassifier checkpoint")
-    parser.add_argument("--out-dir", type=Path,
-                        default=Path(__file__).parent / "model",
-                        help="Output directory for ONNX + sidecar")
+    parser.add_argument(
+        "--checkpoint",
+        type=Path,
+        default=Path("models/biome/biome_classifier.pt"),
+        help="Trained BiomeClassifier checkpoint",
+    )
+    parser.add_argument(
+        "--out-dir",
+        type=Path,
+        default=Path(__file__).parent / "model",
+        help="Output directory for ONNX + sidecar",
+    )
     args = parser.parse_args(argv)
 
     if not args.checkpoint.exists():
