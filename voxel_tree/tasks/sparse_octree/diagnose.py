@@ -1,6 +1,11 @@
 #!/usr/bin/env python3
 """Diagnose sparse_octree training data alignment and quality.
 
+.. deprecated::
+    This script assumes the legacy 13-channel / 4×2×4 noise format.
+    For v7 data (15ch / 4×4×4), this script will produce incorrect results.
+    A v7-compatible diagnostic tool is planned but not yet implemented.
+
 Checks:
 1. Do noise_3d values correlate with block types (e.g., high final_density → solid blocks)?
 2. Are samples predominantly air or do they have real terrain?

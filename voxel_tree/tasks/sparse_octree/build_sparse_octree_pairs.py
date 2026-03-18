@@ -1,17 +1,21 @@
-"""Build sparse-root training pairs from sparse_octree noise dumps + Voxy L4 sections.
+"""Build v7 training pairs from v7 noise dumps + Voxy L4 sections.
 
 Each output sample is one 16³ voxel subchunk (octant of a Voxy L4 section)
-paired with the 13-channel noise context and biome IDs for that section.
+paired with the 15-channel RouterField noise context, biome IDs, and
+per-column heightmaps for that section.
 
-SparseOctree dumps
-----------------
+V7 noise dumps
+--------------
   Files: section_{cx}_{sy}_{cz}.json  (chunk x, section y, chunk z coordinates)
-  Each file has 13 noise fields + biome_ids, each 32 elements,
-  indexed [cx*2*4 + localCy*4 + cz]  ->  reshape to (4, 2, 4)
-  Fields: offset, factor, jaggedness, depth, sloped_cheese, y, entrances,
-          pillars, spaghetti_2d, spaghetti_roughness, noodle, base_3d_noise,
-          final_density
-  biome_ids: 32 discrete biome indices (int), same layout
+  Each file has 15 router fields + biome_ids, each 64 elements (4×4×4),
+  indexed [qx*16 + qy*4 + qz].
+  Fields (in order): temperature, vegetation, continents, erosion, depth,
+          ridges, preliminary_surface_level, final_density, barrier,
+          fluid_level_floodedness, fluid_level_spread, lava,
+          vein_toggle, vein_ridged, vein_gap
+  biome_ids: 64 discrete biome indices (int), same layout
+  heightmap_surface: 256 ints (16×16, x-major)
+  heightmap_ocean_floor: 256 ints (16×16, x-major)
 
 Voxy L4 sections
 ----------------
@@ -22,17 +26,18 @@ Voxy L4 sections
 
 Output
 ------
-  subchunk16 : (N, 16, 16, 16)  int32  — native Voxy voxels (one octant per section)
-  noise_3d   : (N, 13, 4, 2, 4) float32 — all 13 noise fields, shape (cx, cy, cz)
-  noise_2d   : (N, 0, 4, 4)     float32 — placeholder (no 2D fields currently)
-  biome_ids  : (N, 4, 2, 4)     int32   — biome index per noise cell
+  subchunk16           : (N, 16, 16, 16)   int32   — native Voxy voxels (one octant per section)
+  noise_3d             : (N, 15, 4, 4, 4)  float32 — all 15 RouterField channels
+  biome_ids            : (N, 4, 4, 4)      int32   — biome index per quart cell
+  heightmap_surface    : (N, 16, 16)       int32   — WORLD_SURFACE_WG heights (x-major)
+  heightmap_ocean_floor: (N, 16, 16)       int32   — OCEAN_FLOOR_WG heights (x-major)
 
 Usage
 -----
   python scripts/build_sparse_octree_pairs.py \\
-      --dumps  VoxelTree/tools/fabric-server/runtime/sparse_octree_dumps \\
+      --dumps  VoxelTree/tools/fabric-server/runtime/v7_dumps \\
       --voxy   VoxelTree/data/voxy_octree \\
-      --output noise_training_data/sparse_octree_pairs.npz
+      --output noise_training_data/sparse_octree_pairs_v7.npz
 
 """
 
@@ -50,24 +55,33 @@ import numpy as np
 # Constants
 # ---------------------------------------------------------------------------
 
-NOISE_FIELDS = [
-    "offset",
-    "factor",
-    "jaggedness",
-    "depth",
-    "sloped_cheese",
-    "y",
-    "entrances",
-    "pillars",  # vanilla: overworld/caves/pillars (was "cheese_caves" in terrain_shaper)
-    "spaghetti_2d",
-    "spaghetti_roughness",  # vanilla: spaghetti_roughness_function (was "roughness" in terrain_shaper)
-    "noodle",
-    "base_3d_noise",
-    "final_density",
-]
-N_FIELDS = len(NOISE_FIELDS)  # 13
+# Import canonical field definitions from router_field.py
+try:
+    from voxel_tree.utils.router_field import RouterField
+    NOISE_FIELDS = RouterField.names()  # 15 lowercase names in index order
+except ImportError:
+    # Fallback for standalone execution outside the package
+    NOISE_FIELDS = [
+        "temperature",
+        "vegetation",
+        "continents",
+        "erosion",
+        "depth",
+        "ridges",
+        "preliminary_surface_level",
+        "final_density",
+        "barrier",
+        "fluid_level_floodedness",
+        "fluid_level_spread",
+        "lava",
+        "vein_toggle",
+        "vein_ridged",
+        "vein_gap",
+    ]
+N_FIELDS = len(NOISE_FIELDS)  # 15
+assert N_FIELDS == 15, f"Expected 15 RouterField channels, got {N_FIELDS}"
 
-# Each section file covers exactly one (cx, sy, cz) triplet — 4×2×4 = 32 noise cells.
+# Each section file covers exactly one (cx, sy, cz) triplet — 4×4×4 = 64 quart cells.
 # Section Y range in Minecraft overworld: -4 to 19 inclusive (24 sections × 16 blocks = 384 blocks)
 
 
@@ -135,8 +149,10 @@ def build_pairs(
     section_pattern = re.compile(r"section_(-?\d+)_(-?\d+)_(-?\d+)\.json$")
 
     subchunks: list[np.ndarray] = []  # each (16, 16, 16) int32
-    noise_slices: list[np.ndarray] = []  # each (13, 4, 2, 4) float32
-    biome_slices: list[np.ndarray] = []  # each (4, 2, 4) int32
+    noise_slices: list[np.ndarray] = []  # each (15, 4, 4, 4) float32
+    biome_slices: list[np.ndarray] = []  # each (4, 4, 4) int32
+    hm_surface_slices: list[np.ndarray] = []  # each (16, 16) int32
+    hm_ocean_slices: list[np.ndarray] = []  # each (16, 16) int32
 
     matched_sections = 0
     skipped_sections = 0
@@ -152,20 +168,24 @@ def build_pairs(
             skipped_sections += 1
             continue
 
-        # Load JSON — noise fields are flat 32-value arrays indexed [cx*2*4 + localCy*4 + cz]
+        # Load JSON — noise fields are flat 64-value arrays indexed [qx*16 + qy*4 + qz]
         with open(dump_path) as f:
             raw = json.load(f)
 
-        # Parse 13 noise fields: 32-value flat → (4, 2, 4)
+        # Parse 15 noise fields: 64-value flat → (4, 4, 4)
         field_arrays: list[np.ndarray] = []
         for field in NOISE_FIELDS:
-            arr = np.array(raw[field], dtype=np.float32)  # (32,)
-            arr = arr.reshape(4, 2, 4)  # (cx_cells, cy_cells, cz_cells)
+            arr = np.array(raw[field], dtype=np.float32)  # (64,)
+            arr = arr.reshape(4, 4, 4)  # (qx, qy, qz)
             field_arrays.append(arr)
-        noise_block = np.stack(field_arrays)  # (13, 4, 2, 4)
+        noise_block = np.stack(field_arrays)  # (15, 4, 4, 4)
 
-        # Parse biome IDs: 32-value flat → (4, 2, 4)
-        biome_arr = np.array(raw["biome_ids"], dtype=np.int32).reshape(4, 2, 4)
+        # Parse biome IDs: 64-value flat → (4, 4, 4)
+        biome_arr = np.array(raw["biome_ids"], dtype=np.int32).reshape(4, 4, 4)
+
+        # Parse heightmaps: 256-value flat → (16, 16)
+        hm_surface = np.array(raw["heightmap_surface"], dtype=np.int32).reshape(16, 16)
+        hm_ocean = np.array(raw["heightmap_ocean_floor"], dtype=np.int32).reshape(16, 16)
 
         # Load Voxy L4 section
         with np.load(voxy_index[voxy_key]) as vf:
@@ -179,6 +199,8 @@ def build_pairs(
             subchunks.append(sub)
             noise_slices.append(noise_block)
             biome_slices.append(biome_arr)
+            hm_surface_slices.append(hm_surface)
+            hm_ocean_slices.append(hm_ocean)
 
     if not subchunks:
         print("ERROR: No pairs generated — check that dumps_dir and voxy_dir overlap.")
@@ -189,17 +211,19 @@ def build_pairs(
 
     # Stack and save
     all_subchunks = np.stack(subchunks).astype(np.int32)  # (N, 16, 16, 16)
-    all_noise_3d = np.stack(noise_slices).astype(np.float32)  # (N, 13, 4, 2, 4)
-    all_noise_2d = np.zeros((n, 0, 4, 4), dtype=np.float32)  # (N, 0, 4, 4) placeholder
-    all_biome_ids = np.stack(biome_slices).astype(np.int32)  # (N, 4, 2, 4)
+    all_noise_3d = np.stack(noise_slices).astype(np.float32)  # (N, 15, 4, 4, 4)
+    all_biome_ids = np.stack(biome_slices).astype(np.int32)  # (N, 4, 4, 4)
+    all_hm_surface = np.stack(hm_surface_slices).astype(np.int32)  # (N, 16, 16)
+    all_hm_ocean = np.stack(hm_ocean_slices).astype(np.int32)  # (N, 16, 16)
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     np.savez_compressed(
         output_path,
         subchunk16=all_subchunks,
         noise_3d=all_noise_3d,
-        noise_2d=all_noise_2d,
         biome_ids=all_biome_ids,
+        heightmap_surface=all_hm_surface,
+        heightmap_ocean_floor=all_hm_ocean,
     )
 
     size_mb = output_path.stat().st_size / (1024 * 1024)
@@ -220,9 +244,9 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument(
         "--dumps",
         type=Path,
-        default=Path("VoxelTree/tools/fabric-server/runtime/sparse_octree_dumps"),
+        default=Path("VoxelTree/tools/fabric-server/runtime/v7_dumps"),
         metavar="DIR",
-        help="Directory containing section_*.json sparse_octree dumps",
+        help="Directory containing section_*.json v7 noise dumps",
     )
     parser.add_argument(
         "--voxy",
@@ -234,14 +258,14 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument(
         "--output",
         type=Path,
-        default=Path("noise_training_data/sparse_octree_pairs.npz"),
+        default=Path("noise_training_data/sparse_octree_pairs_v7.npz"),
         metavar="FILE",
         help="Output npz file path",
     )
     args = parser.parse_args(argv)
 
     print("=" * 62)
-    print("  Building sparse-root training pairs")
+    print("  Building v7 training pairs (15ch 4×4×4)")
     print("=" * 62)
     print(f"  Dumps dir : {args.dumps}")
     print(f"  Voxy dir  : {args.voxy}")

@@ -599,11 +599,15 @@ public final class WorldNoiseAccess {
     }
 
     // ------------------------------------------------------------------
-    // SparseRoot noise input (Stage 2 model: noise_3d)
+    // [DEPRECATED] SparseRoot noise input (13 channels, 4×2×4)
+    // Superseded by v7 RouterField-based sampling (15ch, 4×4×4).
+    // See: getRouterFieldFunctions(), sampleRouterFieldsForSection()
     // ------------------------------------------------------------------
 
     /**
      * Registry paths and special handling for the 13 SparseRoot noise channels.
+     *
+     * @deprecated Use {@link #getRouterFieldFunctions()} (15 v7 channels) instead.
      *
      * <p>Layout matches the Python training pipeline:
      * <pre>
@@ -792,6 +796,169 @@ public final class WorldNoiseAccess {
                     }
                 }
             }
+        }
+        return result;
+    }
+
+    // ------------------------------------------------------------------
+    // V7 RouterField sampling (15 channels, 4×4×4 quart resolution)
+    // ------------------------------------------------------------------
+
+    /**
+     * The 15 NoiseRouter fields sampled by the v7 pipeline, in index order.
+     *
+     * <p>These map 1:1 to the Java {@code RouterField} enum and the Python
+     * {@code router_field.py}. Each field is accessed via the corresponding
+     * {@link NoiseRouter} accessor.
+     *
+     * <p>Index order:
+     * <pre>
+     *   0  TEMPERATURE               router.temperature()
+     *   1  VEGETATION                 router.vegetation()
+     *   2  CONTINENTS                 router.continents()
+     *   3  EROSION                    router.erosion()
+     *   4  DEPTH                      router.depth()
+     *   5  RIDGES                     router.ridges()
+     *   6  PRELIMINARY_SURFACE_LEVEL  router.preliminarySurfaceLevel()
+     *   7  FINAL_DENSITY              router.finalDensity()
+     *   8  BARRIER                    router.barrierNoise()
+     *   9  FLUID_LEVEL_FLOODEDNESS    router.fluidLevelFloodednessNoise()
+     *  10  FLUID_LEVEL_SPREAD         router.fluidLevelSpreadNoise()
+     *  11  LAVA                       router.lavaNoise()
+     *  12  VEIN_TOGGLE                router.veinToggle()
+     *  13  VEIN_RIDGED                router.veinRidged()
+     *  14  VEIN_GAP                   router.veinGap()
+     * </pre>
+     */
+    public static final int N_ROUTER_FIELDS = 15;
+
+    /**
+     * Lazily-resolved density functions for the 15-channel v7 pipeline.
+     * Protected by {@code this} monitor on first initialization.
+     */
+    private volatile DensityFunction[] routerFieldFunctions = null;
+
+    /**
+     * Resolve (once) and cache all 15 {@link DensityFunction} objects for
+     * the v7 RouterField set.
+     */
+    private DensityFunction[] getRouterFieldFunctions() {
+        if (routerFieldFunctions != null) return routerFieldFunctions;
+        synchronized (this) {
+            if (routerFieldFunctions != null) return routerFieldFunctions;
+            NoiseRouter router = randomState.router();
+            DensityFunction[] dfs = new DensityFunction[N_ROUTER_FIELDS];
+            dfs[0]  = router.temperature();
+            dfs[1]  = router.vegetation();
+            dfs[2]  = router.continents();
+            dfs[3]  = router.erosion();
+            dfs[4]  = router.depth();
+            dfs[5]  = router.ridges();
+            dfs[6]  = router.preliminarySurfaceLevel();
+            dfs[7]  = router.finalDensity();
+            dfs[8]  = router.barrierNoise();
+            dfs[9]  = router.fluidLevelFloodednessNoise();
+            dfs[10] = router.fluidLevelSpreadNoise();
+            dfs[11] = router.lavaNoise();
+            dfs[12] = router.veinToggle();
+            dfs[13] = router.veinRidged();
+            dfs[14] = router.veinGap();
+            routerFieldFunctions = dfs;
+            return dfs;
+        }
+    }
+
+    /**
+     * Sample all 15 RouterField channels for a single section at
+     * <b>4×4×4 quart resolution</b>.
+     *
+     * <p>Returns a flat {@code float[15 * 4 * 4 * 4 = 960]} array in
+     * {@code [field][qx][qy][qz]} (channel-outermost, C-contiguous) order,
+     * matching the Python training pipeline's
+     * {@code router_fields shape=(N, 15, 4, 4, 4)}.
+     *
+     * <p>Each quart cell is 4 blocks wide.  For a 16-block section, there
+     * are 4 quarts per axis.  The sample point is at the quart centre:
+     * <pre>
+     *   x = sectionX * 16 + qx * 4 + 2
+     *   y = sectionY * 16 + qy * 4 + 2
+     *   z = sectionZ * 16 + qz * 4 + 2
+     * </pre>
+     *
+     * @param sectionX chunk X coordinate (= section X at L0)
+     * @param sectionY section Y in native units, range [-4, 19]
+     * @param sectionZ chunk Z coordinate (= section Z at L0)
+     * @return flat {@code float[960]}, or all-zeros if the noise pipeline
+     *         is unavailable
+     */
+    public float[] sampleRouterFieldsForSection(int sectionX, int sectionY, int sectionZ) {
+        DensityFunction[] dfs = getRouterFieldFunctions();
+        float[] flat = new float[N_ROUTER_FIELDS * 4 * 4 * 4];
+
+        int baseX = sectionX * 16;
+        int baseY = sectionY * 16;
+        int baseZ = sectionZ * 16;
+
+        int flatIdx = 0;
+        for (int field = 0; field < N_ROUTER_FIELDS; field++) {
+            DensityFunction df = dfs[field];
+            for (int qx = 0; qx < 4; qx++) {
+                int x = baseX + qx * 4 + 2;
+                for (int qy = 0; qy < 4; qy++) {
+                    int y = baseY + qy * 4 + 2;
+                    for (int qz = 0; qz < 4; qz++) {
+                        int z = baseZ + qz * 4 + 2;
+                        flat[flatIdx++] = (float) df.compute(
+                                new DensityFunction.SinglePointContext(x, y, z));
+                    }
+                }
+            }
+        }
+        return flat;
+    }
+
+    /**
+     * Sample biome IDs at <b>4×4×4 quart resolution</b> for a section (v7).
+     *
+     * <p>Returns {@code int[4][4][4]} in {@code [qx][qy][qz]} order.
+     * Biomes are sampled via {@link BiomeSource#getNoiseBiome} at quart
+     * coordinates and mapped to stable registry IDs.
+     *
+     * @param sectionX chunk X coordinate
+     * @param sectionY section Y in native units, range [-4, 19]
+     * @param sectionZ chunk Z coordinate
+     * @return {@code int[4][4][4]} grid of biome registry IDs
+     */
+    public int[][][] sampleBiomeIdsForSectionV7(int sectionX, int sectionY, int sectionZ) {
+        int[][][] result = new int[4][4][4];
+
+        int baseX = sectionX * 16;
+        int baseY = sectionY * 16;
+        int baseZ = sectionZ * 16;
+
+        try {
+            Registry<Biome> biomeReg = serverLevel.registryAccess()
+                    .lookupOrThrow(Registries.BIOME);
+
+            for (int qx = 0; qx < 4; qx++) {
+                int x = baseX + qx * 4 + 2;
+                for (int qy = 0; qy < 4; qy++) {
+                    int y = baseY + qy * 4 + 2;
+                    for (int qz = 0; qz < 4; qz++) {
+                        int z = baseZ + qz * 4 + 2;
+
+                        Holder<Biome> biomeEntry = biomeSource.getNoiseBiome(
+                                x >> 2, y >> 2, z >> 2,
+                                randomState.sampler());
+
+                        int biomeId = biomeReg.getId(biomeEntry.value());
+                        result[qx][qy][qz] = biomeId >= 0 ? biomeId : 0;
+                    }
+                }
+            }
+        } catch (Exception e) {
+            LOGGER.warn(
+                    "[WorldNoiseAccess] Failed to sample v7 biome IDs: {}", e.getMessage());
         }
         return result;
     }

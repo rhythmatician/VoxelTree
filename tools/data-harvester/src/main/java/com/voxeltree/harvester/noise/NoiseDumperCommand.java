@@ -91,13 +91,22 @@ public final class NoiseDumperCommand {
                 .then(Commands.argument("radius", IntegerArgumentType.integer(1, 512))
                     .executes(ctx -> executeStage1(ctx,
                             IntegerArgumentType.getInteger(ctx, "radius")))))
-            // /dumpnoise sparse_root [radius]   — WS-5.1+
+            // /dumpnoise sparse_root [radius]   — WS-5.1+   [DEPRECATED: use /dumpnoise v7]
             // Dumps the 13 noise_3d channels + biome_ids per section (4×2×4 spatial resolution).
             // Output: run/sparse_root_dumps/section_<cx>_<cy>_<cz>.json
+            // @deprecated Superseded by /dumpnoise v7 (15ch, 4×4×4). Retained for legacy data.
             .then(Commands.literal("sparse_root")
                 .executes(ctx -> executeSparseRoot(ctx, 4))
                 .then(Commands.argument("radius", IntegerArgumentType.integer(1, 512))
                     .executes(ctx -> executeSparseRoot(ctx,
+                            IntegerArgumentType.getInteger(ctx, "radius")))))
+            // /dumpnoise v7 [radius]
+            // Dumps 15 RouterField channels + biome_ids per section at 4×4×4 quart resolution,
+            // plus per-column heightmaps.  Output: run/v7_dumps/section_<cx>_<sy>_<cz>.json
+            .then(Commands.literal("v7")
+                .executes(ctx -> executeV7(ctx, 4))
+                .then(Commands.argument("radius", IntegerArgumentType.integer(1, 512))
+                    .executes(ctx -> executeV7(ctx,
                             IntegerArgumentType.getInteger(ctx, "radius")))))
         );
     }
@@ -669,11 +678,15 @@ public final class NoiseDumperCommand {
     }
 
     // ------------------------------------------------------------------
-    //  SparseRoot training data — /dumpnoise sparse_root <radius>  (WS-5.1+)
+    //  [DEPRECATED] SparseRoot training data — /dumpnoise sparse_root
+    //  Superseded by /dumpnoise v7 (15 RouterField channels, 4×4×4).
+    //  Retained for backward compatibility with legacy training data.
     // ------------------------------------------------------------------
 
     /**
      * Names for the 13 SparseRoot noise_3d channels.
+     *
+     * @deprecated Use {@code V7_FIELD_NAMES} and {@code /dumpnoise v7} instead.
      */
     private static final String[][] SPARSE_ROOT_NOISE_FIELDS = {
         {"offset",             "overworld/offset"},
@@ -919,6 +932,230 @@ public final class NoiseDumperCommand {
                 }
             }
         }
+        sb.append("]\n");
+
+        sb.append("}\n");
+        Files.writeString(file, sb.toString());
+    }
+
+    // ------------------------------------------------------------------
+    //  V7 RouterField dump — /dumpnoise v7 <radius>
+    // ------------------------------------------------------------------
+
+    /**
+     * The 15 JSON field names for the v7 RouterField channels, in index order.
+     * Must match {@code router_field.py} / Java {@code RouterField} ordinals.
+     */
+    private static final String[] V7_FIELD_NAMES = {
+        "temperature",               //  0
+        "vegetation",                //  1
+        "continents",                //  2
+        "erosion",                   //  3
+        "depth",                     //  4
+        "ridges",                    //  5
+        "preliminary_surface_level", //  6
+        "final_density",             //  7
+        "barrier",                   //  8
+        "fluid_level_floodedness",   //  9
+        "fluid_level_spread",        // 10
+        "lava",                      // 11
+        "vein_toggle",               // 12
+        "vein_ridged",               // 13
+        "vein_gap",                  // 14
+    };
+
+    /**
+     * Execute {@code /dumpnoise v7 <radius>}.
+     *
+     * <p>Dumps all 15 RouterField channels at 4×4×4 quart resolution plus
+     * 4×4×4 biome IDs and per-column heightmaps for every section in the
+     * overworld column range.  Output: {@code v7_dumps/section_<cx>_<sy>_<cz>.json}.
+     */
+    private static int executeV7(CommandContext<CommandSourceStack> ctx,
+                                 int radius) {
+        CommandSourceStack source = ctx.getSource();
+        ServerLevel world = source.getLevel();
+
+        Path outDir = Path.of("v7_dumps");
+        try {
+            Files.createDirectories(outDir);
+        } catch (IOException e) {
+            source.sendFailure(Component.literal("[V7Dump] Cannot create output dir: " + e.getMessage()));
+            return 0;
+        }
+
+        WorldNoiseAccess noise = WorldNoiseAccess.tryCreate(world);
+        if (noise == null) {
+            source.sendFailure(Component.literal("[V7Dump] Failed to initialise noise pipeline."));
+            return 0;
+        }
+
+        long seed = world.getSeed();
+        int[] centre = {0, 0};
+        try {
+            BlockPos bOrigin = BlockPos.containing(source.getPosition());
+            centre[0] = bOrigin.getX() >> 4;
+            centre[1] = bOrigin.getZ() >> 4;
+        } catch (UnsupportedOperationException e) {
+            // keep (0,0)
+        }
+        final int centerCx = centre[0];
+        final int centerCz = centre[1];
+
+        // 24 sections per column: sectionY -4..19
+        int totalSections = (2 * radius + 1) * (2 * radius + 1) * 24;
+        source.sendSuccess(
+                () -> Component.literal(String.format(
+                        "[V7Dump] Dumping %d sections (15ch 4×4×4) r=%d centred (%d,%d) → %s",
+                        totalSections, radius, centerCx, centerCz,
+                        outDir.toAbsolutePath())),
+                false);
+
+        int threadCount = 4;
+        ExecutorService pool = Executors.newFixedThreadPool(threadCount, r -> {
+            Thread t = new Thread(r, "V7Dumper-Worker");
+            t.setDaemon(true);
+            return t;
+        });
+
+        AtomicInteger dumped = new AtomicInteger();
+        AtomicInteger failed = new AtomicInteger();
+        long startTime = System.currentTimeMillis();
+        List<Future<?>> futures = new ArrayList<>(totalSections);
+
+        for (int dx = -radius; dx <= radius; dx++) {
+            for (int dz = -radius; dz <= radius; dz++) {
+                final int fcx = centerCx + dx;
+                final int fcz = centerCz + dz;
+
+                // Pre-sample the per-column heightmaps once (shared by all 24 sections)
+                float[][][] colHeightmaps;
+                try {
+                    colHeightmaps = noise.sampleBothHeightmaps(fcx, fcz);
+                } catch (Exception e) {
+                    LOG.warn("[V7Dump] Failed heightmaps for column ({},{}): {}", fcx, fcz, e.getMessage());
+                    colHeightmaps = new float[2][16][16]; // zeros fallback
+                }
+                final float[][] surfaceHm = colHeightmaps[0];
+                final float[][] oceanFloorHm = colHeightmaps[1];
+
+                for (int sy = -4; sy <= 19; sy++) {
+                    final int sectionY = sy;
+                    futures.add(pool.submit(() -> {
+                        try {
+                            dumpSectionNoiseV7(noise, fcx, sectionY, fcz, seed,
+                                    surfaceHm, oceanFloorHm, outDir);
+                            dumped.incrementAndGet();
+                        } catch (Exception e) {
+                            LOG.warn("[V7Dump] Failed section ({},{},{}): {}",
+                                    fcx, sectionY, fcz, e.getMessage());
+                            failed.incrementAndGet();
+                        }
+                        int done = dumped.get() + failed.get();
+                        if (done % 200 == 0 || done == totalSections) {
+                            double elapsed = (System.currentTimeMillis() - startTime) / 1000.0;
+                            double rate = elapsed > 0 ? done / elapsed : 0;
+                            source.sendSuccess(
+                                    () -> Component.literal(String.format(
+                                            "[V7Dump] %d/%d (%.1f/s)", done, totalSections, rate)),
+                                    false);
+                        }
+                    }));
+                }
+            }
+        }
+
+        Thread coordinator = new Thread(() -> {
+            for (Future<?> f : futures) {
+                try { f.get(); } catch (Exception e) { LOG.warn("[V7Dump] {}", e.getMessage()); }
+            }
+            pool.shutdown();
+            double totalSec = (System.currentTimeMillis() - startTime) / 1000.0;
+            final int d = dumped.get(), fl = failed.get();
+            source.sendSuccess(
+                    () -> Component.literal(String.format(
+                            "[V7Dump] Done. %d dumped, %d failed in %.1fs (%.1f sections/s)",
+                            d, fl, totalSec, d / totalSec)),
+                    false);
+        }, "V7Dumper-Coordinator");
+        coordinator.setDaemon(true);
+        coordinator.start();
+
+        return 1;
+    }
+
+    /**
+     * Dump v7 training data for a single section to JSON.
+     *
+     * <p>Each JSON file contains:
+     * <ul>
+     *   <li>15 RouterField channels as flat 64-element arrays (4×4×4, channel-first)</li>
+     *   <li>{@code biome_ids}: flat 64-element int array (4×4×4)</li>
+     *   <li>{@code heightmap_surface}: flat 256-element int array (16×16, x-major)</li>
+     *   <li>{@code heightmap_ocean_floor}: flat 256-element int array (16×16, x-major)</li>
+     * </ul>
+     *
+     * <p>Flat ordering is {@code [qx][qy][qz]} = {@code qx * 16 + qy * 4 + qz}.
+     */
+    static void dumpSectionNoiseV7(WorldNoiseAccess noise,
+                                   int cx, int sy, int cz,
+                                   long seed,
+                                   float[][] surfaceHm,
+                                   float[][] oceanFloorHm,
+                                   Path outDir) throws IOException {
+        String filename = String.format("section_%d_%d_%d.json", cx, sy, cz);
+        Path file = outDir.resolve(filename);
+
+        // 15-channel flat array [field * 64 + qx * 16 + qy * 4 + qz]
+        float[] routerFlat = noise.sampleRouterFieldsForSection(cx, sy, cz);
+
+        // 4×4×4 biome IDs
+        int[][][] biomeIds = noise.sampleBiomeIdsForSectionV7(cx, sy, cz);
+
+        // --- Write JSON
+        StringBuilder sb = new StringBuilder(24 * 1024);
+        sb.append("{\n");
+        sb.append("  \"chunk_x\": ").append(cx).append(",\n");
+        sb.append("  \"section_y\": ").append(sy).append(",\n");
+        sb.append("  \"chunk_z\": ").append(cz).append(",\n");
+        sb.append("  \"seed\": ").append(seed).append(",\n");
+        sb.append("  \"version\": 7,\n");
+        sb.append("  \"cell_resolution\": \"4x4x4\",\n");
+        sb.append("  \"note\": \"flat arrays indexed [qx*16 + qy*4 + qz]; channel-first for router fields\",\n");
+
+        // Write each of the 15 router fields as a separate JSON key,
+        // each with 64 values (4×4×4).
+        for (int field = 0; field < WorldNoiseAccess.N_ROUTER_FIELDS; field++) {
+            sb.append("  \"").append(V7_FIELD_NAMES[field]).append("\": [");
+            int base = field * 64;
+            for (int i = 0; i < 64; i++) {
+                if (i > 0) sb.append(',');
+                sb.append(String.format("%.6g", routerFlat[base + i]));
+            }
+            sb.append("],\n");
+        }
+
+        // Biome IDs — flat 64 values [qx][qy][qz]
+        sb.append("  \"biome_ids\": [");
+        boolean first = true;
+        for (int qx = 0; qx < 4; qx++) {
+            for (int qy = 0; qy < 4; qy++) {
+                for (int qz = 0; qz < 4; qz++) {
+                    if (!first) sb.append(',');
+                    first = false;
+                    sb.append(biomeIds[qx][qy][qz]);
+                }
+            }
+        }
+        sb.append("],\n");
+
+        // Per-column heightmaps (shared across all sections in same column)
+        sb.append("  \"heightmap_surface\": [");
+        appendFloatGrid(sb, surfaceHm);
+        sb.append("],\n");
+
+        sb.append("  \"heightmap_ocean_floor\": [");
+        appendFloatGrid(sb, oceanFloorHm);
         sb.append("]\n");
 
         sb.append("}\n");

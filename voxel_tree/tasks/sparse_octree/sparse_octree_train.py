@@ -4,8 +4,8 @@ Dataset layout expected in the .npz file
 -----------------------------------------
 subchunk16  : int32   [N, 16, 16, 16]   dense voxel labels
 noise_2d    : float32 [N, C2, 4, 4]     vanilla 2-D climate fields per subchunk
-noise_3d    : float32 [N, C3, 4, 2, 4]  vanilla 3-D volumetric fields per subchunk
-biome_ids   : int32   [N, 4, 2, 4]      discrete biome IDs at spatial resolution
+noise_3d    : float32 [N, C3, 4, Y, 4]  vanilla 3-D volumetric fields (Y=4 for v7, 2 for legacy)
+biome_ids   : int32   [N, 4, Y, 4]      discrete biome IDs at spatial resolution
 
 Targets are built on-the-fly by ``build_sparse_octree_targets`` and stored as
 flat 1-D tensors per level so they can be directly compared against the model's
@@ -44,12 +44,15 @@ class SparseOctreeDataset(Dataset):  # type: ignore[type-arg]
         data = np.load(npz_path)
         self.subchunks = data["subchunk16"].astype(np.int32)  # (N,16,16,16)
         self.noise_2d = data["noise_2d"].astype(np.float32)  # (N,C2,4,4)
-        self.noise_3d = data["noise_3d"].astype(np.float32)  # (N,C3,4,2,4)
+        self.noise_3d = data["noise_3d"].astype(np.float32)  # (N,C3,4,Y,4)
+        # Detect spatial_y from noise_3d shape (index 2 = X=4, index 3 = Y)
+        self.spatial_y = self.noise_3d.shape[3]  # 4 for v7, 2 for legacy
         if "biome_ids" in data:
-            self.biome_ids = data["biome_ids"].astype(np.int32)  # (N,4,2,4)
+            self.biome_ids = data["biome_ids"].astype(np.int32)  # (N,4,Y,4)
         else:
             # Zero-fill until training data is regenerated with biome IDs.
-            self.biome_ids = np.zeros((len(self.subchunks), 4, 2, 4), dtype=np.int32)
+            n = len(self.subchunks)
+            self.biome_ids = np.zeros((n, 4, self.spatial_y, 4), dtype=np.int32)
         self.air_id = air_id
         self._cache_targets = cache_targets
         self._target_cache: Optional[List[Dict[int, Dict[str, torch.Tensor]]]] = None
@@ -89,8 +92,8 @@ class SparseOctreeDataset(Dataset):  # type: ignore[type-arg]
 
         return {
             "noise_2d": torch.from_numpy(self.noise_2d[idx]),  # [C2,4,4]
-            "noise_3d": torch.from_numpy(self.noise_3d[idx]),  # [C3,4,2,4]
-            "biome_ids": torch.from_numpy(self.biome_ids[idx]),  # [4,2,4]
+            "noise_3d": torch.from_numpy(self.noise_3d[idx]),  # [C3,4,Y,4]
+            "biome_ids": torch.from_numpy(self.biome_ids[idx]),  # [4,Y,4]
             "targets": targets,
         }
 
@@ -103,8 +106,8 @@ class SparseOctreeDataset(Dataset):  # type: ignore[type-arg]
 def sparse_octree_collate(batch: List[Dict[str, Any]]) -> Dict[str, Any]:
     """Stack a list of samples into one batched dict."""
     noise_2d = torch.stack([b["noise_2d"] for b in batch], dim=0)  # [B,C2,4,4]
-    noise_3d = torch.stack([b["noise_3d"] for b in batch], dim=0)  # [B,C3,4,2,4]
-    biome_ids = torch.stack([b["biome_ids"] for b in batch], dim=0)  # [B,4,2,4]
+    noise_3d = torch.stack([b["noise_3d"] for b in batch], dim=0)  # [B,C3,4,Y,4]
+    biome_ids = torch.stack([b["biome_ids"] for b in batch], dim=0)  # [B,4,Y,4]
 
     levels = sorted(batch[0]["targets"].keys(), reverse=True)
     targets: Dict[int, Dict[str, torch.Tensor]] = {}
@@ -268,12 +271,17 @@ def _build_model(
     n3d: int,
     hidden: int,
     num_classes: int,
+    spatial_y: int = 4,
 ) -> nn.Module:
     variant = model_variant.lower()
     if variant == "baseline":
-        return SparseOctreeModel(n2d=n2d, n3d=n3d, hidden=hidden, num_classes=num_classes)
+        return SparseOctreeModel(
+            n2d=n2d, n3d=n3d, hidden=hidden, num_classes=num_classes, spatial_y=spatial_y,
+        )
     if variant == "fast":
-        return SparseOctreeFastModel(n2d=n2d, n3d=n3d, hidden=hidden, num_classes=num_classes)
+        return SparseOctreeFastModel(
+            n2d=n2d, n3d=n3d, hidden=hidden, num_classes=num_classes, spatial_y=spatial_y,
+        )
     raise ValueError(f"Unknown sparse-root model_variant={model_variant!r}")
 
 
@@ -315,10 +323,11 @@ def train_sparse_octree(
 
     loader = DataLoader(ds, batch_size=batch_size, shuffle=True, collate_fn=sparse_octree_collate)
 
-    # Infer noise channel counts from the first sample
+    # Infer noise channel counts and spatial_y from the first sample
     sample = ds[0]
     n2d = sample["noise_2d"].shape[0]
     n3d = sample["noise_3d"].shape[0]
+    spatial_y = ds.spatial_y  # detected from NPZ shape
 
     model = _build_model(
         model_variant,
@@ -326,6 +335,7 @@ def train_sparse_octree(
         n3d=n3d,
         hidden=hidden,
         num_classes=num_classes,
+        spatial_y=spatial_y,
     ).to(_device)
     optimizer = optim.AdamW(model.parameters(), lr=lr)
     max_level_attr = getattr(model, "max_level", 4)

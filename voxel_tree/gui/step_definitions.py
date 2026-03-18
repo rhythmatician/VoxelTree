@@ -43,8 +43,12 @@
 #
 # ## Track IDs in use (add new tracks to this list when you create them)
 #
-#   "sparse_octree"    — Sparse Octree hierarchy classifier (5-level octree)
-#   "terrain_shaper"   — Terrain Shaper + Density NN
+#   "sparse_octree"       — Sparse Octree hierarchy classifier (5-level octree, legacy 13ch/4×2×4)
+#   "terrain_shaper"      — Terrain Shaper + Density NN (legacy)
+#   "density_v2"          — v7 Density predictor (6 climate → 2 density fields)
+#   "biome_classifier"    — v7 Biome classifier (6 climate → 54 biome classes)
+#   "heightmap_predictor" — v7 Heightmap predictor (96 climate → 32 height values)
+#   "sparse_octree_v7"    — v7 Sparse Octree (15ch/4×4×4 → block hierarchy)
 #
 # ═══════════════════════════════════════════════════════════════════════════
 """
@@ -696,6 +700,251 @@ def _distill_sparse_octree_run(p: dict[str, Any]) -> None:
     )
 
 
+# ---------------------------------------------------------------------------
+# Step runners — v7 Data Acquisition
+# ---------------------------------------------------------------------------
+
+
+def _dumpnoise_v7_run(p: dict[str, Any]) -> None:
+    """Dump v7 noise fields (15 RouterField channels, 4×4×4) via RCON."""
+    from voxel_tree.gui.server_manager import get_rcon_settings  # noqa: PLC0415
+    from voxel_tree.preprocessing.cli import main as cli_main  # noqa: PLC0415
+
+    world = p.get("world", {})
+    rcon = get_rcon_settings()
+    rcon_timeout = p.get("rcon", {}).get("timeout", 3600)
+    try:
+        cli_main(
+            [
+                "dumpnoise",
+                "--v7",
+                "--radius",
+                str(world.get("radius", 2048)),
+                "--password",
+                str(rcon["password"]),
+                "--host",
+                str(rcon["host"]),
+                "--port",
+                str(rcon["port"]),
+                "--timeout",
+                str(rcon_timeout),
+            ]
+        )
+    except SystemExit as e:
+        if e.code != 0:
+            raise RuntimeError(f"Dumpnoise v7 failed with exit code {e.code}") from e
+
+
+def _build_v7_pairs_run(p: dict[str, Any]) -> None:
+    """Build v7 training pairs NPZ from v7 section dumps."""
+    from voxel_tree.tasks.sparse_octree.build_sparse_octree_pairs import (  # noqa: PLC0415
+        main as pairs_main,
+    )
+
+    data = p.get("data", {})
+    argv: list[str] = []
+    dumps_dir = data.get("v7_dumps_dir", "v7_dumps")
+    argv += ["--dumps", str(dumps_dir)]
+    if data.get("v7_pairs_output"):
+        argv += ["--output", str(data["v7_pairs_output"])]
+    pairs_main(argv)
+
+
+# ---------------------------------------------------------------------------
+# Step runners — v7 Density V2
+# ---------------------------------------------------------------------------
+
+
+def _build_pairs_density_v2_run(p: dict[str, Any]) -> None:
+    """Validate v7 pairs NPZ exists (pairs built by shared build_v7_pairs)."""
+    data = p.get("data", {})
+    npz = Path(data.get("v7_pairs_npz", "sparse_octree_pairs_v7.npz"))
+    if not npz.exists():
+        raise FileNotFoundError(f"v7 pairs NPZ not found: {npz}")
+    print(f"[density_v2] v7 pairs validated: {npz}")
+
+
+def _train_density_v2_run(p: dict[str, Any]) -> None:
+    from voxel_tree.tasks.density_v2.train_density_v2 import main as train_main  # noqa: PLC0415
+
+    data = p.get("data", {})
+    train = p.get("train", {})
+    argv: list[str] = []
+    npz = data.get("v7_pairs_npz", "sparse_octree_pairs_v7.npz")
+    argv += ["--data", str(npz)]
+    if train.get("output_dir"):
+        argv += ["--out-dir", str(train["output_dir"])]
+    if train.get("epochs") is not None:
+        argv += ["--epochs", str(train["epochs"])]
+    if train.get("batch_size") is not None:
+        argv += ["--batch-size", str(train["batch_size"])]
+    if train.get("lr") is not None:
+        argv += ["--lr", str(train["lr"])]
+    train_main(argv)
+
+
+def _export_density_v2_run(p: dict[str, Any]) -> None:
+    from voxel_tree.tasks.density_v2.export_density_v2 import main as export_main  # noqa: PLC0415
+
+    train = p.get("train", {})
+    export = p.get("export", {})
+    checkpoint = Path(train.get("output_dir", ".")) / "density_v2_best.pt"
+    out_dir = Path(export.get("output_dir") or "LODiffusion/run/models")
+    export_main(["--checkpoint", str(checkpoint), "--out-dir", str(out_dir)])
+
+
+def _deploy_density_v2_run(p: dict[str, Any]) -> None:
+    """Deploy density_v2 (re-export to deploy target dir)."""
+    _export_density_v2_run(p)
+
+
+# ---------------------------------------------------------------------------
+# Step runners — v7 Biome Classifier
+# ---------------------------------------------------------------------------
+
+
+def _build_pairs_biome_run(p: dict[str, Any]) -> None:
+    """Validate v7 pairs NPZ exists (pairs built by shared build_v7_pairs)."""
+    data = p.get("data", {})
+    npz = Path(data.get("v7_pairs_npz", "sparse_octree_pairs_v7.npz"))
+    if not npz.exists():
+        raise FileNotFoundError(f"v7 pairs NPZ not found: {npz}")
+    print(f"[biome_classifier] v7 pairs validated: {npz}")
+
+
+def _train_biome_classifier_run(p: dict[str, Any]) -> None:
+    from voxel_tree.tasks.biome.train_biome_classifier import main as train_main  # noqa: PLC0415
+
+    data = p.get("data", {})
+    train = p.get("train", {})
+    argv: list[str] = []
+    npz = data.get("v7_pairs_npz", "sparse_octree_pairs_v7.npz")
+    argv += ["--data", str(npz)]
+    if train.get("output_dir"):
+        argv += ["--out-dir", str(train["output_dir"])]
+    if train.get("epochs") is not None:
+        argv += ["--epochs", str(train["epochs"])]
+    if train.get("batch_size") is not None:
+        argv += ["--batch-size", str(train["batch_size"])]
+    if train.get("lr") is not None:
+        argv += ["--lr", str(train["lr"])]
+    train_main(argv)
+
+
+def _export_biome_classifier_run(p: dict[str, Any]) -> None:
+    from voxel_tree.tasks.biome.export_biome import main as export_main  # noqa: PLC0415
+
+    train = p.get("train", {})
+    export = p.get("export", {})
+    checkpoint = Path(train.get("output_dir", ".")) / "biome_classifier_best.pt"
+    out_dir = Path(export.get("output_dir") or "LODiffusion/run/models")
+    export_main(["--checkpoint", str(checkpoint), "--out-dir", str(out_dir)])
+
+
+def _deploy_biome_classifier_run(p: dict[str, Any]) -> None:
+    """Deploy biome_classifier (re-export to deploy target dir)."""
+    _export_biome_classifier_run(p)
+
+
+# ---------------------------------------------------------------------------
+# Step runners — v7 Heightmap Predictor
+# ---------------------------------------------------------------------------
+
+
+def _build_pairs_heightmap_run(p: dict[str, Any]) -> None:
+    """Validate v7 pairs NPZ exists (pairs built by shared build_v7_pairs)."""
+    data = p.get("data", {})
+    npz = Path(data.get("v7_pairs_npz", "sparse_octree_pairs_v7.npz"))
+    if not npz.exists():
+        raise FileNotFoundError(f"v7 pairs NPZ not found: {npz}")
+    print(f"[heightmap_predictor] v7 pairs validated: {npz}")
+
+
+def _train_heightmap_run(p: dict[str, Any]) -> None:
+    from voxel_tree.tasks.heightmap.train_heightmap import main as train_main  # noqa: PLC0415
+
+    data = p.get("data", {})
+    train = p.get("train", {})
+    argv: list[str] = []
+    npz = data.get("v7_pairs_npz", "sparse_octree_pairs_v7.npz")
+    argv += ["--data", str(npz)]
+    if train.get("output_dir"):
+        argv += ["--out-dir", str(train["output_dir"])]
+    if train.get("epochs") is not None:
+        argv += ["--epochs", str(train["epochs"])]
+    if train.get("batch_size") is not None:
+        argv += ["--batch-size", str(train["batch_size"])]
+    if train.get("lr") is not None:
+        argv += ["--lr", str(train["lr"])]
+    train_main(argv)
+
+
+def _export_heightmap_run(p: dict[str, Any]) -> None:
+    from voxel_tree.tasks.heightmap.export_heightmap import main as export_main  # noqa: PLC0415
+
+    train = p.get("train", {})
+    export = p.get("export", {})
+    checkpoint = Path(train.get("output_dir", ".")) / "heightmap_predictor_best.pt"
+    out_dir = Path(export.get("output_dir") or "LODiffusion/run/models")
+    export_main(["--checkpoint", str(checkpoint), "--out-dir", str(out_dir)])
+
+
+def _deploy_heightmap_run(p: dict[str, Any]) -> None:
+    """Deploy heightmap_predictor (re-export to deploy target dir)."""
+    _export_heightmap_run(p)
+
+
+# ---------------------------------------------------------------------------
+# Step runners — v7 Sparse Octree
+# ---------------------------------------------------------------------------
+
+
+def _build_pairs_sparse_octree_v7_run(p: dict[str, Any]) -> None:
+    """Validate v7 pairs NPZ exists (pairs built by shared build_v7_pairs)."""
+    data = p.get("data", {})
+    npz = Path(data.get("v7_pairs_npz", "sparse_octree_pairs_v7.npz"))
+    if not npz.exists():
+        raise FileNotFoundError(f"v7 pairs NPZ not found: {npz}")
+    print(f"[sparse_octree_v7] v7 pairs validated: {npz}")
+
+
+def _train_sparse_octree_v7_run(p: dict[str, Any]) -> None:
+    from voxel_tree.tasks.sparse_octree.train import train_sparse_octree  # noqa: PLC0415
+
+    data = p.get("data", {})
+    train = p.get("train", {})
+    npz = data.get("v7_pairs_npz", "sparse_octree_pairs_v7.npz")
+    out_path = Path(train.get("output_dir", ".")) / "sparse_octree_v7_model.pt"
+    train_sparse_octree(
+        data_path=Path(npz),
+        out_path=out_path,
+        model_variant=train.get("sparse_octree_variant", "fast"),
+        hidden=train.get("sparse_octree_hidden", 80),
+        epochs=train.get("epochs", 20),
+        batch_size=train.get("batch_size", 4),
+        lr=train.get("lr", 1e-4),
+        device=train.get("device", "auto"),
+    )
+
+
+def _export_sparse_octree_v7_run(p: dict[str, Any]) -> None:
+    from LODiffusion.models.export_sparse_octree import export_sparse_octree  # noqa: PLC0415
+
+    train = p.get("train", {})
+    export = p.get("export", {})
+    export_sparse_octree(
+        checkpoint=Path(train.get("output_dir", ".")) / "sparse_octree_v7_model.pt",
+        out_dir=Path(export.get("output_dir") or "LODiffusion/run/models"),
+        n3d=15,
+        spatial_y=4,
+    )
+
+
+def _deploy_sparse_octree_v7_run(p: dict[str, Any]) -> None:
+    """Deploy sparse_octree_v7 (re-export to deploy target dir)."""
+    _export_sparse_octree_v7_run(p)
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # MODEL TRACKS
 # ═══════════════════════════════════════════════════════════════════════════
@@ -777,6 +1026,50 @@ MODEL_TRACKS: list[ModelTrack] = [
             ),
         ],
     ),
+    # ── v7 Density V2 (climate → density prediction) ─────────────────
+    ModelTrack(
+        track_id="density_v2",
+        label="DensityV2",
+        swim_lane_color="#1a2a00",
+        build_pairs_factory=_build_pairs_density_v2_run,
+        train_factory=_train_density_v2_run,
+        export_factory=_export_density_v2_run,
+        deploy_factory=_deploy_density_v2_run,
+        build_pairs_consumes=frozenset({"v7_pairs_npz"}),
+    ),
+    # ── v7 Biome Classifier (climate → biome class) ──────────────────
+    ModelTrack(
+        track_id="biome_classifier",
+        label="BiomeClass",
+        swim_lane_color="#002a1a",
+        build_pairs_factory=_build_pairs_biome_run,
+        train_factory=_train_biome_classifier_run,
+        export_factory=_export_biome_classifier_run,
+        deploy_factory=_deploy_biome_classifier_run,
+        build_pairs_consumes=frozenset({"v7_pairs_npz"}),
+    ),
+    # ── v7 Heightmap Predictor (climate → heightmaps) ────────────────
+    ModelTrack(
+        track_id="heightmap_predictor",
+        label="Heightmap",
+        swim_lane_color="#0a0a2a",
+        build_pairs_factory=_build_pairs_heightmap_run,
+        train_factory=_train_heightmap_run,
+        export_factory=_export_heightmap_run,
+        deploy_factory=_deploy_heightmap_run,
+        build_pairs_consumes=frozenset({"v7_pairs_npz"}),
+    ),
+    # ── v7 Sparse Octree (15ch/4×4×4 noise → block hierarchy) ───────
+    ModelTrack(
+        track_id="sparse_octree_v7",
+        label="OctreeV7",
+        swim_lane_color="#2a0a00",
+        build_pairs_factory=_build_pairs_sparse_octree_v7_run,
+        train_factory=_train_sparse_octree_v7_run,
+        export_factory=_export_sparse_octree_v7_run,
+        deploy_factory=_deploy_sparse_octree_v7_run,
+        build_pairs_consumes=frozenset({"v7_pairs_npz"}),
+    ),
 ]
 
 
@@ -834,6 +1127,26 @@ _DATA_ACQ_STEPS: list[StepDef] = [
         phase="data_acq",
         produces=frozenset({"octree_with_heights"}),
         consumes=frozenset({"octree_npz", "noise_dumps"}),
+    ),
+    # ── v7 data acquisition ───────────────────────────────────────────
+    StepDef(
+        id="dumpnoise_v7",
+        label="Noise·v7",
+        prereqs=[],
+        run_fn=_dumpnoise_v7_run,
+        server_required=True,
+        phase="data_acq",
+        produces=frozenset({"v7_noise_dumps"}),
+        consumes=frozenset(),
+    ),
+    StepDef(
+        id="build_v7_pairs",
+        label="Pairs·v7",
+        prereqs=[],
+        run_fn=_build_v7_pairs_run,
+        phase="data_acq",
+        produces=frozenset({"v7_pairs_npz"}),
+        consumes=frozenset({"v7_noise_dumps"}),
     ),
 ]
 

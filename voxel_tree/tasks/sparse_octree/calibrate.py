@@ -1,6 +1,11 @@
 #!/usr/bin/env python3
 """Empirical calibration of sparse-root split threshold.
 
+.. note::
+    Shape comments in this file reference the legacy 4×2×4 spatial format.
+    The code uses dynamic shapes (``C3``) and should work with v7 (4×4×4)
+    data, but has not been validated against it.
+
 Analyzes the distribution of root split logits from the ONNX model on a sample
 of training data to recommend a threshold that balances tree expansion with
 computational cost.

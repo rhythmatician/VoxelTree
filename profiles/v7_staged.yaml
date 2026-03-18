@@ -1,0 +1,76 @@
+# v7_staged.yaml — Full v7 staged pipeline profile
+#
+# This profile runs the complete v7 pipeline:
+#   1. Dump v7 noise fields (15 RouterField channels, 4×4×4 spatial)
+#   2. Build shared v7 pairs NPZ
+#   3. Train 4 independent models in parallel:
+#      - density_v2      (6 climate → 2 density values)
+#      - biome_classifier (6 climate → 54 biome classes)
+#      - heightmap_predictor (96 → 32 height values)
+#      - sparse_octree_v7 (15ch/4×4×4 → 5-level block hierarchy)
+#   4. Export all models to ONNX
+#   5. Deploy to LODiffusion runtime
+
+dag:
+  steps:
+    # ── v7 Data Acquisition ───────────────────────────────────
+    - id: pregen
+    - id: dumpnoise_v7
+    - id: build_v7_pairs
+    # ── Density V2 ────────────────────────────────────────────
+    - id: build_pairs_density_v2
+    - id: train_density_v2
+    - id: export_density_v2
+    - id: deploy_density_v2
+    # ── Biome Classifier ──────────────────────────────────────
+    - id: build_pairs_biome_classifier
+    - id: train_biome_classifier
+    - id: export_biome_classifier
+    - id: deploy_biome_classifier
+    # ── Heightmap Predictor ───────────────────────────────────
+    - id: build_pairs_heightmap_predictor
+    - id: train_heightmap_predictor
+    - id: export_heightmap_predictor
+    - id: deploy_heightmap_predictor
+    # ── Sparse Octree V7 ─────────────────────────────────────
+    - id: build_pairs_sparse_octree_v7
+    - id: train_sparse_octree_v7
+    - id: export_sparse_octree_v7
+    - id: deploy_sparse_octree_v7
+
+name: v7_staged
+description: >
+  Full v7 staged pipeline — 15 RouterField channels, 4×4×4 spatial resolution.
+  Trains 4 independent models (density_v2, biome_classifier, heightmap_predictor,
+  sparse_octree_v7) from a shared v7 pairs NPZ.  Each model uses opset-18 ONNX
+  with lodiffusion.v7.* contracts.
+
+server_role: train
+
+data:
+  v7_dumps_dir: v7_dumps
+  v7_pairs_npz: sparse_octree_pairs_v7.npz
+  data_dir: data/voxy_octree
+  voxy_dir: null
+
+train:
+  batch_size: 16
+  device: auto
+  epochs: 30
+  lr: 0.0001
+  output_dir: models/v7_staged
+  # Sparse octree specific
+  sparse_octree_variant: fast
+  sparse_octree_hidden: 80
+
+export:
+  output_dir: production/v7_staged
+
+deploy:
+  target_dir: ../LODiffusion/run/config/lodiffusion
+
+rcon:
+  timeout: 3600
+
+world:
+  radius: 2048
