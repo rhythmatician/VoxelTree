@@ -877,23 +877,24 @@ public final class WorldNoiseAccess {
      * matching the Python training pipeline's
      * {@code router_fields shape=(N, 15, 4, 4, 4)}.
      *
-     * <p>Each quart cell is 4 blocks wide.  For a 16-block section, there
-     * are 4 quarts per axis.  The sample point is at the quart centre:
+     * <p>Each quart cell is 4 blocks wide on X/Z and 8 blocks tall on Y
+     * (matching vanilla cellWidth=4, cellHeight=8).  For a 16-block section,
+     * there are 4 quarts on X/Z and 2 on Y.  The sample point is at the cell centre:
      * <pre>
      *   x = sectionX * 16 + qx * 4 + 2
-     *   y = sectionY * 16 + qy * 4 + 2
+     *   y = sectionY * 16 + qy * 8 + 4
      *   z = sectionZ * 16 + qz * 4 + 2
      * </pre>
      *
      * @param sectionX chunk X coordinate (= section X at L0)
      * @param sectionY section Y in native units, range [-4, 19]
      * @param sectionZ chunk Z coordinate (= section Z at L0)
-     * @return flat {@code float[960]}, or all-zeros if the noise pipeline
+     * @return flat {@code float[480]}, or all-zeros if the noise pipeline
      *         is unavailable
      */
     public float[] sampleRouterFieldsForSection(int sectionX, int sectionY, int sectionZ) {
         DensityFunction[] dfs = getRouterFieldFunctions();
-        float[] flat = new float[N_ROUTER_FIELDS * 4 * 4 * 4];
+        float[] flat = new float[N_ROUTER_FIELDS * 4 * 2 * 4];
 
         int baseX = sectionX * 16;
         int baseY = sectionY * 16;
@@ -904,8 +905,8 @@ public final class WorldNoiseAccess {
             DensityFunction df = dfs[field];
             for (int qx = 0; qx < 4; qx++) {
                 int x = baseX + qx * 4 + 2;
-                for (int qy = 0; qy < 4; qy++) {
-                    int y = baseY + qy * 4 + 2;
+                for (int qy = 0; qy < 2; qy++) {
+                    int y = baseY + qy * 8 + 4;
                     for (int qz = 0; qz < 4; qz++) {
                         int z = baseZ + qz * 4 + 2;
                         flat[flatIdx++] = (float) df.compute(
@@ -918,19 +919,19 @@ public final class WorldNoiseAccess {
     }
 
     /**
-     * Sample biome IDs at <b>4×4×4 quart resolution</b> for a section (v7).
+     * Sample biome IDs at <b>4×2×4 quart resolution</b> for a section (v7).
      *
-     * <p>Returns {@code int[4][4][4]} in {@code [qx][qy][qz]} order.
+     * <p>Returns {@code int[4][2][4]} in {@code [qx][qy][qz]} order.
      * Biomes are sampled via {@link BiomeSource#getNoiseBiome} at quart
      * coordinates and mapped to stable registry IDs.
      *
      * @param sectionX chunk X coordinate
      * @param sectionY section Y in native units, range [-4, 19]
      * @param sectionZ chunk Z coordinate
-     * @return {@code int[4][4][4]} grid of biome registry IDs
+     * @return {@code int[4][2][4]} grid of biome registry IDs
      */
     public int[][][] sampleBiomeIdsForSectionV7(int sectionX, int sectionY, int sectionZ) {
-        int[][][] result = new int[4][4][4];
+        int[][][] result = new int[4][2][4];
 
         int baseX = sectionX * 16;
         int baseY = sectionY * 16;
@@ -942,8 +943,8 @@ public final class WorldNoiseAccess {
 
             for (int qx = 0; qx < 4; qx++) {
                 int x = baseX + qx * 4 + 2;
-                for (int qy = 0; qy < 4; qy++) {
-                    int y = baseY + qy * 4 + 2;
+                for (int qy = 0; qy < 2; qy++) {
+                    int y = baseY + qy * 8 + 4;
                     for (int qz = 0; qz < 4; qz++) {
                         int z = baseZ + qz * 4 + 2;
 

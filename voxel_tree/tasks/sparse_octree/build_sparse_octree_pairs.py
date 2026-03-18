@@ -7,13 +7,13 @@ per-column heightmaps for that section.
 V7 noise dumps
 --------------
   Files: section_{cx}_{sy}_{cz}.json  (chunk x, section y, chunk z coordinates)
-  Each file has 15 router fields + biome_ids, each 64 elements (4×4×4),
-  indexed [qx*16 + qy*4 + qz].
+  Each file has 15 router fields + biome_ids, each 32 elements (4×2×4),
+  indexed [qx*8 + qy*4 + qz].
   Fields (in order): temperature, vegetation, continents, erosion, depth,
           ridges, preliminary_surface_level, final_density, barrier,
           fluid_level_floodedness, fluid_level_spread, lava,
           vein_toggle, vein_ridged, vein_gap
-  biome_ids: 64 discrete biome indices (int), same layout
+  biome_ids: 32 discrete biome indices (int), same layout
   heightmap_surface: 256 ints (16×16, x-major)
   heightmap_ocean_floor: 256 ints (16×16, x-major)
 
@@ -27,8 +27,8 @@ Voxy L4 sections
 Output
 ------
   subchunk16           : (N, 16, 16, 16)   int32   — native Voxy voxels (one octant per section)
-  noise_3d             : (N, 15, 4, 4, 4)  float32 — all 15 RouterField channels
-  biome_ids            : (N, 4, 4, 4)      int32   — biome index per quart cell
+  noise_3d             : (N, 15, 4, 2, 4)  float32 — all 15 RouterField channels
+  biome_ids            : (N, 4, 2, 4)      int32   — biome index per quart cell
   heightmap_surface    : (N, 16, 16)       int32   — WORLD_SURFACE_WG heights (x-major)
   heightmap_ocean_floor: (N, 16, 16)       int32   — OCEAN_FLOOR_WG heights (x-major)
 
@@ -58,6 +58,7 @@ import numpy as np
 # Import canonical field definitions from router_field.py
 try:
     from voxel_tree.utils.router_field import RouterField
+
     NOISE_FIELDS = RouterField.names()  # 15 lowercase names in index order
 except ImportError:
     # Fallback for standalone execution outside the package
@@ -81,7 +82,7 @@ except ImportError:
 N_FIELDS = len(NOISE_FIELDS)  # 15
 assert N_FIELDS == 15, f"Expected 15 RouterField channels, got {N_FIELDS}"
 
-# Each section file covers exactly one (cx, sy, cz) triplet — 4×4×4 = 64 quart cells.
+# Each section file covers exactly one (cx, sy, cz) triplet — 4×2×4 = 32 quart cells.
 # Section Y range in Minecraft overworld: -4 to 19 inclusive (24 sections × 16 blocks = 384 blocks)
 
 
@@ -149,8 +150,8 @@ def build_pairs(
     section_pattern = re.compile(r"section_(-?\d+)_(-?\d+)_(-?\d+)\.json$")
 
     subchunks: list[np.ndarray] = []  # each (16, 16, 16) int32
-    noise_slices: list[np.ndarray] = []  # each (15, 4, 4, 4) float32
-    biome_slices: list[np.ndarray] = []  # each (4, 4, 4) int32
+    noise_slices: list[np.ndarray] = []  # each (15, 4, 2, 4) float32
+    biome_slices: list[np.ndarray] = []  # each (4, 2, 4) int32
     hm_surface_slices: list[np.ndarray] = []  # each (16, 16) int32
     hm_ocean_slices: list[np.ndarray] = []  # each (16, 16) int32
 
@@ -168,20 +169,20 @@ def build_pairs(
             skipped_sections += 1
             continue
 
-        # Load JSON — noise fields are flat 64-value arrays indexed [qx*16 + qy*4 + qz]
+        # Load JSON — noise fields are flat 32-value arrays indexed [qx*8 + qy*4 + qz]
         with open(dump_path) as f:
             raw = json.load(f)
 
-        # Parse 15 noise fields: 64-value flat → (4, 4, 4)
+        # Parse 15 noise fields: 32-value flat → (4, 2, 4)
         field_arrays: list[np.ndarray] = []
         for field in NOISE_FIELDS:
-            arr = np.array(raw[field], dtype=np.float32)  # (64,)
-            arr = arr.reshape(4, 4, 4)  # (qx, qy, qz)
+            arr = np.array(raw[field], dtype=np.float32)  # (32,)
+            arr = arr.reshape(4, 2, 4)  # (qx, qy, qz)
             field_arrays.append(arr)
-        noise_block = np.stack(field_arrays)  # (15, 4, 4, 4)
+        noise_block = np.stack(field_arrays)  # (15, 4, 2, 4)
 
-        # Parse biome IDs: 64-value flat → (4, 4, 4)
-        biome_arr = np.array(raw["biome_ids"], dtype=np.int32).reshape(4, 4, 4)
+        # Parse biome IDs: 32-value flat → (4, 2, 4)
+        biome_arr = np.array(raw["biome_ids"], dtype=np.int32).reshape(4, 2, 4)
 
         # Parse heightmaps: 256-value flat → (16, 16)
         hm_surface = np.array(raw["heightmap_surface"], dtype=np.int32).reshape(16, 16)
@@ -211,8 +212,8 @@ def build_pairs(
 
     # Stack and save
     all_subchunks = np.stack(subchunks).astype(np.int32)  # (N, 16, 16, 16)
-    all_noise_3d = np.stack(noise_slices).astype(np.float32)  # (N, 15, 4, 4, 4)
-    all_biome_ids = np.stack(biome_slices).astype(np.int32)  # (N, 4, 4, 4)
+    all_noise_3d = np.stack(noise_slices).astype(np.float32)  # (N, 15, 4, 2, 4)
+    all_biome_ids = np.stack(biome_slices).astype(np.int32)  # (N, 4, 2, 4)
     all_hm_surface = np.stack(hm_surface_slices).astype(np.int32)  # (N, 16, 16)
     all_hm_ocean = np.stack(hm_ocean_slices).astype(np.int32)  # (N, 16, 16)
 
@@ -265,7 +266,7 @@ def main(argv: list[str] | None = None) -> None:
     args = parser.parse_args(argv)
 
     print("=" * 62)
-    print("  Building v7 training pairs (15ch 4×4×4)")
+    print("  Building v7 training pairs (15ch 4×2×4)")
     print("=" * 62)
     print(f"  Dumps dir : {args.dumps}")
     print(f"  Voxy dir  : {args.voxy}")

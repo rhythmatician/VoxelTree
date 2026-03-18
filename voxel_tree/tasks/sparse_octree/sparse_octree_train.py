@@ -4,7 +4,7 @@ Dataset layout expected in the .npz file
 -----------------------------------------
 subchunk16          : int32   [N, 16, 16, 16]   dense voxel labels
 noise_2d            : float32 [N, C2, 4, 4]     vanilla 2-D climate fields per subchunk
-noise_3d            : float32 [N, C3, 4, Y, 4]  vanilla 3-D volumetric fields (Y=4 for v7, 2 for legacy)
+noise_3d            : float32 [N, C3, 4, Y, 4]  vanilla 3-D volumetric fields (Y=2 for v7, matching vanilla cellHeight=8)
 biome_ids           : int32   [N, 4, Y, 4]      discrete biome IDs at spatial resolution
 heightmap_surface   : float32 [N, 16, 16]       WORLD_SURFACE_WG heightmap in block Y
 heightmap_ocean_floor : float32 [N, 16, 16]     OCEAN_FLOOR_WG heightmap in block Y

@@ -25,8 +25,8 @@ Shapes (B = batch, D = hidden)
 ------------------------------
 v7 pipeline (default):
   noise_2d              : [B, n2d, 4, 4]       climate fields at 4×4 cell res per chunk (0 or 7)
-  noise_3d              : [B, n3d, 4, 4, 4]    15 RouterField channels at 4×4×4 quart resolution
-  biome_ids             : [B, 4, 4, 4]         discrete biome IDs at 4×4×4 quart resolution
+  noise_3d              : [B, n3d, 4, 2, 4]    15 RouterField channels at 4×2×4 quart resolution
+  biome_ids             : [B, 4, 2, 4]         discrete biome IDs at 4×2×4 quart resolution
   heightmap_surface     : [B, 16, 16]          WORLD_SURFACE_WG heightmap in block Y
   heightmap_ocean_floor : [B, 16, 16]          OCEAN_FLOOR_WG heightmap in block Y
   ctx       : [B, D]
@@ -34,9 +34,8 @@ v7 pipeline (default):
   split     : [B, N_nodes]          binary logits
   label     : [B, N_nodes, C]       class logits
 
-Legacy (spatial_y=2):
-  noise_3d  : [B, n3d, 4, 2, 4]    13 channels at 4×2×4
-  biome_ids : [B, 4, 2, 4]         biome IDs at 4×2×4
+Vanilla uses cellWidth=4 (4-block quart spacing on X/Z) and cellHeight=8
+(8-block cell spacing on Y), yielding 4×2×4 cells per 16-block section.
 """
 
 from __future__ import annotations
@@ -100,7 +99,7 @@ class _NoiseEncoder(nn.Module):
     hidden:             output context dimensionality
     biome_vocab_size:   vocabulary size for biome IDs (default 256)
     biome_embed_dim:    embedding dimensionality for biome (default 8)
-    spatial_y:          Y-axis quart cells per section (4 for v7, 2 for legacy)
+    spatial_y:          Y-axis quart cells per section (2 for v7 — vanilla cellHeight=8)
     """
 
     def __init__(
@@ -110,7 +109,7 @@ class _NoiseEncoder(nn.Module):
         hidden: int,
         biome_vocab_size: int = 256,
         biome_embed_dim: int = 8,
-        spatial_y: int = 4,
+        spatial_y: int = 2,
     ) -> None:
         super().__init__()
         self.spatial_y = spatial_y
@@ -214,7 +213,7 @@ class SparseOctreeModel(nn.Module):
     levels:         number of octree levels (5 → L4..L0 for a 16³ subchunk)
     biome_vocab_size: vocabulary size for biome IDs (default 256)
     biome_embed_dim: embedding dimensionality for biome (default 8)
-    spatial_y:      Y-axis quart cells per section (4 for v7, 2 for legacy)
+    spatial_y:      Y-axis quart cells per section (2 for v7 — vanilla cellHeight=8)
     """
 
     def __init__(
@@ -226,7 +225,7 @@ class SparseOctreeModel(nn.Module):
         levels: int = 5,
         biome_vocab_size: int = 256,
         biome_embed_dim: int = 8,
-        spatial_y: int = 4,
+        spatial_y: int = 2,
     ) -> None:
         super().__init__()
         self.hidden = hidden
@@ -338,7 +337,7 @@ class SparseOctreeFastModel(nn.Module):
         label_rank: int | None = None,
         child_rank: int | None = None,
         split_rank: int | None = None,
-        spatial_y: int = 4,
+        spatial_y: int = 2,
     ) -> None:
         super().__init__()
         self.hidden = hidden

@@ -5,7 +5,7 @@ Usage
   python voxel_tree/tasks/sparse_octree/export_sparse_octree.py \\
       --checkpoint path/to/sparse_octree_best.pt \\
       --out-dir    LODiffusion/run/models \\
-      [--n2d 0] [--n3d 15] [--hidden 128] [--num-classes 1040] [--spatial-y 4]
+      [--n2d 0] [--n3d 15] [--hidden 128] [--num-classes 1040] [--spatial-y 2]
 
 The script writes:
   <out-dir>/sparse_octree.onnx          (ONNX model)
@@ -128,7 +128,7 @@ def _flatten_outputs(
 class _OnnxWrapperWith2d(nn.Module):
     """Wraps SparseOctreeModel for export when noise_2d is present."""
 
-    def __init__(self, model: nn.Module, spatial_y: int = 4) -> None:
+    def __init__(self, model: nn.Module, spatial_y: int = 2) -> None:
         super().__init__()
         self.model = model
         self.spatial_y = spatial_y
@@ -148,7 +148,7 @@ class _OnnxWrapperWith2d(nn.Module):
 class _OnnxWrapperNo2d(nn.Module):
     """Wraps SparseOctreeModel for export when no noise_2d input exists."""
 
-    def __init__(self, model: nn.Module, spatial_y: int = 4) -> None:
+    def __init__(self, model: nn.Module, spatial_y: int = 2) -> None:
         super().__init__()
         self.model = model
         self.spatial_y = spatial_y
@@ -236,7 +236,7 @@ def export_sparse_octree(
     split_threshold: float = 0.6,
     softmax_temperature: float = 0.8,
     block_vocab: Path | None = None,
-    spatial_y: int = 4,
+    spatial_y: int = 2,
 ) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     onnx_path = out_dir / "sparse_octree.onnx"
@@ -400,7 +400,7 @@ def export_sparse_octree(
     #   version, blockVocabSize, blockMapping (can be empty)
 
     # Determine contract version and channel names based on spatial_y
-    if spatial_y == 4 and n3d == 15:
+    if spatial_y == 2 and n3d == 15:
         contract = "lodiffusion.v7.sparse_octree"
         channel_names = _V7_NOISE_3D_CHANNELS
     elif n3d == len(_LEGACY_NOISE_3D_CHANNELS):
@@ -511,8 +511,8 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument(
         "--spatial-y",
         type=int,
-        default=4,
-        help="Y-axis quart cells per section (4 for v7, 2 for legacy; default: 4)",
+        default=2,
+        help="Y-axis quart cells per section (2 for v7 — vanilla cellHeight=8; default: 2)",
     )
     return p.parse_args()
 

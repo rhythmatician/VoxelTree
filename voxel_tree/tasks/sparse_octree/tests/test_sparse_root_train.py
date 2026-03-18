@@ -119,13 +119,13 @@ def test_sparse_octree_dataset_handles_missing_noise_2d() -> None:
         np.savez_compressed(
             npz_path,
             subchunk16=np.zeros((n, 16, 16, 16), dtype=np.int32),
-            noise_3d=np.random.randn(n, 15, 4, 4, 4).astype(np.float32),
-            biome_ids=np.zeros((n, 4, 4, 4), dtype=np.int32),
+            noise_3d=np.random.randn(n, 15, 4, 2, 4).astype(np.float32),
+            biome_ids=np.zeros((n, 4, 2, 4), dtype=np.int32),
         )
         ds = SparseOctreeDataset(npz_path, cache_targets=False)
         assert ds.noise_2d.shape == (n, 0, 4, 4)
-        assert ds.noise_3d.shape == (n, 15, 4, 4, 4)
-        assert ds.spatial_y == 4
+        assert ds.noise_3d.shape == (n, 15, 4, 2, 4)
+        assert ds.spatial_y == 2
         assert len(ds) == n
 
 
@@ -156,8 +156,8 @@ def test_sparse_octree_dataset_handles_missing_heightmaps() -> None:
         np.savez_compressed(
             npz_path,
             subchunk16=np.zeros((n, 16, 16, 16), dtype=np.int32),
-            noise_3d=np.random.randn(n, 15, 4, 4, 4).astype(np.float32),
-            biome_ids=np.zeros((n, 4, 4, 4), dtype=np.int32),
+            noise_3d=np.random.randn(n, 15, 4, 2, 4).astype(np.float32),
+            biome_ids=np.zeros((n, 4, 2, 4), dtype=np.int32),
         )
         ds = SparseOctreeDataset(npz_path, cache_targets=False)
         assert ds.heightmap_surface.shape == (n, 16, 16)
@@ -176,8 +176,8 @@ def test_sparse_octree_dataset_loads_heightmaps_when_present() -> None:
         np.savez_compressed(
             npz_path,
             subchunk16=np.zeros((n, 16, 16, 16), dtype=np.int32),
-            noise_3d=np.random.randn(n, 15, 4, 4, 4).astype(np.float32),
-            biome_ids=np.zeros((n, 4, 4, 4), dtype=np.int32),
+            noise_3d=np.random.randn(n, 15, 4, 2, 4).astype(np.float32),
+            biome_ids=np.zeros((n, 4, 2, 4), dtype=np.int32),
             heightmap_surface=hm_s,
             heightmap_ocean_floor=hm_o,
         )
@@ -196,8 +196,8 @@ def test_collate_includes_heightmaps() -> None:
         np.savez_compressed(
             npz_path,
             subchunk16=np.zeros((n, 16, 16, 16), dtype=np.int32),
-            noise_3d=np.random.randn(n, 15, 4, 4, 4).astype(np.float32),
-            biome_ids=np.zeros((n, 4, 4, 4), dtype=np.int32),
+            noise_3d=np.random.randn(n, 15, 4, 2, 4).astype(np.float32),
+            biome_ids=np.zeros((n, 4, 2, 4), dtype=np.int32),
             heightmap_surface=np.random.randn(n, 16, 16).astype(np.float32),
             heightmap_ocean_floor=np.random.randn(n, 16, 16).astype(np.float32),
         )
@@ -210,10 +210,10 @@ def test_collate_includes_heightmaps() -> None:
 def test_fast_model_forward_with_heightmaps() -> None:
     """SparseOctreeFastModel forward pass must accept heightmap inputs."""
     B = 2
-    model = SparseOctreeFastModel(n2d=0, n3d=15, hidden=32, num_classes=10, spatial_y=4)
+    model = SparseOctreeFastModel(n2d=0, n3d=15, hidden=32, num_classes=10, spatial_y=2)
     noise_2d = torch.zeros(B, 0, 4, 4)
-    noise_3d = torch.randn(B, 15, 4, 4, 4)
-    biome_ids = torch.zeros(B, 4, 4, 4, dtype=torch.long)
+    noise_3d = torch.randn(B, 15, 4, 2, 4)
+    biome_ids = torch.zeros(B, 4, 2, 4, dtype=torch.long)
     hm_surface = torch.randn(B, 16, 16)
     hm_ocean = torch.randn(B, 16, 16)
 

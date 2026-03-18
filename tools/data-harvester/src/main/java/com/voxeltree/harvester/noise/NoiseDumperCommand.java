@@ -1089,13 +1089,13 @@ public final class NoiseDumperCommand {
      *
      * <p>Each JSON file contains:
      * <ul>
-     *   <li>15 RouterField channels as flat 64-element arrays (4×4×4, channel-first)</li>
-     *   <li>{@code biome_ids}: flat 64-element int array (4×4×4)</li>
+     *   <li>15 RouterField channels as flat 32-element arrays (4×2×4, channel-first)</li>
+     *   <li>{@code biome_ids}: flat 32-element int array (4×2×4)</li>
      *   <li>{@code heightmap_surface}: flat 256-element int array (16×16, x-major)</li>
      *   <li>{@code heightmap_ocean_floor}: flat 256-element int array (16×16, x-major)</li>
      * </ul>
      *
-     * <p>Flat ordering is {@code [qx][qy][qz]} = {@code qx * 16 + qy * 4 + qz}.
+     * <p>Flat ordering is {@code [qx][qy][qz]} = {@code qx * 8 + qy * 4 + qz}.
      */
     static void dumpSectionNoiseV7(WorldNoiseAccess noise,
                                    int cx, int sy, int cz,
@@ -1106,10 +1106,10 @@ public final class NoiseDumperCommand {
         String filename = String.format("section_%d_%d_%d.json", cx, sy, cz);
         Path file = outDir.resolve(filename);
 
-        // 15-channel flat array [field * 64 + qx * 16 + qy * 4 + qz]
+        // 15-channel flat array [field * 32 + qx * 8 + qy * 4 + qz]
         float[] routerFlat = noise.sampleRouterFieldsForSection(cx, sy, cz);
 
-        // 4×4×4 biome IDs
+        // 4×2×4 biome IDs
         int[][][] biomeIds = noise.sampleBiomeIdsForSectionV7(cx, sy, cz);
 
         // --- Write JSON
@@ -1120,26 +1120,26 @@ public final class NoiseDumperCommand {
         sb.append("  \"chunk_z\": ").append(cz).append(",\n");
         sb.append("  \"seed\": ").append(seed).append(",\n");
         sb.append("  \"version\": 7,\n");
-        sb.append("  \"cell_resolution\": \"4x4x4\",\n");
-        sb.append("  \"note\": \"flat arrays indexed [qx*16 + qy*4 + qz]; channel-first for router fields\",\n");
+        sb.append("  \"cell_resolution\": \"4x2x4\",\n");
+        sb.append("  \"note\": \"flat arrays indexed [qx*8 + qy*4 + qz]; channel-first for router fields\",\n");
 
         // Write each of the 15 router fields as a separate JSON key,
-        // each with 64 values (4×4×4).
+        // each with 32 values (4×2×4).
         for (int field = 0; field < WorldNoiseAccess.N_ROUTER_FIELDS; field++) {
             sb.append("  \"").append(V7_FIELD_NAMES[field]).append("\": [");
-            int base = field * 64;
-            for (int i = 0; i < 64; i++) {
+            int base = field * 32;
+            for (int i = 0; i < 32; i++) {
                 if (i > 0) sb.append(',');
                 sb.append(String.format("%.6g", routerFlat[base + i]));
             }
             sb.append("],\n");
         }
 
-        // Biome IDs — flat 64 values [qx][qy][qz]
+        // Biome IDs — flat 32 values [qx][qy][qz]
         sb.append("  \"biome_ids\": [");
         boolean first = true;
         for (int qx = 0; qx < 4; qx++) {
-            for (int qy = 0; qy < 4; qy++) {
+            for (int qy = 0; qy < 2; qy++) {
                 for (int qz = 0; qz < 4; qz++) {
                     if (!first) sb.append(',');
                     first = false;
