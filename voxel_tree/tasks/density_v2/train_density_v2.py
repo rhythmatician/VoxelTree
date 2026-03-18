@@ -51,17 +51,24 @@ except ImportError:
     CLIMATE_FIELDS = frozenset(range(6))
     DENSITY_FIELDS = frozenset({6, 7})
 
+try:
+    from voxel_tree.contracts import get_contract
+
+    CONTRACT = get_contract("density", revision=1)
+except Exception:  # standalone fallback
+    CONTRACT = None
+
 # ---------------------------------------------------------------------------
 # Architecture
 # ---------------------------------------------------------------------------
 
-INPUT_SIZE = 6   # 6 climate fields
+INPUT_SIZE = 6  # 6 climate fields
 HIDDEN_SIZE = 128
 OUTPUT_SIZE = 2  # preliminary_surface_level, final_density
 
 # Channel indices in the 15-channel noise_3d tensor
-CLIMATE_INDICES = sorted(CLIMATE_FIELDS)   # [0, 1, 2, 3, 4, 5]
-TARGET_INDICES = sorted(DENSITY_FIELDS)    # [6, 7]
+CLIMATE_INDICES = sorted(CLIMATE_FIELDS)  # [0, 1, 2, 3, 4, 5]
+TARGET_INDICES = sorted(DENSITY_FIELDS)  # [6, 7]
 
 
 class DensityV2(nn.Module):
@@ -103,8 +110,8 @@ def load_data(npz_path: Path) -> tuple[torch.Tensor, torch.Tensor]:
     assert noise_3d.shape[1] == 15, f"Expected 15 channels, got {noise_3d.shape[1]}"
 
     # Extract climate (input) and density (target) channels
-    clim = noise_3d[:, CLIMATE_INDICES, :, :, :]   # (N, 6, 4, 4, 4)
-    dens = noise_3d[:, TARGET_INDICES, :, :, :]     # (N, 2, 4, 4, 4)
+    clim = noise_3d[:, CLIMATE_INDICES, :, :, :]  # (N, 6, 4, 4, 4)
+    dens = noise_3d[:, TARGET_INDICES, :, :, :]  # (N, 2, 4, 4, 4)
 
     # Flatten spatial dims: (N, C, 4, 4, 4) → (N, C, 64) → (N*64, C)
     clim_flat = clim.reshape(n, INPUT_SIZE, -1).transpose(0, 2, 1).reshape(-1, INPUT_SIZE)
@@ -144,16 +151,27 @@ def train(
 
     train_ds = TensorDataset(inputs[train_idx], targets[train_idx])
     val_ds = TensorDataset(inputs[val_idx], targets[val_idx])
-    train_dl = DataLoader(train_ds, batch_size=batch_size, shuffle=True,
-                          pin_memory=(dev.type == "cuda"), num_workers=0)
-    val_dl = DataLoader(val_ds, batch_size=batch_size * 2, shuffle=False,
-                        pin_memory=(dev.type == "cuda"), num_workers=0)
+    train_dl = DataLoader(
+        train_ds,
+        batch_size=batch_size,
+        shuffle=True,
+        pin_memory=(dev.type == "cuda"),
+        num_workers=0,
+    )
+    val_dl = DataLoader(
+        val_ds,
+        batch_size=batch_size * 2,
+        shuffle=False,
+        pin_memory=(dev.type == "cuda"),
+        num_workers=0,
+    )
 
     model = DensityV2().to(dev)
     criterion = nn.MSELoss()
     optimizer = optim.Adam(model.parameters(), lr=lr)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, mode="min", factor=0.5, patience=10, min_lr=1e-6)
+        optimizer, mode="min", factor=0.5, patience=10, min_lr=1e-6
+    )
 
     best_val = float("inf")
     best_epoch = -1
@@ -199,7 +217,7 @@ def train(
         if avg_val < best_val:
             best_val = avg_val
             best_epoch = epoch
-            torch.save({
+            ckpt_dict = {
                 "epoch": epoch,
                 "model_state_dict": model.state_dict(),
                 "optimizer_state_dict": optimizer.state_dict(),
@@ -209,25 +227,34 @@ def train(
                 "output_size": OUTPUT_SIZE,
                 "climate_indices": CLIMATE_INDICES,
                 "target_indices": TARGET_INDICES,
-            }, ckpt_path)
+            }
+            if CONTRACT is not None:
+                ckpt_dict["contract_meta"] = CONTRACT.to_checkpoint_meta()
+            torch.save(ckpt_dict, ckpt_path)
 
         if epoch % 10 == 0 or epoch == 1:
             elapsed = time.time() - t0
             cur_lr = optimizer.param_groups[0]["lr"]
-            print(f"  Epoch {epoch:4d}/{epochs}  "
-                  f"train_mse={avg_train:.6f}  val_mse={avg_val:.6f}  "
-                  f"best={best_val:.6f}@{best_epoch}  "
-                  f"lr={cur_lr:.1e}  [{elapsed:.0f}s]")
+            print(
+                f"  Epoch {epoch:4d}/{epochs}  "
+                f"train_mse={avg_train:.6f}  val_mse={avg_val:.6f}  "
+                f"best={best_val:.6f}@{best_epoch}  "
+                f"lr={cur_lr:.1e}  [{elapsed:.0f}s]"
+            )
 
     elapsed = time.time() - t0
-    print(f"\n  Training complete in {elapsed:.1f}s — best val_mse={best_val:.6f} @ epoch {best_epoch}")
+    print(
+        f"\n  Training complete in {elapsed:.1f}s — best val_mse={best_val:.6f} @ epoch {best_epoch}"
+    )
 
     # --- export ONNX ---
     model.load_state_dict(torch.load(ckpt_path, weights_only=True)["model_state_dict"])
     model.eval().cpu()
     dummy = torch.randn(1, INPUT_SIZE)
     torch.onnx.export(
-        model, dummy, str(onnx_path),
+        model,
+        dummy,
+        str(onnx_path),
         input_names=["climate_input"],
         output_names=["density_output"],
         dynamic_axes={"climate_input": {0: "batch"}, "density_output": {0: "batch"}},
@@ -248,9 +275,12 @@ def main(argv: list[str] | None = None) -> None:
         description="Train DensityV2: 6 climate → 2 density MLP",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument("--data", type=Path,
-                        default=Path("noise_training_data/sparse_octree_pairs_v7.npz"),
-                        help="v7 training data NPZ file")
+    parser.add_argument(
+        "--data",
+        type=Path,
+        default=Path("noise_training_data/sparse_octree_pairs_v7.npz"),
+        help="v7 training data NPZ file",
+    )
     parser.add_argument("--epochs", type=int, default=200)
     parser.add_argument("--batch-size", type=int, default=4096)
     parser.add_argument("--lr", type=float, default=1e-3)
@@ -267,9 +297,15 @@ def main(argv: list[str] | None = None) -> None:
     print("=" * 62)
 
     inputs, targets = load_data(args.data)
-    train(inputs, targets,
-          epochs=args.epochs, batch_size=args.batch_size,
-          lr=args.lr, out_dir=args.out_dir, device=args.device)
+    train(
+        inputs,
+        targets,
+        epochs=args.epochs,
+        batch_size=args.batch_size,
+        lr=args.lr,
+        out_dir=args.out_dir,
+        device=args.device,
+    )
 
     print("=" * 62)
     print("  DONE")

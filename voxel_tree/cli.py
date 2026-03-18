@@ -238,6 +238,10 @@ def main(argv: list[str] | None = None) -> None:
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
 
+    # Sub-commands
+    sub = parser.add_subparsers(dest="subcommand")
+    sub.add_parser("contracts", help="Inspect model I/O contracts (pass -h for options)")
+
     # Primary mode flags (mutually exclusive)
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument(
@@ -270,9 +274,13 @@ def main(argv: list[str] | None = None) -> None:
         help="Server role from servers.yaml (e.g. train, validate)",
     )
 
-    args = parser.parse_args(argv)
+    args, remaining = parser.parse_known_args(argv)
 
-    if args.list_steps:
+    if args.subcommand == "contracts":
+        from voxel_tree.contracts.cli import run_contracts_cli  # noqa: PLC0415
+
+        run_contracts_cli(remaining)
+    elif args.list_steps:
         _cmd_list_steps()
     elif args.server:
         _cmd_server(args.server, args.role)
