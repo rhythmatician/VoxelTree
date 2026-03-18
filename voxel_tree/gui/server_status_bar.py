@@ -1,7 +1,10 @@
 """server_status_bar.py — Toolbar widget for Fabric server lifecycle control.
 
 Shows:
-  ● Server: Running / Starting... / Stopped     [Start]  [Stop]   |  [▶ Run Server Steps – <profile>]
+  ● Server: Running (port 25565)       [Stop]   |  [▶ Run Server Steps – <profile>]
+  ● Server: Stopped                     [Start]  |  [▶ Run Server Steps – <profile>]
+
+  Plus: World selector dropdown (train/validate), Live log snippet on the right.
 
 The "Run Server Steps" button triggers a server session for the currently
 active profile, running whichever of pregen → voxy_import / dumpnoise
@@ -66,6 +69,10 @@ class ServerStatusBar(QWidget):
         # ── Status text ──
         self._status_lbl = QLabel("Server: Stopped")
 
+        # ── Port display (shown when running) ──
+        self._port_lbl = QLabel("")
+        self._port_lbl.setStyleSheet("color:#8899bb; font-size:10px; margin-left:-4px;")
+
         sep1 = _Sep()
 
         # ── World selector (train / validate) ──
@@ -123,6 +130,7 @@ class ServerStatusBar(QWidget):
         for w in (
             self._dot,
             self._status_lbl,
+            self._port_lbl,
             sep1,
             world_label,
             self._world_combo,
@@ -184,6 +192,17 @@ class ServerStatusBar(QWidget):
         self._stop_btn.setEnabled(is_running or status == "starting")
         # Disable world selector while the server is not stopped
         self._world_combo.setEnabled(is_stopped)
+
+        # Show port when running
+        if is_running:
+            from voxel_tree.gui.server_manager import get_rcon_settings  # noqa: PLC0415
+
+            rcon = get_rcon_settings()
+            port = int(rcon["port"])
+            self._port_lbl.setText(f"(port {port})")
+        else:
+            self._port_lbl.setText("")
+
         self._refresh_session_btn()
 
     @Slot()

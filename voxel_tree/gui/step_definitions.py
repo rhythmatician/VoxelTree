@@ -414,7 +414,10 @@ def _harvest_run(p: dict[str, Any]) -> None:
          (set by :meth:`ServerManager.configure_for_role` before launch).
       3. harvest.py's own default when neither is set.
     """
-    from voxel_tree.gui.server_manager import get_rcon_settings, read_server_property  # noqa: PLC0415
+    from voxel_tree.gui.server_manager import (
+        get_rcon_settings,
+        read_server_property,
+    )  # noqa: PLC0415
     from voxel_tree.preprocessing.harvest import main as harvest_main  # noqa: PLC0415
 
     world = p.get("world", {})
