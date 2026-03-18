@@ -3,7 +3,7 @@
 A ``ModelContract`` is an immutable description of a model's inputs, outputs,
 and the pipeline stages that produce / consume it.  When the I/O changes, you
 create a **new revision** of the same model name rather than inventing a new
-model name (``density_v2``, ``density_v3`` …).
+model name (``density_v3``, ``density_v4`` …).
 
 Immutability contract
 ---------------------

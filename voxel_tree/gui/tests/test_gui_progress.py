@@ -131,8 +131,8 @@ def test_profilerow_contains_new_export_deploy_nodes():
     for step in (
         "export_sparse_octree",
         "deploy_sparse_octree",
-        "extract_terrain_shaper_weights",
-        "deploy_terrain_shaper",
+        "export_density",
+        "deploy_density",
     ):
         assert step in row._nodes, f"missing node {step}"
 

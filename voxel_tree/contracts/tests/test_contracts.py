@@ -181,11 +181,14 @@ class TestRegistry:
         assert c.revision == latest_revision("density")
 
     def test_get_contract_specific_revision(self):
-        c0 = get_contract("density", revision=0)
         c1 = get_contract("density", revision=1)
-        assert c0.revision == 0
         assert c1.revision == 1
-        assert c0.fingerprint != c1.fingerprint
+        # sparse_octree has two revisions we can test
+        s0 = get_contract("sparse_octree", revision=0)
+        s1 = get_contract("sparse_octree", revision=1)
+        assert s0.revision == 0
+        assert s1.revision == 1
+        assert s0.fingerprint != s1.fingerprint
 
     def test_get_contract_missing(self):
         with pytest.raises(KeyError, match="No contract"):
@@ -233,8 +236,9 @@ class TestCheckpointValidation:
             validate_checkpoint_contract(ckpt, contract)
 
     def test_newer_revision_rejected(self):
-        contract = get_contract("density", revision=0)
-        rev1 = get_contract("density", revision=1)
+        # sparse_octree has rev 0 and rev 1; load rev 0 as target
+        contract = get_contract("sparse_octree", revision=0)
+        rev1 = get_contract("sparse_octree", revision=1)
         ckpt = {"contract_meta": rev1.to_checkpoint_meta()}
         with pytest.raises(ContractViolation, match="revision 1"):
             validate_checkpoint_contract(ckpt, contract, strict=False)
@@ -247,11 +251,6 @@ class TestCheckpointValidation:
 
 class TestCatalogContracts:
     """Verify that catalog-registered contracts have sane shapes."""
-
-    def test_density_rev0_shapes(self):
-        c = get_contract("density", revision=0)
-        assert c.inputs[0].shape == ("batch", 12)
-        assert c.outputs[0].shape == ("batch", 1)
 
     def test_density_rev1_shapes(self):
         c = get_contract("density", revision=1)
@@ -324,19 +323,19 @@ class TestTrackAlignment:
         from voxel_tree.contracts.registry import check_track_alignment
 
         # density rev 1 IS the latest → aligned
-        tracks = [_fake_track("density_v2", "density", 1)]
+        tracks = [_fake_track("density", "density", 1)]
         issues = check_track_alignment(tracks)
         assert issues == []
 
     def test_stale_track_detected(self, _fake_track):
         from voxel_tree.contracts.registry import check_track_alignment
 
-        # density has rev 0 and rev 1 in catalog; pinning to 0 → stale
-        tracks = [_fake_track("old_density", "density", 0)]
+        # sparse_octree has rev 0 and rev 1; pinning to 0 → stale
+        tracks = [_fake_track("old_octree", "sparse_octree", 0)]
         issues = check_track_alignment(tracks)
         assert len(issues) == 1
         assert issues[0].severity == "stale"
-        assert issues[0].track_id == "old_density"
+        assert issues[0].track_id == "old_octree"
         assert issues[0].current_revision == 0
         assert issues[0].latest_revision_ == 1
         assert "rev 0" in issues[0].message

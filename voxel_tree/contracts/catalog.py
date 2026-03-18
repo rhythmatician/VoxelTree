@@ -21,15 +21,6 @@ Revisions are **per model family**, starting at 1.  There is no requirement
 that revisions across different models stay in sync.  A "v7 pipeline" model
 that already shipped with a sidecar marked ``version: "7.0.0"`` is mapped
 to revision 1 here (the first contract-tracked revision).
-
-Mapping from legacy model names
---------------------------------
-- ``density`` rev 1   ← was ``density_v2`` (6→2 MLP, v7 pipeline)
-- ``density`` rev 0   ← was ``density`` (12→1 MLP, v5 terrain-shaper pipeline)
-                        Registered as rev 0 for archaeology only.
-
-This eliminates the density/density_v2 split — future changes bump the
-revision instead of forking the model name.
 """
 
 from __future__ import annotations
@@ -45,42 +36,7 @@ from voxel_tree.contracts.registry import register as _register
 #  DENSITY
 # ══════════════════════════════════════════════════════════════════════════
 
-# ── revision 0 (legacy "density v1") ──────────────────────────────────────
-# This is the original 12→1 MLP trained from /dumpnoise terrain_shaper data.
-# Registered for archaeology — no new training runs should target rev 0.
-_register(
-    ModelContract(
-        model_name="density",
-        revision=0,
-        contract_id="lodiffusion.v5.density",
-        inputs=(
-            TensorSpec(
-                name="features",
-                shape=("batch", 12),
-                dtype="float32",
-                description="12 hand-crafted noise features from terrain_shaper dumps",
-            ),
-        ),
-        outputs=(
-            TensorSpec(
-                name="final_density",
-                shape=("batch", 1),
-                dtype="float32",
-                description="Predicted final_density scalar",
-            ),
-        ),
-        onnx_opset=17,
-        description="Legacy density NN: 12 terrain-shaper features → 1 density output",
-        changelog="Initial tracked revision (retroactive).",
-        build_pairs_fn="voxel_tree.tasks.density.train_density",
-        train_fn="voxel_tree.tasks.density.train_density:main",
-        export_fn="voxel_tree.tasks.density.extract_density_weights:main",
-    )
-)
-
-# ── revision 1 (was "density_v2") ────────────────────────────────────────
-# 6 climate RouterField channels → 2 density outputs.
-# This is the v7 pipeline model that replaced the terrain-shaper density.
+# ── revision 1 (6 climate → 2 density) ──────────────────────────────────
 _register(
     ModelContract(
         model_name="density",
@@ -114,12 +70,12 @@ _register(
             ),
         ),
         onnx_opset=18,
-        description="DensityV2: 6 climate → (preliminary_surface_level, final_density)",
-        changelog="Replaced 12-feature terrain-shaper input with 6 raw climate fields. "
-        "Added preliminary_surface_level as second output.",
+        description="Density MLP: 6 climate → (preliminary_surface_level, final_density)",
+        changelog="6 raw climate fields → 2 density outputs. "
+        "Replaced legacy 12-feature terrain-shaper approach.",
         build_pairs_fn="voxel_tree.tasks.sparse_octree.build_sparse_octree_pairs:main",
-        train_fn="voxel_tree.tasks.density_v2.train_density_v2:main",
-        export_fn="voxel_tree.tasks.density_v2.export_density_v2:main",
+        train_fn="voxel_tree.tasks.density.train_density:main",
+        export_fn="voxel_tree.tasks.density.export_density:main",
     )
 )
 
@@ -310,41 +266,5 @@ _register(
         build_pairs_fn="voxel_tree.tasks.sparse_octree.build_sparse_octree_pairs:main",
         train_fn="voxel_tree.tasks.sparse_octree.train:train_sparse_octree",
         export_fn="voxel_tree.tasks.sparse_octree.export_sparse_octree:export_sparse_octree",
-    )
-)
-
-
-# ══════════════════════════════════════════════════════════════════════════
-#  TERRAIN SHAPER (legacy)
-# ══════════════════════════════════════════════════════════════════════════
-
-_register(
-    ModelContract(
-        model_name="terrain_shaper",
-        revision=0,
-        contract_id="lodiffusion.v5.terrain_shaper",
-        inputs=(
-            TensorSpec(
-                name="shaper_input",
-                shape=("batch", 4),
-                dtype="float32",
-                channels=("continents", "erosion", "ridges", "weirdness"),
-                description="4 climate params → terrain shaper MLP",
-            ),
-        ),
-        outputs=(
-            TensorSpec(
-                name="shaper_output",
-                shape=("batch", 3),
-                dtype="float32",
-                channels=("offset", "factor", "jaggedness"),
-                description="Terrain shaping parameters",
-            ),
-        ),
-        onnx_opset=17,
-        description="TerrainShaper MLP: 4 climate → 3 shaping params (offset, factor, jaggedness)",
-        changelog="Initial tracked revision (retroactive).",
-        train_fn="voxel_tree.tasks.terrain_shaper.train_terrain_shaper:main",
-        export_fn="voxel_tree.tasks.terrain_shaper.extract_terrain_shaper_weights:main",
     )
 )

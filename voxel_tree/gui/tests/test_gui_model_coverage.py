@@ -34,7 +34,7 @@ class TestModelTrackCoverage:
 
         # Current architecture handles models via ModelTrack registration.
         # We check for the core models currently in active development.
-        required_tracks = {"sparse_octree", "terrain_shaper"}
+        required_tracks = {"sparse_octree", "density"}
         found_tracks = set(track_ids)
         assert required_tracks.issubset(
             found_tracks
@@ -152,10 +152,6 @@ class TestArtifactGraph:
             "train_sparse_octree": ["build_pairs_sparse_octree"],
             "export_sparse_octree": ["train_sparse_octree"],
             "deploy_sparse_octree": ["export_sparse_octree"],
-            "build_pairs_terrain_shaper": ["dumpnoise"],
-            "train_terrain_shaper_density": ["build_pairs_terrain_shaper"],
-            "extract_terrain_shaper_weights": ["train_terrain_shaper_density"],
-            "deploy_terrain_shaper": ["extract_terrain_shaper_weights"],
         }
 
         actual = {s.id: s.prereqs for s in PIPELINE_STEPS}
