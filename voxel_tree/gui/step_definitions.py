@@ -659,7 +659,7 @@ def _train_sparse_octree_run(p: dict[str, Any]) -> None:
 
 
 def _export_sparse_octree_run(p: dict[str, Any]) -> None:
-    from LODiffusion.models.export_sparse_octree import export_sparse_octree  # noqa: PLC0415
+    from voxel_tree.tasks.sparse_octree.export_sparse_octree import export_sparse_octree  # noqa: PLC0415
 
     train = p.get("train", {})
     export = p.get("export", {})
@@ -670,7 +670,7 @@ def _export_sparse_octree_run(p: dict[str, Any]) -> None:
 
 
 def _deploy_sparse_octree_run(p: dict[str, Any]) -> None:
-    from LODiffusion.models.export_sparse_octree import export_sparse_octree  # noqa: PLC0415
+    from voxel_tree.tasks.sparse_octree.export_sparse_octree import export_sparse_octree  # noqa: PLC0415
 
     deploy = p.get("deploy", {})
     out_dir = (
@@ -928,7 +928,7 @@ def _train_sparse_octree_v7_run(p: dict[str, Any]) -> None:
 
 
 def _export_sparse_octree_v7_run(p: dict[str, Any]) -> None:
-    from LODiffusion.models.export_sparse_octree import export_sparse_octree  # noqa: PLC0415
+    from voxel_tree.tasks.sparse_octree.export_sparse_octree import export_sparse_octree  # noqa: PLC0415
 
     train = p.get("train", {})
     export = p.get("export", {})

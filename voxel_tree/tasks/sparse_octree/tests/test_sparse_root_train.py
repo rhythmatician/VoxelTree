@@ -1,27 +1,9 @@
 from __future__ import annotations
 
-import sys
-import types
-from pathlib import Path
-
 import torch
 
-# Provide a tiny LODiffusion stub for importing sparse_octree_train helpers.
-if "LODiffusion.models.sparse_octree" not in sys.modules:
-    sparse_octree_mod = types.ModuleType("LODiffusion.models.sparse_octree")
-
-    class _DummyModel:  # pragma: no cover - import shim only
-        pass
-
-    sparse_octree_mod.SparseOctreeFastModel = _DummyModel
-    sparse_octree_mod.SparseOctreeModel = _DummyModel
-    models_mod = types.ModuleType("LODiffusion.models")
-    models_mod.sparse_octree = sparse_octree_mod
-    lod_mod = types.ModuleType("LODiffusion")
-    lod_mod.models = models_mod
-    sys.modules["LODiffusion"] = lod_mod
-    sys.modules["LODiffusion.models"] = models_mod
-    sys.modules["LODiffusion.models.sparse_octree"] = sparse_octree_mod
+# sparse_octree.py now lives at voxel_tree/tasks/sparse_octree/sparse_octree.py;
+# no LODiffusion stub is needed — the module is in the same package.
 
 from voxel_tree.tasks.sparse_octree.sparse_octree_train import (
     _finalize_metrics,

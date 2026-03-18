@@ -14,7 +14,7 @@ import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
-from LODiffusion.models.sparse_octree import SparseOctreeFastModel, SparseOctreeModel
+from .sparse_octree import SparseOctreeFastModel, SparseOctreeModel
 from .sparse_octree_train import (
     SparseOctreeDataset,
     _default_level_weights,

@@ -415,7 +415,7 @@ Next 16 values = ocean floor heights at 4×4 quart resolution.
 
 **Contract ID:** `lodiffusion.v7.sparse_octree`
 **Version:** `7.0.0`
-**Python source:** `LODiffusion/models/sparse_octree.py`, `LODiffusion/models/export_sparse_octree.py`
+**Python source:** `voxel_tree/tasks/sparse_octree/sparse_octree.py`, `voxel_tree/tasks/sparse_octree/export_sparse_octree.py`
 **Architecture:** SparseOctreeModel / SparseOctreeFastModel (5-level hierarchy)
 
 | Input | Shape | dtype | Notes |

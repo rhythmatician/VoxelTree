@@ -29,7 +29,7 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader, Dataset
 
-from LODiffusion.models.sparse_octree import SparseOctreeFastModel, SparseOctreeModel
+from .sparse_octree import SparseOctreeFastModel, SparseOctreeModel
 from .sparse_octree_targets import build_sparse_octree_targets
 
 # ---------------------------------------------------------------------------
