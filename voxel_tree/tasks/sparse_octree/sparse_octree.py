@@ -24,9 +24,11 @@ Output keys are **integers** (4, 3, 2, 1, 0) matching
 Shapes (B = batch, D = hidden)
 ------------------------------
 v7 pipeline (default):
-  noise_2d  : [B, n2d, 4, 4]       climate fields at 4×4 cell res per chunk (0 or 7)
-  noise_3d  : [B, n3d, 4, 4, 4]    15 RouterField channels at 4×4×4 quart resolution
-  biome_ids : [B, 4, 4, 4]         discrete biome IDs at 4×4×4 quart resolution
+  noise_2d              : [B, n2d, 4, 4]       climate fields at 4×4 cell res per chunk (0 or 7)
+  noise_3d              : [B, n3d, 4, 4, 4]    15 RouterField channels at 4×4×4 quart resolution
+  biome_ids             : [B, 4, 4, 4]         discrete biome IDs at 4×4×4 quart resolution
+  heightmap_surface     : [B, 16, 16]          WORLD_SURFACE_WG heightmap in block Y
+  heightmap_ocean_floor : [B, 16, 16]          OCEAN_FLOOR_WG heightmap in block Y
   ctx       : [B, D]
   node_feat : [B * N_nodes, D]      N_nodes = 1 / 8 / 64 / 512 / 4096 at L4..L0
   split     : [B, N_nodes]          binary logits
@@ -89,7 +91,7 @@ class _OctreePosEmb(nn.Module):
 
 
 class _NoiseEncoder(nn.Module):
-    """MLP encoder over flattened 2-D and 3-D vanilla noise fields + biome embedding.
+    """MLP encoder over flattened 2-D and 3-D vanilla noise fields + biome embedding + heightmaps.
 
     Parameters
     ----------
@@ -115,7 +117,8 @@ class _NoiseEncoder(nn.Module):
         flat_2d = n2d * 4 * 4
         flat_3d = n3d * 4 * spatial_y * 4
         flat_biome = 4 * spatial_y * 4 * biome_embed_dim
-        in_dim = flat_2d + flat_3d + flat_biome
+        flat_heightmaps = 16 * 16 * 2  # surface + ocean_floor, each [16,16]
+        in_dim = flat_2d + flat_3d + flat_biome + flat_heightmaps
 
         self.biome_embed = nn.Embedding(biome_vocab_size, biome_embed_dim)
 
@@ -131,12 +134,16 @@ class _NoiseEncoder(nn.Module):
         noise_2d: torch.Tensor,
         noise_3d: torch.Tensor,
         biome_ids: torch.Tensor,
+        heightmap_surface: torch.Tensor,
+        heightmap_ocean_floor: torch.Tensor,
     ) -> torch.Tensor:
         """
         Args:
-            noise_2d:   [B, n2d, 4, 4]
-            noise_3d:   [B, n3d, 4, spatial_y, 4]
-            biome_ids:  [B, 4, spatial_y, 4] (integer biome indices)
+            noise_2d:              [B, n2d, 4, 4]
+            noise_3d:              [B, n3d, 4, spatial_y, 4]
+            biome_ids:             [B, 4, spatial_y, 4] (integer biome indices)
+            heightmap_surface:     [B, 16, 16] (WORLD_SURFACE_WG block Y)
+            heightmap_ocean_floor: [B, 16, 16] (OCEAN_FLOOR_WG block Y)
         Returns:
             ctx: [B, hidden]
         """
@@ -152,7 +159,14 @@ class _NoiseEncoder(nn.Module):
         biome_feat = self.biome_embed(biome_ids_long)  # [B, 4, spatial_y, 4, embed_dim]
 
         flat = torch.cat(
-            [noise_2d_flat, noise_3d.reshape(B, -1), biome_feat.reshape(B, -1)], dim=1
+            [
+                noise_2d_flat,
+                noise_3d.reshape(B, -1),
+                biome_feat.reshape(B, -1),
+                heightmap_surface.reshape(B, -1),
+                heightmap_ocean_floor.reshape(B, -1),
+            ],
+            dim=1,
         )
         return self.mlp(flat)
 
@@ -247,6 +261,8 @@ class SparseOctreeModel(nn.Module):
         noise_2d: torch.Tensor,
         noise_3d: torch.Tensor,
         biome_ids: torch.Tensor,
+        heightmap_surface: torch.Tensor,
+        heightmap_ocean_floor: torch.Tensor,
     ) -> t.Dict[int, t.Dict[str, torch.Tensor]]:
         """Teacher-forced forward pass; expands ALL nodes at every level.
 
@@ -254,6 +270,8 @@ class SparseOctreeModel(nn.Module):
             noise_2d: [B, n2d, 4, 4]
             noise_3d: [B, n3d, 4, spatial_y, 4]
             biome_ids: [B, 4, spatial_y, 4]
+            heightmap_surface: [B, 16, 16]
+            heightmap_ocean_floor: [B, 16, 16]
 
         Returns:
             Dict[level → {'split': [B, N], 'label': [B, N, C]}]
@@ -262,7 +280,9 @@ class SparseOctreeModel(nn.Module):
         B = noise_2d.shape[0]
         device = noise_2d.device
 
-        ctx = self.noise_enc(noise_2d, noise_3d, biome_ids)  # [B, D]
+        ctx = self.noise_enc(
+            noise_2d, noise_3d, biome_ids, heightmap_surface, heightmap_ocean_floor
+        )  # [B, D]
 
         # Initialise root as a single node per sample
         # root_feat: [B * 1, D]
@@ -281,9 +301,7 @@ class SparseOctreeModel(nn.Module):
             # Per-node predictions
             flat = feat.reshape(B * N, self.hidden)
             split_logits = self.split_head(flat).reshape(B, N)  # [B, N]
-            label_logits = self.label_head(flat).reshape(
-                B, N, self.num_classes
-            )  # [B, N, C]
+            label_logits = self.label_head(flat).reshape(B, N, self.num_classes)  # [B, N, C]
 
             outputs[lvl] = {"split": split_logits, "label": label_logits}
 
@@ -357,11 +375,15 @@ class SparseOctreeFastModel(nn.Module):
         noise_2d: torch.Tensor,
         noise_3d: torch.Tensor,
         biome_ids: torch.Tensor,
+        heightmap_surface: torch.Tensor,
+        heightmap_ocean_floor: torch.Tensor,
     ) -> t.Dict[int, t.Dict[str, torch.Tensor]]:
         B = noise_2d.shape[0]
         device = noise_2d.device
 
-        ctx = self.noise_enc(noise_2d, noise_3d, biome_ids)
+        ctx = self.noise_enc(
+            noise_2d, noise_3d, biome_ids, heightmap_surface, heightmap_ocean_floor
+        )
         cur_feat = self.root_proj(ctx).unsqueeze(1)
 
         outputs: t.Dict[int, t.Dict[str, torch.Tensor]] = {}

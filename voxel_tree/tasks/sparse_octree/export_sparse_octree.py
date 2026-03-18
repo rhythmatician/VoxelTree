@@ -13,8 +13,11 @@ The script writes:
 
 ONNX contract: ``lodiffusion.v7.sparse_octree``
 ---------------------------------------------
-Input:
-  noise_3d   float32[1, n3d, 4, spatial_y, 4]   (n2d=0 → no noise_2d input)
+Inputs:
+  noise_3d              float32[1, n3d, 4, spatial_y, 4]   (n2d=0 → no noise_2d input)
+  biome_ids             int64[1, 4, spatial_y, 4]           discrete biome IDs
+  heightmap_surface     float32[1, 16, 16]                  WORLD_SURFACE_WG block Y
+  heightmap_ocean_floor float32[1, 16, 16]                  OCEAN_FLOOR_WG block Y
 
 Outputs (10 tensors, levels 4 down to 0):
   split_L4   float32[1,    1]     split logit at L4 root
@@ -64,39 +67,39 @@ from voxel_tree.tasks.sparse_octree.sparse_octree import (
 # Canonical names for the 15 v7 RouterField channels, in index order.
 # Must stay in sync with ``router_field.py`` and Java ``RouterField`` enum.
 _V7_NOISE_3D_CHANNELS: list[str] = [
-    "temperature",               # 0
-    "vegetation",                # 1
-    "continents",                # 2
-    "erosion",                   # 3
-    "depth",                     # 4
-    "ridges",                    # 5
+    "temperature",  # 0
+    "vegetation",  # 1
+    "continents",  # 2
+    "erosion",  # 3
+    "depth",  # 4
+    "ridges",  # 5
     "preliminary_surface_level",  # 6
-    "final_density",             # 7
-    "barrier",                   # 8
-    "fluid_level_floodedness",   # 9
-    "fluid_level_spread",        # 10
-    "lava",                      # 11
-    "vein_toggle",               # 12
-    "vein_ridged",               # 13
-    "vein_gap",                  # 14
+    "final_density",  # 7
+    "barrier",  # 8
+    "fluid_level_floodedness",  # 9
+    "fluid_level_spread",  # 10
+    "lava",  # 11
+    "vein_toggle",  # 12
+    "vein_ridged",  # 13
+    "vein_gap",  # 14
 ]
 
 # Legacy 13-channel names for backward compatibility.
 # @deprecated: Use _V7_NOISE_3D_CHANNELS (15 fields) for new models.
 _LEGACY_NOISE_3D_CHANNELS: list[str] = [
-    "offset",            # 0  overworld/offset
-    "factor",            # 1  overworld/factor
-    "jaggedness",        # 2  overworld/jaggedness
-    "depth",             # 3  router.depth()
-    "sloped_cheese",     # 4  overworld/sloped_cheese
-    "y",                 # 5  cell-centre Y in blocks
-    "entrances",         # 6  overworld/caves/entrances
-    "cheese_caves",      # 7  overworld/caves/pillars
-    "spaghetti_2d",      # 8  overworld/caves/spaghetti_2d
-    "roughness",         # 9  overworld/caves/spaghetti_roughness_function
-    "noodle",            # 10 overworld/caves/noodle
-    "base_3d_noise",     # 11 overworld/base_3d_noise
-    "final_density",     # 12 router.finalDensity()
+    "offset",  # 0  overworld/offset
+    "factor",  # 1  overworld/factor
+    "jaggedness",  # 2  overworld/jaggedness
+    "depth",  # 3  router.depth()
+    "sloped_cheese",  # 4  overworld/sloped_cheese
+    "y",  # 5  cell-centre Y in blocks
+    "entrances",  # 6  overworld/caves/entrances
+    "cheese_caves",  # 7  overworld/caves/pillars
+    "spaghetti_2d",  # 8  overworld/caves/spaghetti_2d
+    "roughness",  # 9  overworld/caves/spaghetti_roughness_function
+    "noodle",  # 10 overworld/caves/noodle
+    "base_3d_noise",  # 11 overworld/base_3d_noise
+    "final_density",  # 12 router.finalDensity()
 ]
 
 
@@ -131,11 +134,14 @@ class _OnnxWrapperWith2d(nn.Module):
         self.spatial_y = spatial_y
 
     def forward(
-        self, noise_2d: torch.Tensor, noise_3d: torch.Tensor
+        self,
+        noise_2d: torch.Tensor,
+        noise_3d: torch.Tensor,
+        biome_ids: torch.Tensor,
+        heightmap_surface: torch.Tensor,
+        heightmap_ocean_floor: torch.Tensor,
     ) -> tuple[torch.Tensor, ...]:
-        B = noise_2d.shape[0]
-        biome_ids = torch.zeros((B, 4, self.spatial_y, 4), dtype=torch.long, device=noise_2d.device)
-        out = self.model(noise_2d, noise_3d, biome_ids)
+        out = self.model(noise_2d, noise_3d, biome_ids, heightmap_surface, heightmap_ocean_floor)
         return _flatten_outputs(out)
 
 
@@ -147,15 +153,18 @@ class _OnnxWrapperNo2d(nn.Module):
         self.model = model
         self.spatial_y = spatial_y
 
-    def forward(self, noise_3d: torch.Tensor) -> tuple[torch.Tensor, ...]:
+    def forward(
+        self,
+        noise_3d: torch.Tensor,
+        biome_ids: torch.Tensor,
+        heightmap_surface: torch.Tensor,
+        heightmap_ocean_floor: torch.Tensor,
+    ) -> tuple[torch.Tensor, ...]:
         # Create an empty noise_2d tensor to satisfy the underlying model signature.
         # The model treats zero-element noise_2d as a no-op.
         B = noise_3d.shape[0]
-        noise_2d = torch.zeros(
-            (B, 0, 4, 4), dtype=noise_3d.dtype, device=noise_3d.device
-        )
-        biome_ids = torch.zeros((B, 4, self.spatial_y, 4), dtype=torch.long, device=noise_3d.device)
-        out = self.model(noise_2d, noise_3d, biome_ids)
+        noise_2d = torch.zeros((B, 0, 4, 4), dtype=noise_3d.dtype, device=noise_3d.device)
+        out = self.model(noise_2d, noise_3d, biome_ids, heightmap_surface, heightmap_ocean_floor)
         return _flatten_outputs(out)
 
 
@@ -186,10 +195,7 @@ def _infer_model_variant(state_dict: dict[str, Any]) -> str:
     """Infer baseline vs fast sparse-root checkpoint layout."""
     if any(k.startswith("level_mod.") for k in state_dict):
         return "fast"
-    if (
-        "label_head.out_proj.weight" in state_dict
-        or "child_proj.out_proj.weight" in state_dict
-    ):
+    if "label_head.out_proj.weight" in state_dict or "child_proj.out_proj.weight" in state_dict:
         return "fast"
     return "baseline"
 
@@ -198,9 +204,7 @@ def _infer_model_variant(state_dict: dict[str, Any]) -> str:
 # Prefer the Voxy canonical vocabulary (alphabetical) used during training.
 # Fall back to standard_minecraft_blocks.json if voxy_vocab.json is absent.
 _VOXY_VOCAB = _VT_ROOT / "voxel_tree" / "config" / "voxy_vocab.json"
-_STANDARD_BLOCK_VOCAB = (
-    Path(__file__).resolve().parent.parent / "standard_minecraft_blocks.json"
-)
+_STANDARD_BLOCK_VOCAB = Path(__file__).resolve().parent.parent / "standard_minecraft_blocks.json"
 _DEFAULT_BLOCK_VOCAB = _VOXY_VOCAB if _VOXY_VOCAB.exists() else _STANDARD_BLOCK_VOCAB
 
 
@@ -216,9 +220,7 @@ def _load_block_vocab(path: "Path | None") -> dict[str, int]:
         except Exception as exc:  # noqa: BLE001
             print(f"[export] Warning: could not load block vocab from {p}: {exc}")
     else:
-        print(
-            f"[export] Warning: block vocab not found at {p} — blockMapping will be empty"
-        )
+        print(f"[export] Warning: block vocab not found at {p} — blockMapping will be empty")
     return {}
 
 
@@ -244,11 +246,7 @@ def export_sparse_octree(
     state = torch.load(checkpoint, map_location="cpu", weights_only=True)
 
     # Unwrap if saved as {"model": state_dict, ...}
-    if (
-        isinstance(state, dict)
-        and "model" in state
-        and isinstance(state["model"], dict)
-    ):
+    if isinstance(state, dict) and "model" in state and isinstance(state["model"], dict):
         state = state["model"]
 
     # Auto-detect num_classes from the saved weights
@@ -256,8 +254,7 @@ def export_sparse_octree(
         num_classes = _infer_num_classes(state)
     if num_classes <= 0:
         raise ValueError(
-            "Cannot determine num_classes from checkpoint; "
-            "pass --num-classes explicitly."
+            "Cannot determine num_classes from checkpoint; " "pass --num-classes explicitly."
         )
 
     if model_variant is None:
@@ -289,6 +286,9 @@ def export_sparse_octree(
     # Old checkpoints have mlp.0.weight shape [H*2, flat_noise] without the
     # biome columns.  Pad with zeros so biome contributes nothing to the output
     # until a fresh retrain populates the weights properly.
+    #
+    # Pre-heightmap checkpoints also lack the heightmap columns.  We pad those
+    # with zeros too (16*16*2 = 512 extra columns).
     _m: Any = model  # local Any alias — model IS a concrete subclass at runtime
     _mlp_w_key = "noise_enc.mlp.0.weight"
     _biome_key = "noise_enc.biome_embed.weight"
@@ -298,7 +298,7 @@ def export_sparse_octree(
         if actual_in < expected_in:
             pad_cols = expected_in - actual_in
             print(
-                f"[export] Pre-biome checkpoint detected -- padding {_mlp_w_key} "
+                f"[export] Pre-biome/heightmap checkpoint detected -- padding {_mlp_w_key} "
                 f"({actual_in} -> {expected_in} input cols with zeros)"
             )
             state[_mlp_w_key] = torch.cat(
@@ -311,9 +311,7 @@ def export_sparse_octree(
             int(_m.noise_enc.biome_embed.embedding_dim),
         )
 
-    missing, unexpected = model.load_state_dict(
-        state, strict=True
-    )  # now strict is safe
+    missing, unexpected = model.load_state_dict(state, strict=True)  # now strict is safe
     model.eval()
 
     # Choose the appropriate ONNX wrapper based on whether noise_2d is used.
@@ -324,6 +322,9 @@ def export_sparse_octree(
 
     # ── Dummy inputs ───────────────────────────────────────────────────────
     dummy_3d = torch.zeros(1, n3d, 4, spatial_y, 4)
+    dummy_biome = torch.zeros(1, 4, spatial_y, 4, dtype=torch.long)
+    dummy_hm_surface = torch.zeros(1, 16, 16)
+    dummy_hm_ocean = torch.zeros(1, 16, 16)
     if n2d > 0:
         dummy_2d = torch.zeros(1, n2d, 4, 4)
 
@@ -341,14 +342,22 @@ def export_sparse_octree(
     ]
 
     if n2d > 0:
-        input_names = ["noise_2d", "noise_3d"]
+        input_names = [
+            "noise_2d",
+            "noise_3d",
+            "biome_ids",
+            "heightmap_surface",
+            "heightmap_ocean_floor",
+        ]
     else:
-        input_names = ["noise_3d"]
+        input_names = ["noise_3d", "biome_ids", "heightmap_surface", "heightmap_ocean_floor"]
 
     # Dynamic shapes: batch dimension is dynamic on inputs.
-    # (Current torch.export only allows arg-name keys, not outputs.)
     dynamic_shapes: dict[str, dict[int, str]] = {
         "noise_3d": {0: "batch"},
+        "biome_ids": {0: "batch"},
+        "heightmap_surface": {0: "batch"},
+        "heightmap_ocean_floor": {0: "batch"},
     }
     if n2d > 0:
         dynamic_shapes["noise_2d"] = {0: "batch"}
@@ -359,7 +368,11 @@ def export_sparse_octree(
     with torch.no_grad():
         torch.onnx.export(
             wrapper,
-            (dummy_2d, dummy_3d) if n2d > 0 else (dummy_3d,),
+            (
+                (dummy_2d, dummy_3d, dummy_biome, dummy_hm_surface, dummy_hm_ocean)
+                if n2d > 0
+                else (dummy_3d, dummy_biome, dummy_hm_surface, dummy_hm_ocean)
+            ),
             str(onnx_path),
             opset_version=18,
             input_names=input_names,
@@ -380,9 +393,7 @@ def export_sparse_octree(
     if data_path.exists():
         data_path.unlink()
         print(f"[export] Removed external data file: {data_path.name}")
-    print(
-        f"[export] Model consolidated to single file ({onnx_path.stat().st_size // 1024} KB)"
-    )
+    print(f"[export] Model consolidated to single file ({onnx_path.stat().st_size // 1024} KB)")
 
     # ── Sidecar config ─────────────────────────────────────────────────
     # ModelConfig fields understood by SparseOctreeModelRunner / ConfigLoader:
@@ -412,6 +423,9 @@ def export_sparse_octree(
         "inputs": {
             **({"noise_2d": [1, n2d, 4, 4]} if n2d > 0 else {}),
             "noise_3d": [1, n3d, 4, spatial_y, 4],
+            "biome_ids": [1, 4, spatial_y, 4],
+            "heightmap_surface": [1, 16, 16],
+            "heightmap_ocean_floor": [1, 16, 16],
         },
         "outputs": {
             "split_L4": [1, 1],
@@ -460,15 +474,9 @@ def _parse_args() -> argparse.Namespace:
         help="Output directory (will be created).  "
         "Writes sparse_octree.onnx and sparse_octree_config.json here.",
     )
-    p.add_argument(
-        "--n2d", type=int, default=0, help="Number of 2-D noise channels (default: 0)"
-    )
-    p.add_argument(
-        "--n3d", type=int, default=15, help="Number of 3-D noise channels (default: 15)"
-    )
-    p.add_argument(
-        "--hidden", type=int, default=72, help="Model hidden size (default: 72)"
-    )
+    p.add_argument("--n2d", type=int, default=0, help="Number of 2-D noise channels (default: 0)")
+    p.add_argument("--n3d", type=int, default=15, help="Number of 3-D noise channels (default: 15)")
+    p.add_argument("--hidden", type=int, default=72, help="Model hidden size (default: 72)")
     p.add_argument(
         "--model-variant",
         type=str,

@@ -14,6 +14,11 @@ from voxel_tree.tasks.sparse_octree.sparse_octree_train import (
     _finalize_metrics,
     _sparse_octree_loss,
     _update_batch_metrics,
+    sparse_octree_collate,
+)
+
+from voxel_tree.tasks.sparse_octree.sparse_octree import (
+    SparseOctreeFastModel,
 )
 
 
@@ -141,3 +146,82 @@ def test_sparse_octree_dataset_loads_noise_2d_when_present() -> None:
         assert ds.noise_3d.shape == (n, 13, 4, 2, 4)
         assert ds.spatial_y == 2
         assert len(ds) == n
+
+
+def test_sparse_octree_dataset_handles_missing_heightmaps() -> None:
+    """NPZs without heightmap keys should zero-fill with shape (N, 16, 16)."""
+    n = 4
+    with tempfile.TemporaryDirectory() as tmpdir:
+        npz_path = Path(tmpdir) / "test.npz"
+        np.savez_compressed(
+            npz_path,
+            subchunk16=np.zeros((n, 16, 16, 16), dtype=np.int32),
+            noise_3d=np.random.randn(n, 15, 4, 4, 4).astype(np.float32),
+            biome_ids=np.zeros((n, 4, 4, 4), dtype=np.int32),
+        )
+        ds = SparseOctreeDataset(npz_path, cache_targets=False)
+        assert ds.heightmap_surface.shape == (n, 16, 16)
+        assert ds.heightmap_ocean_floor.shape == (n, 16, 16)
+        assert ds.heightmap_surface.sum() == 0.0
+        assert ds.heightmap_ocean_floor.sum() == 0.0
+
+
+def test_sparse_octree_dataset_loads_heightmaps_when_present() -> None:
+    """NPZs that include heightmaps should load them as float32."""
+    n = 3
+    with tempfile.TemporaryDirectory() as tmpdir:
+        npz_path = Path(tmpdir) / "test.npz"
+        hm_s = np.random.randn(n, 16, 16).astype(np.float32) * 64 + 64
+        hm_o = np.random.randn(n, 16, 16).astype(np.float32) * 32 + 32
+        np.savez_compressed(
+            npz_path,
+            subchunk16=np.zeros((n, 16, 16, 16), dtype=np.int32),
+            noise_3d=np.random.randn(n, 15, 4, 4, 4).astype(np.float32),
+            biome_ids=np.zeros((n, 4, 4, 4), dtype=np.int32),
+            heightmap_surface=hm_s,
+            heightmap_ocean_floor=hm_o,
+        )
+        ds = SparseOctreeDataset(npz_path, cache_targets=False)
+        assert ds.heightmap_surface.shape == (n, 16, 16)
+        assert ds.heightmap_ocean_floor.shape == (n, 16, 16)
+        np.testing.assert_allclose(ds.heightmap_surface, hm_s)
+        np.testing.assert_allclose(ds.heightmap_ocean_floor, hm_o)
+
+
+def test_collate_includes_heightmaps() -> None:
+    """Collation must stack heightmap tensors into batched tensors."""
+    n = 3
+    with tempfile.TemporaryDirectory() as tmpdir:
+        npz_path = Path(tmpdir) / "test.npz"
+        np.savez_compressed(
+            npz_path,
+            subchunk16=np.zeros((n, 16, 16, 16), dtype=np.int32),
+            noise_3d=np.random.randn(n, 15, 4, 4, 4).astype(np.float32),
+            biome_ids=np.zeros((n, 4, 4, 4), dtype=np.int32),
+            heightmap_surface=np.random.randn(n, 16, 16).astype(np.float32),
+            heightmap_ocean_floor=np.random.randn(n, 16, 16).astype(np.float32),
+        )
+        ds = SparseOctreeDataset(npz_path, cache_targets=True)
+        batch = sparse_octree_collate([ds[i] for i in range(n)])
+        assert batch["heightmap_surface"].shape == (n, 16, 16)
+        assert batch["heightmap_ocean_floor"].shape == (n, 16, 16)
+
+
+def test_fast_model_forward_with_heightmaps() -> None:
+    """SparseOctreeFastModel forward pass must accept heightmap inputs."""
+    B = 2
+    model = SparseOctreeFastModel(n2d=0, n3d=15, hidden=32, num_classes=10, spatial_y=4)
+    noise_2d = torch.zeros(B, 0, 4, 4)
+    noise_3d = torch.randn(B, 15, 4, 4, 4)
+    biome_ids = torch.zeros(B, 4, 4, 4, dtype=torch.long)
+    hm_surface = torch.randn(B, 16, 16)
+    hm_ocean = torch.randn(B, 16, 16)
+
+    out = model(noise_2d, noise_3d, biome_ids, hm_surface, hm_ocean)
+
+    assert isinstance(out, dict)
+    assert set(out.keys()) == {0, 1, 2, 3, 4}
+    assert out[4]["split"].shape == (B, 1)
+    assert out[4]["label"].shape == (B, 1, 10)
+    assert out[0]["split"].shape == (B, 4096)
+    assert out[0]["label"].shape == (B, 4096, 10)
