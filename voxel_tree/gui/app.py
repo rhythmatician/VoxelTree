@@ -4,14 +4,29 @@ from __future__ import annotations
 
 import sys
 
+from PySide6.QtCore import QtMsgType, qInstallMessageHandler
 from PySide6.QtGui import QPalette, QColor
 from PySide6.QtWidgets import QApplication
 
 
 def create_app() -> QApplication:
     app = QApplication.instance() or QApplication(sys.argv)
+    _install_qt_message_filter()
     _apply_dark_palette(app)
     return app  # type: ignore[return-value]
+
+
+def _install_qt_message_filter() -> None:
+    """Suppress noisy Qt warnings about stylesheet parsing in our GUI."""
+
+    def handler(mode: QtMsgType, context, message: str) -> None:
+        # Qt can emit "Could not parse stylesheet of object ..." during startup.
+        # These messages are usually harmless and clutter the console.
+        if "Could not parse stylesheet of object" in message:
+            return
+        sys.__stderr__.write(message + "\n")
+
+    qInstallMessageHandler(handler)
 
 
 def _apply_dark_palette(app: QApplication) -> None:

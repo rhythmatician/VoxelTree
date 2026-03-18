@@ -465,9 +465,9 @@ class _SectionGroup(QWidget):
         # Header toggle button
         self._hdr_btn = QPushButton(f"▼  {title}")
         self._hdr_btn.setStyleSheet(
-            f"QPushButton {{ background: #2a2a2a; color: #bbbbbb; text-align: left; "
+            f"QPushButton {{ background: #2a2a2a; color: #bbbbbb; "
             f"border: none; border-left: 3px solid {border_color}; "
-            "padding: 3px 8px; font-size: 11px; font-weight: bold; }}"
+            "padding: 3px 8px; font-size: 11px; font-weight: bold; }} "
             "QPushButton:hover { background: #333333; }"
         )
         self._hdr_btn.clicked.connect(self._toggle)

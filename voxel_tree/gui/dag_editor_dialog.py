@@ -185,7 +185,7 @@ class DagEditorDialog(QDialog):
         )
         buttons.setStyleSheet(
             "QPushButton { background: #2a3a2a; color: #ccc; border: 1px solid #4a8a4a;"
-            " border-radius: 4px; padding: 4px 16px; }"
+            " border-radius: 4px; padding: 4px 16px; } "
             "QPushButton:hover { background: #3a5a3a; }"
         )
         buttons.accepted.connect(self._on_accept)

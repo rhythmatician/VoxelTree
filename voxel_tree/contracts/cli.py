@@ -213,7 +213,38 @@ def run_contracts_cli(argv: Sequence[str] | None = None) -> None:
     parser.add_argument(
         "--all-revisions", "-a", action="store_true", help="Show all revisions for a model"
     )
+    parser.add_argument(
+        "--check",
+        action="store_true",
+        help="Check pipeline tracks against the contract catalog for staleness",
+    )
     args = parser.parse_args(argv)
+
+    # ── --check: alignment report ──────────────────────────────────────
+    if args.check:
+        from voxel_tree.contracts.registry import check_track_alignment
+
+        issues = check_track_alignment()  # auto-imports MODEL_TRACKS
+        if not issues:
+            print("✓ All pipeline tracks are aligned with their contracts.")
+            return
+        # Group by severity
+        errors = [i for i in issues if i.severity == "error"]
+        stale = [i for i in issues if i.severity == "stale"]
+        if stale:
+            print(f"\n⚠  STALE TRACKS ({len(stale)}):")
+            print("   These tracks are pinned to an older contract revision.\n")
+            for iss in stale:
+                print(
+                    f"   • {iss.track_id}:  rev {iss.current_revision} → rev {iss.latest_revision_} available"
+                )
+                print(f"     {iss.message}\n")
+        if errors:
+            print(f"\n✗  ERRORS ({len(errors)}):")
+            print("   These tracks reference contracts that don't exist.\n")
+            for iss in errors:
+                print(f"   • {iss.track_id}: {iss.message}\n")
+        sys.exit(1 if errors else 0)
 
     if args.model is None:
         # List all models

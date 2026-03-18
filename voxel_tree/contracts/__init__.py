@@ -20,7 +20,9 @@ See Also
 
 from voxel_tree.contracts.spec import ModelContract, TensorSpec
 from voxel_tree.contracts.registry import (
+    AlignmentIssue,
     CONTRACTS,
+    check_track_alignment,
     get_contract,
     latest_revision,
     list_models,
@@ -29,9 +31,11 @@ from voxel_tree.contracts.registry import (
 )
 
 __all__ = [
+    "AlignmentIssue",
     "CONTRACTS",
     "ModelContract",
     "TensorSpec",
+    "check_track_alignment",
     "get_contract",
     "latest_revision",
     "list_models",

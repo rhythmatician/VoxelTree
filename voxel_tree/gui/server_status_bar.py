@@ -70,8 +70,8 @@ class ServerStatusBar(QWidget):
         self._start_btn = QPushButton("Start Server")
         self._start_btn.setFixedHeight(24)
         self._start_btn.setStyleSheet(
-            "QPushButton { background:#2e6e36; color:white; border-radius:4px; padding:0 10px; }"
-            "QPushButton:hover { background:#28a745; }"
+            "QPushButton { background:#2e6e36; color:white; border-radius:4px; padding: 0px 10px; } "
+            "QPushButton:hover { background:#28a745; } "
             "QPushButton:disabled { background:#2a2a2a; color:#555; }"
         )
 
@@ -79,8 +79,8 @@ class ServerStatusBar(QWidget):
         self._stop_btn.setFixedHeight(24)
         self._stop_btn.setEnabled(False)
         self._stop_btn.setStyleSheet(
-            "QPushButton { background:#6e2e2e; color:white; border-radius:4px; padding:0 10px; }"
-            "QPushButton:hover { background:#dc3545; }"
+            "QPushButton { background:#6e2e2e; color:white; border-radius:4px; padding: 0px 10px; } "
+            "QPushButton:hover { background:#dc3545; } "
             "QPushButton:disabled { background:#2a2a2a; color:#555; }"
         )
 
@@ -97,8 +97,8 @@ class ServerStatusBar(QWidget):
             "Click a profile row's Details button or a step node to set the active profile."
         )
         self._session_btn.setStyleSheet(
-            "QPushButton { background:#2e4e8e; color:white; border-radius:4px; padding:0 10px; }"
-            "QPushButton:hover { background:#4a7fd4; }"
+            "QPushButton { background:#2e4e8e; color:white; border-radius:4px; padding: 0px 10px; } "
+            "QPushButton:hover { background:#4a7fd4; } "
             "QPushButton:disabled { background:#2a2a2a; color:#555; }"
         )
 
@@ -188,4 +188,4 @@ class _Sep(QLabel):
 
     def __init__(self) -> None:
         super().__init__("|")
-        self.setStyleSheet("color:#444444; padding:0 2px;")
+        self.setStyleSheet("color:#444444; padding: 0px 2px;")

@@ -159,6 +159,13 @@ class ModelTrack:
     # include them explicitly.
     in_default_dag: bool = True
 
+    # ── Contract binding ─────────────────────────────────────────────────
+    # Links this track to a model I/O contract in voxel_tree.contracts.
+    # When set, the contracts system can detect when a contract revision
+    # has been bumped but the pipeline scripts haven't been updated yet.
+    contract_name: str | None = None
+    contract_revision: int | None = None
+
     def step_id(self, phase: str) -> str:
         return self.id_overrides.get(phase, f"{phase}_{self.track_id}")
 
@@ -659,7 +666,9 @@ def _train_sparse_octree_run(p: dict[str, Any]) -> None:
 
 
 def _export_sparse_octree_run(p: dict[str, Any]) -> None:
-    from voxel_tree.tasks.sparse_octree.export_sparse_octree import export_sparse_octree  # noqa: PLC0415
+    from voxel_tree.tasks.sparse_octree.export_sparse_octree import (
+        export_sparse_octree,
+    )  # noqa: PLC0415
 
     train = p.get("train", {})
     export = p.get("export", {})
@@ -670,7 +679,9 @@ def _export_sparse_octree_run(p: dict[str, Any]) -> None:
 
 
 def _deploy_sparse_octree_run(p: dict[str, Any]) -> None:
-    from voxel_tree.tasks.sparse_octree.export_sparse_octree import export_sparse_octree  # noqa: PLC0415
+    from voxel_tree.tasks.sparse_octree.export_sparse_octree import (
+        export_sparse_octree,
+    )  # noqa: PLC0415
 
     deploy = p.get("deploy", {})
     out_dir = (
@@ -928,7 +939,9 @@ def _train_sparse_octree_v7_run(p: dict[str, Any]) -> None:
 
 
 def _export_sparse_octree_v7_run(p: dict[str, Any]) -> None:
-    from voxel_tree.tasks.sparse_octree.export_sparse_octree import export_sparse_octree  # noqa: PLC0415
+    from voxel_tree.tasks.sparse_octree.export_sparse_octree import (
+        export_sparse_octree,
+    )  # noqa: PLC0415
 
     train = p.get("train", {})
     export = p.get("export", {})
@@ -969,6 +982,8 @@ MODEL_TRACKS: list[ModelTrack] = [
         export_factory=_export_sparse_octree_run,
         deploy_factory=_deploy_sparse_octree_run,
         build_pairs_consumes=frozenset({"voxy_db", "noise_dumps"}),
+        contract_name="sparse_octree",
+        contract_revision=0,
         extra_steps=[
             StepDef(
                 id="distill_sparse_octree",
@@ -996,6 +1011,8 @@ MODEL_TRACKS: list[ModelTrack] = [
         train_factory=_train_terrain_shaper_density_run,
         export_factory=_extract_terrain_shaper_weights_run,
         deploy_factory=_deploy_terrain_shaper_run,
+        contract_name="terrain_shaper",
+        contract_revision=0,
         id_overrides={
             "build_pairs": "build_pairs_terrain_shaper",
             "train": "train_terrain_shaper_density",
@@ -1036,6 +1053,8 @@ MODEL_TRACKS: list[ModelTrack] = [
         export_factory=_export_density_v2_run,
         deploy_factory=_deploy_density_v2_run,
         build_pairs_consumes=frozenset({"v7_pairs_npz"}),
+        contract_name="density",
+        contract_revision=1,
     ),
     # ── v7 Biome Classifier (climate → biome class) ──────────────────
     ModelTrack(
@@ -1047,6 +1066,8 @@ MODEL_TRACKS: list[ModelTrack] = [
         export_factory=_export_biome_classifier_run,
         deploy_factory=_deploy_biome_classifier_run,
         build_pairs_consumes=frozenset({"v7_pairs_npz"}),
+        contract_name="biome",
+        contract_revision=1,
     ),
     # ── v7 Heightmap Predictor (climate → heightmaps) ────────────────
     ModelTrack(
@@ -1058,6 +1079,8 @@ MODEL_TRACKS: list[ModelTrack] = [
         export_factory=_export_heightmap_run,
         deploy_factory=_deploy_heightmap_run,
         build_pairs_consumes=frozenset({"v7_pairs_npz"}),
+        contract_name="heightmap",
+        contract_revision=1,
     ),
     # ── v7 Sparse Octree (15ch/4×4×4 noise → block hierarchy) ───────
     ModelTrack(
@@ -1069,6 +1092,8 @@ MODEL_TRACKS: list[ModelTrack] = [
         export_factory=_export_sparse_octree_v7_run,
         deploy_factory=_deploy_sparse_octree_v7_run,
         build_pairs_consumes=frozenset({"v7_pairs_npz"}),
+        contract_name="sparse_octree",
+        contract_revision=1,
     ),
 ]
 

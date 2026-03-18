@@ -177,7 +177,7 @@ class ProfileRow(QWidget):
         btn.setFixedWidth(70)
         btn.setStyleSheet(
             "QPushButton { background: #2a4a6e; color: #cce0ff; border: 1px solid #4a7abf;"
-            " border-radius: 4px; padding: 4px 8px; }"
+            " border-radius: 4px; padding: 4px 8px; } "
             "QPushButton:hover { background: #3a5a8e; }"
         )
         btn.clicked.connect(lambda: self.details_clicked.emit(self.profile_name))
@@ -190,7 +190,7 @@ class ProfileRow(QWidget):
         del_btn.setFixedWidth(30)
         del_btn.setStyleSheet(
             "QPushButton { background: #5a3a3a; color: #ff9999; border: 1px solid #8a5a5a;"
-            " border-radius: 4px; padding: 2px 4px; font-weight: bold; }"
+            " border-radius: 4px; padding: 2px 4px; font-weight: bold; } "
             "QPushButton:hover { background: #7a4a4a; }"
         )
         del_btn.setToolTip(f"Delete profile '{self.profile_name}'")

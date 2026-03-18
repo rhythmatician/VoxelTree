@@ -297,3 +297,104 @@ class TestCatalogContracts:
         for name, fps in by_model.items():
             if len(fps) > 1:
                 assert len(set(fps)) == len(fps), f"{name} has duplicate fingerprints"
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  Track↔Contract alignment checks
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestTrackAlignment:
+    """Tests for ``check_track_alignment()`` staleness detection."""
+
+    @pytest.fixture
+    def _fake_track(self):
+        """Factory for lightweight track-like objects."""
+        from dataclasses import dataclass as _dc
+
+        @_dc
+        class FakeTrack:
+            track_id: str
+            contract_name: str | None = None
+            contract_revision: int | None = None
+
+        return FakeTrack
+
+    def test_all_aligned_returns_empty(self, _fake_track):
+        from voxel_tree.contracts.registry import check_track_alignment
+
+        # density rev 1 IS the latest → aligned
+        tracks = [_fake_track("density_v2", "density", 1)]
+        issues = check_track_alignment(tracks)
+        assert issues == []
+
+    def test_stale_track_detected(self, _fake_track):
+        from voxel_tree.contracts.registry import check_track_alignment
+
+        # density has rev 0 and rev 1 in catalog; pinning to 0 → stale
+        tracks = [_fake_track("old_density", "density", 0)]
+        issues = check_track_alignment(tracks)
+        assert len(issues) == 1
+        assert issues[0].severity == "stale"
+        assert issues[0].track_id == "old_density"
+        assert issues[0].current_revision == 0
+        assert issues[0].latest_revision_ == 1
+        assert "rev 0" in issues[0].message
+        assert "rev 1" in issues[0].message
+
+    def test_missing_contract_is_error(self, _fake_track):
+        from voxel_tree.contracts.registry import check_track_alignment
+
+        tracks = [_fake_track("ghost_model", "does_not_exist", 42)]
+        issues = check_track_alignment(tracks)
+        assert len(issues) == 1
+        assert issues[0].severity == "error"
+        assert "does not exist" in issues[0].message
+
+    def test_none_revision_is_error(self, _fake_track):
+        from voxel_tree.contracts.registry import check_track_alignment
+
+        tracks = [_fake_track("bad_track", "density", None)]
+        issues = check_track_alignment(tracks)
+        assert len(issues) == 1
+        assert issues[0].severity == "error"
+        assert "None" in issues[0].message
+
+    def test_no_contract_binding_skipped(self, _fake_track):
+        from voxel_tree.contracts.registry import check_track_alignment
+
+        # Track with no contract_name → nothing to check → no issues
+        tracks = [_fake_track("plain_track", None, None)]
+        issues = check_track_alignment(tracks)
+        assert issues == []
+
+    def test_multiple_tracks_mixed(self, _fake_track):
+        from voxel_tree.contracts.registry import check_track_alignment
+
+        tracks = [
+            _fake_track("ok_track", "density", 1),  # aligned
+            _fake_track("stale_track", "density", 0),  # stale
+            _fake_track("unbound", None, None),  # skipped
+        ]
+        issues = check_track_alignment(tracks)
+        assert len(issues) == 1
+        assert issues[0].track_id == "stale_track"
+
+    def test_real_model_tracks_alignment(self):
+        """Smoke test: the actual MODEL_TRACKS should have no errors.
+
+        The ``sparse_octree`` track is intentionally pinned to rev 0
+        (legacy v6 pipeline) while ``sparse_octree_v7`` uses rev 1,
+        so one stale issue is expected.
+        """
+        from voxel_tree.contracts.registry import check_track_alignment
+
+        issues = check_track_alignment()  # uses real MODEL_TRACKS
+        errors = [i for i in issues if i.severity == "error"]
+        stale = [i for i in issues if i.severity == "stale"]
+        # No errors should exist — all tracks reference valid contracts
+        assert errors == [], f"Broken track bindings: {errors}"
+        # sparse_octree is intentionally legacy-pinned to rev 0
+        stale_ids = {i.track_id for i in stale}
+        unexpected = stale_ids - {"sparse_octree"}
+        assert unexpected == set(), f"Unexpected stale tracks: {unexpected}"

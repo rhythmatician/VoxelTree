@@ -183,8 +183,11 @@ class MainWindow(QMainWindow):
                 self._dashboard.update_profile_steps(profile_name, steps)
                 self._dashboard.refresh_profile(profile_name)
 
-    @Slot(str, str)
-    def _on_delete_profile(self, profile_name: str, reason: str) -> None:
+    @Slot(str)
+    def _on_delete_profile(self, profile_name: str, reason: str = "delete") -> None:
+        # The dashboard currently only emits the profile name. The optional
+        # *reason* is here for future compatibility if we want to support
+        # `archive` or other actions.
         if reason == "delete":
             delete_profile(profile_name)
             self._dashboard.remove_profile(profile_name)

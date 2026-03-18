@@ -18,9 +18,50 @@ ModelContract(model_name='density', revision=2, ...)
 from __future__ import annotations
 
 import warnings
-from typing import Any
+from dataclasses import dataclass
+from typing import Any, Protocol, runtime_checkable
 
 from voxel_tree.contracts.spec import ContractViolation, ModelContract
+
+
+# ---------------------------------------------------------------------------
+# Protocol for anything that carries contract binding info (e.g. ModelTrack)
+# ---------------------------------------------------------------------------
+
+
+@runtime_checkable
+class HasContractBinding(Protocol):
+    """Any object with optional contract_name / contract_revision attrs."""
+
+    track_id: str
+    contract_name: str | None
+    contract_revision: int | None
+
+
+# ---------------------------------------------------------------------------
+# AlignmentIssue — one detected problem between a track and its contract
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class AlignmentIssue:
+    """One problem detected by ``check_track_alignment()``.
+
+    Attributes
+    ----------
+    track_id : The pipeline track that has the problem.
+    severity : ``"error"`` (contract missing) or ``"stale"`` (newer revision exists).
+    message  : Human-readable description.
+    current_revision  : What the track is pinned to (may be None).
+    latest_revision_  : The newest revision available in the catalog (may be None).
+    """
+
+    track_id: str
+    severity: str  # "error" | "stale"
+    message: str
+    current_revision: int | None = None
+    latest_revision_: int | None = None
+
 
 # ---------------------------------------------------------------------------
 # Global registry
@@ -133,6 +174,113 @@ def validate_checkpoint_contract(
 
 
 # ---------------------------------------------------------------------------
+# Track↔Contract alignment check
+# ---------------------------------------------------------------------------
+
+
+def check_track_alignment(
+    tracks: list[HasContractBinding] | None = None,
+) -> list[AlignmentIssue]:
+    """Compare pipeline tracks against the contract catalog and report issues.
+
+    For each track that carries a ``contract_name``:
+      1. Verify the contract actually exists in the catalog.
+      2. Verify the track's ``contract_revision`` matches the latest catalog
+         revision — if not, the track is **stale** (the contract was bumped
+         but the pipeline wasn't updated to match).
+
+    Parameters
+    ----------
+    tracks : Iterable of objects with ``track_id``, ``contract_name``, and
+             ``contract_revision`` attributes.  If *None*, imports
+             ``MODEL_TRACKS`` from ``voxel_tree.gui.step_definitions``.
+
+    Returns
+    -------
+    List of ``AlignmentIssue`` objects (empty ⇒ everything aligned).
+    """
+    if tracks is None:
+        from voxel_tree.gui.step_definitions import MODEL_TRACKS
+
+        tracks = MODEL_TRACKS  # type: ignore[assignment]
+
+    assert tracks is not None  # satisfied by the fallback above
+    issues: list[AlignmentIssue] = []
+
+    for track in tracks:
+        cname = track.contract_name
+        if cname is None:
+            continue  # track not bound to any contract — nothing to check
+
+        crev = track.contract_revision
+
+        # --- Does the contract even exist? ---
+        if crev is not None:
+            key = (cname, crev)
+            if key not in CONTRACTS:
+                issues.append(
+                    AlignmentIssue(
+                        track_id=track.track_id,
+                        severity="error",
+                        message=(
+                            f"Track '{track.track_id}' references contract "
+                            f"'{cname}' rev {crev}, but that revision does "
+                            f"not exist in the catalog."
+                        ),
+                        current_revision=crev,
+                    )
+                )
+                continue
+        else:
+            # contract_name set but revision is None — unusual but flag it.
+            issues.append(
+                AlignmentIssue(
+                    track_id=track.track_id,
+                    severity="error",
+                    message=(
+                        f"Track '{track.track_id}' has contract_name='{cname}' "
+                        f"but contract_revision is None."
+                    ),
+                )
+            )
+            continue
+
+        # --- Is it up to date? ---
+        try:
+            latest = latest_revision(cname)
+        except KeyError:
+            issues.append(
+                AlignmentIssue(
+                    track_id=track.track_id,
+                    severity="error",
+                    message=(
+                        f"Track '{track.track_id}' references contract "
+                        f"'{cname}', but no revisions are registered."
+                    ),
+                    current_revision=crev,
+                )
+            )
+            continue
+
+        if crev < latest:
+            new_contract = CONTRACTS[(cname, latest)]
+            issues.append(
+                AlignmentIssue(
+                    track_id=track.track_id,
+                    severity="stale",
+                    message=(
+                        f"Track '{track.track_id}' is pinned to "
+                        f"'{cname}' rev {crev}, but rev {latest} exists. "
+                        f"Changelog: {new_contract.changelog or '(none)'}"
+                    ),
+                    current_revision=crev,
+                    latest_revision_=latest,
+                )
+            )
+
+    return issues
+
+
 # Auto-import catalog to populate the registry at first access
 # ---------------------------------------------------------------------------
 
