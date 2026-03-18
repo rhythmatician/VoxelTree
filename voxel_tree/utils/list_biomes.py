@@ -18,7 +18,7 @@ DUMPS_DIR = os.path.abspath(
     )  # Dumps dir location
 )
 
-biome_counter = Counter()
+biome_counter: Counter[int] = Counter()
 
 for fname in os.listdir(DUMPS_DIR):
     if not fname.endswith(".json"):
