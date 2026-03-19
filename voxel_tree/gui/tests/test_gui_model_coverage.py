@@ -145,10 +145,11 @@ class TestArtifactGraph:
         this snapshot.
         """
         # Note: core DAG structure for Sparse Root and Stage 1.
+        # build_v7_pairs produces the NPZ; build_pairs_sparse_octree validates it.
         important_steps = {
             "extract_octree": ["harvest"],
             "column_heights": ["extract_octree", "dumpnoise"],
-            "build_pairs_sparse_octree": ["harvest", "dumpnoise"],
+            "build_pairs_sparse_octree": ["build_v7_pairs"],
             "train_sparse_octree": ["build_pairs_sparse_octree"],
             "export_sparse_octree": ["train_sparse_octree"],
             "deploy_sparse_octree": ["export_sparse_octree"],
@@ -222,7 +223,6 @@ class TestCheckpointFilenames:
             "density": "density_best.pt",
             "biome_classifier": "biome_classifier.pt",
             "heightmap_predictor": "heightmap_predictor.pt",
-            "sparse_octree_v7": "sparse_octree_v7_model.pt",
         }
         for track_id, filename in expected.items():
             track = TRACK_BY_ID.get(track_id)

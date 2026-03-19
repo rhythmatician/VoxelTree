@@ -15,7 +15,6 @@ _DISPLAY_NAMES = {
     "density": "Density MLP",
     "heightmap_predictor": "Heightmap Predictor",
     "sparse_octree": "Sparse Octree",
-    "sparse_octree_v7": "Sparse Octree v7",
 }
 
 
@@ -46,7 +45,7 @@ def _summary_lines_for_step(step: StepDef, log_lines: Sequence[str]) -> list[str
         return _summarize_density(log_lines)
     if track == "heightmap_predictor":
         return _summarize_heightmap(log_lines)
-    if track in {"sparse_octree", "sparse_octree_v7"}:
+    if track == "sparse_octree":
         return _summarize_sparse_octree(log_lines)
     return _summarize_octree_style(log_lines)
 

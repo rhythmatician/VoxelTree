@@ -389,12 +389,9 @@ class TestTrackAlignment:
         assert issues[0].track_id == "stale_track"
 
     def test_real_model_tracks_alignment(self):
-        """Smoke test: the actual MODEL_TRACKS should have no errors.
+        """Smoke test: the actual MODEL_TRACKS should have no errors and no stale tracks.
 
-        The ``sparse_octree`` track is intentionally pinned to rev 0
-        (legacy v6 pipeline).  ``sparse_octree_v7`` is pinned to rev 3
-        (the v7 + position-bits contract) and should always be aligned.
-        Only ``sparse_octree`` is expected to be stale.
+        All tracks are pinned to their current contract revision.
         """
         from voxel_tree.contracts.registry import check_track_alignment
 
@@ -403,7 +400,5 @@ class TestTrackAlignment:
         stale = [i for i in issues if i.severity == "stale"]
         # No errors should exist — all tracks reference valid contracts
         assert errors == [], f"Broken track bindings: {errors}"
-        # sparse_octree is intentionally legacy-pinned to rev 0
-        stale_ids = {i.track_id for i in stale}
-        unexpected = stale_ids - {"sparse_octree"}
-        assert unexpected == set(), f"Unexpected stale tracks: {unexpected}"
+        # No stale tracks — all tracks are pinned to current revisions
+        assert stale == [], f"Stale tracks (update contract_revision): {stale}"

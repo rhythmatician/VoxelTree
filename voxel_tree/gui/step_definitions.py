@@ -43,11 +43,10 @@
 #
 # ## Track IDs in use (add new tracks to this list when you create them)
 #
-#   "sparse_octree"       — Sparse Octree hierarchy classifier (5-level octree, legacy 13ch/4×2×4)
+#   "sparse_octree"       — Sparse Octree hierarchy classifier (13ch/4×2×4 cave noise → 5-level octree)
 #   "density"             — Density predictor (6 climate → 2 density fields)
 #   "biome_classifier"    — v7 Biome classifier (6 climate → 54 biome classes)
 #   "heightmap_predictor" — v7 Heightmap predictor (96 climate → 32 height values)
-#   "sparse_octree_v7"    — v7 Sparse Octree (15ch/4×4×4 → block hierarchy)
 #
 # ═══════════════════════════════════════════════════════════════════════════
 """
@@ -583,7 +582,6 @@ _DENSITY_CHECKPOINT = "density_best.pt"
 _BIOME_CHECKPOINT = "biome_classifier.pt"
 _HEIGHTMAP_CHECKPOINT = "heightmap_predictor.pt"
 _SPARSE_OCTREE_CHECKPOINT = "sparse_octree_model.pt"
-_SPARSE_OCTREE_V7_CHECKPOINT = "sparse_octree_v7_model.pt"
 
 
 # ---------------------------------------------------------------------------
@@ -651,6 +649,9 @@ def _export_sparse_octree_run(p: dict[str, Any]) -> None:
             if _out
             else Path(__file__).parent.parent / "tasks" / "sparse_octree" / "model"
         ),
+        n3d=13,
+        spatial_y=2,
+        hidden=train.get("sparse_octree_hidden", 80),
     )
 
 
@@ -659,15 +660,19 @@ def _deploy_sparse_octree_run(p: dict[str, Any]) -> None:
         export_sparse_octree,
     )  # noqa: PLC0415
 
+    train = p.get("train", {})
     deploy = p.get("deploy", {})
     out_dir = deploy.get("target_dir") or p.get("export", {}).get("output_dir")
     export_sparse_octree(
-        checkpoint=Path(p.get("train", {}).get("output_dir", ".")) / _SPARSE_OCTREE_CHECKPOINT,
+        checkpoint=Path(train.get("output_dir", ".")) / _SPARSE_OCTREE_CHECKPOINT,
         out_dir=(
             Path(out_dir)
             if out_dir
             else Path(__file__).parent.parent / "tasks" / "sparse_octree" / "model"
         ),
+        n3d=13,
+        spatial_y=2,
+        hidden=train.get("sparse_octree_hidden", 80),
     )
 
 
@@ -900,91 +905,6 @@ def _deploy_heightmap_run(p: dict[str, Any]) -> None:
     export_main(["--checkpoint", str(checkpoint), "--out-dir", str(resolved)])
 
 
-# ---------------------------------------------------------------------------
-# Step runners — v7 Sparse Octree
-# ---------------------------------------------------------------------------
-
-
-def _build_pairs_sparse_octree_v7_run(p: dict[str, Any]) -> None:
-    """Validate v7 pairs NPZ exists (pairs built by shared build_v7_pairs)."""
-    data = p.get("data", {})
-    npz = Path(data.get("v7_pairs_npz", "sparse_octree_pairs_v7.npz"))
-    if not npz.exists():
-        raise FileNotFoundError(f"v7 pairs NPZ not found: {npz}")
-    print(f"[sparse_octree_v7] v7 pairs validated: {npz}")
-
-
-def _train_sparse_octree_v7_run(p: dict[str, Any]) -> None:
-    import json  # noqa: PLC0415
-
-    from voxel_tree.tasks.sparse_octree.train import train_sparse_octree  # noqa: PLC0415
-    from voxel_tree.utils.progress import report as _report_progress  # noqa: PLC0415
-
-    data = p.get("data", {})
-    train = p.get("train", {})
-    npz = data.get("v7_pairs_npz", "sparse_octree_pairs_v7.npz")
-    out_path = Path(train.get("output_dir", ".")) / _SPARSE_OCTREE_V7_CHECKPOINT
-    result = train_sparse_octree(
-        data_path=Path(npz),
-        out_path=out_path,
-        model_variant=train.get("sparse_octree_variant", "fast"),
-        hidden=train.get("sparse_octree_hidden", 80),
-        epochs=train.get("epochs", 20),
-        batch_size=train.get("batch_size", 4),
-        lr=train.get("lr", 1e-4),
-        device=_resolve_device(train.get("device", "auto")),
-        # Explicit num_classes prevents auto-detect from undersizing
-        # when rare blocks (e.g. white_wool, zombie_head) are absent
-        # from the training data. Must match voxy_vocab.json (1104).
-        num_classes=train.get("num_classes", 1104),
-        progress_callback=lambda epoch, total, _m: _report_progress(epoch, total),
-    )
-    print(f"[STEP_RESULT]{json.dumps(result, sort_keys=True)}")
-
-
-def _export_sparse_octree_v7_run(p: dict[str, Any]) -> None:
-    from voxel_tree.tasks.sparse_octree.export_sparse_octree import (
-        export_sparse_octree,
-    )  # noqa: PLC0415
-
-    train = p.get("train", {})
-    export = p.get("export", {})
-    _out = export.get("output_dir")
-    export_sparse_octree(
-        checkpoint=Path(train.get("output_dir", ".")) / _SPARSE_OCTREE_V7_CHECKPOINT,
-        out_dir=(
-            Path(_out)
-            if _out
-            else Path(__file__).parent.parent / "tasks" / "sparse_octree" / "model"
-        ),
-        n3d=13,
-        spatial_y=2,
-        hidden=train.get("sparse_octree_hidden", 80),
-    )
-
-
-def _deploy_sparse_octree_v7_run(p: dict[str, Any]) -> None:
-    """Deploy sparse_octree_v7 (re-export directly into the deploy target dir)."""
-    from voxel_tree.tasks.sparse_octree.export_sparse_octree import (
-        export_sparse_octree,
-    )  # noqa: PLC0415
-
-    train = p.get("train", {})
-    deploy = p.get("deploy", {})
-    out_dir = deploy.get("target_dir") or p.get("export", {}).get("output_dir")
-    export_sparse_octree(
-        checkpoint=Path(train.get("output_dir", ".")) / _SPARSE_OCTREE_V7_CHECKPOINT,
-        out_dir=(
-            Path(out_dir)
-            if out_dir
-            else Path(__file__).parent.parent / "tasks" / "sparse_octree" / "model"
-        ),
-        n3d=13,
-        spatial_y=2,
-        hidden=train.get("sparse_octree_hidden", 80),
-    )
-
-
 # ═══════════════════════════════════════════════════════════════════════════
 # MODEL TRACKS
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1011,7 +931,7 @@ MODEL_TRACKS: list[ModelTrack] = [
         build_pairs_consumes=frozenset({"v7_pairs_npz"}),
         checkpoint_filename=_SPARSE_OCTREE_CHECKPOINT,
         contract_name="sparse_octree",
-        contract_revision=None,  # None = always track latest revision
+        contract_revision=3,
         extra_steps=[
             StepDef(
                 id="distill_sparse_octree",
@@ -1066,20 +986,6 @@ MODEL_TRACKS: list[ModelTrack] = [
         checkpoint_filename=_HEIGHTMAP_CHECKPOINT,
         contract_name="heightmap",
         contract_revision=1,
-    ),
-    # ── v7 Sparse Octree (13ch/4×2×4 cave noise → block hierarchy) ──
-    ModelTrack(
-        track_id="sparse_octree_v7",
-        label="OctreeV7",
-        swim_lane_color="#2a0a00",
-        build_pairs_factory=_build_pairs_sparse_octree_v7_run,
-        train_factory=_train_sparse_octree_v7_run,
-        export_factory=_export_sparse_octree_v7_run,
-        deploy_factory=_deploy_sparse_octree_v7_run,
-        build_pairs_consumes=frozenset({"v7_pairs_npz"}),
-        checkpoint_filename=_SPARSE_OCTREE_V7_CHECKPOINT,
-        contract_name="sparse_octree",
-        contract_revision=3,
     ),
 ]
 
