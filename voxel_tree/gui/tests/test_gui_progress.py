@@ -98,7 +98,7 @@ def test_detailpanel_on_progress_updates_registry_and_parent(monkeypatch):
     assert parent.calls == [("p", "foo")]
 
     # clearing
-    panel._on_progress("foo", None)  # type: ignore[arg-type]
+    panel._on_progress("foo", None)
     assert reg.get_metadata("foo", "progress") is None
     # parent callback still invoked with None step progress
     assert parent.calls[-1] == ("p", "foo")
@@ -139,7 +139,7 @@ def test_profilerow_contains_new_export_deploy_nodes():
 
 def test_stepnode_rightclick_emits_signal():
     widget = StepNodeWidget("s2", "S2")
-    events: list = []
+    events: list[tuple[str, object]] = []
 
     def handler(sid, pos):
         events.append((sid, pos))
@@ -165,7 +165,7 @@ def test_profilerow_context_menu_actions(monkeypatch):
 
     row = ProfileRow("p", reg)
     # connect to capture emitted events
-    events: list = []
+    events: list[tuple[str, str, str]] = []
     row.node_clicked.connect(lambda prof, sid: events.append(("run", prof, sid)))
     row.run_from_requested.connect(lambda prof, sid: events.append(("from", prof, sid)))
     row.cancel_requested.connect(lambda prof, sid: events.append(("cancel", prof, sid)))
@@ -205,7 +205,7 @@ def test_dashboard_table_forwards_row_signals():
     reg = RunRegistry("p")
     table = DashboardTable()
     table.add_profile("p", reg)
-    events: list = []
+    events: list[tuple[str, str]] = []
     table.node_run_from.connect(lambda prof, sid: events.append((prof, sid)))
     table.node_cancel.connect(lambda prof, sid: events.append((prof, sid)))
     # manually emit from the underlying row and ensure table propagates
@@ -213,6 +213,57 @@ def test_dashboard_table_forwards_row_signals():
     row.run_from_requested.emit("p", "foo")
     row.cancel_requested.emit("p", "bar")
     assert events == [("p", "foo"), ("p", "bar")]
+
+
+def test_main_window_handles_dashboard_run_from_and_cancel(monkeypatch):
+    from PySide6.QtCore import QObject, Signal
+    from voxel_tree.gui import main_window as main_window_module
+
+    class DummyServerManager(QObject):
+        log_line = Signal(str)
+        status_changed = Signal(str)
+
+        def __init__(self, parent=None):
+            super().__init__(parent)
+            self._running = False
+
+        def configure_for_role(self, role):
+            self.role = role
+
+        def start(self):
+            self._running = True
+            self.status_changed.emit("running")
+
+        def stop(self):
+            self._running = False
+            self.status_changed.emit("stopped")
+
+        def is_running(self):
+            return self._running
+
+    monkeypatch.setattr(main_window_module, "ServerManager", DummyServerManager)
+    monkeypatch.setattr(main_window_module.QTimer, "singleShot", lambda *_args, **_kwargs: None)
+
+    window = main_window_module.MainWindow()
+    events: list[tuple[str, str | None]] = []
+
+    monkeypatch.setattr(window, "_on_details_clicked", lambda profile: events.append(("details", profile)))
+    monkeypatch.setattr(window, "_queue_clear", lambda: events.append(("queue_clear", None)))
+    monkeypatch.setattr(window._detail, "run_from_step", lambda step_id: events.append(("from", step_id)))
+    monkeypatch.setattr(window._detail, "cancel", lambda: events.append(("cancel", None)))
+
+    window._dashboard.node_run_from.emit("p", "export_sparse_octree")
+    window._dashboard.node_cancel.emit("p", "export_sparse_octree")
+
+    assert events == [
+        ("details", "p"),
+        ("from", "export_sparse_octree"),
+        ("queue_clear", None),
+        ("details", "p"),
+        ("cancel", None),
+    ]
+
+    window.close()
 
 
 def test_progress_helper_prints(capsys):

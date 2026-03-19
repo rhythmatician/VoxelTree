@@ -79,6 +79,8 @@ class MainWindow(QMainWindow):
         self._dashboard.delete_profile_requested.connect(self._on_delete_profile)
         self._dashboard.new_profile_requested.connect(self._on_new_profile)
         self._dashboard.node_clicked.connect(self._on_node_clicked)
+        self._dashboard.node_run_from.connect(self._on_node_run_from)
+        self._dashboard.node_cancel.connect(self._on_node_cancel)
         self._server_bar.run_server_session_requested.connect(self._on_run_server_session)
 
         print("[MW.init.7] Setting central widget...", flush=True)
@@ -227,6 +229,21 @@ class MainWindow(QMainWindow):
         self._on_details_clicked(profile_name)
         if hasattr(self, "_detail") and self._detail:
             self._detail.run_step(step_id)
+
+    @Slot(str, str)
+    def _on_node_run_from(self, profile_name: str, step_id: str) -> None:
+        """Handle dashboard context-menu 'Run From Here' actions."""
+        self._on_details_clicked(profile_name)
+        if hasattr(self, "_detail") and self._detail:
+            self._detail.run_from_step(step_id)
+
+    @Slot(str, str)
+    def _on_node_cancel(self, profile_name: str, step_id: str) -> None:
+        """Handle dashboard context-menu cancel actions."""
+        self._queue_clear()
+        self._on_details_clicked(profile_name)
+        if hasattr(self, "_detail") and self._detail:
+            self._detail.cancel()
 
     def _queue_append(self, profile_name: str, step_id: str) -> None:
         if step_id not in {"cancel", "run"}:
