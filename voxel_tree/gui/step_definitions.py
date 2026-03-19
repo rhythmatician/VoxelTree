@@ -710,12 +710,12 @@ def _build_v7_pairs_run(p: dict[str, Any]) -> None:
     voxy_npz_dir = data.get("data_dir", "data/voxy_octree")
     argv += ["--voxy", str(voxy_npz_dir)]
 
-    # Use v7_pairs_npz as the canonical output path so that all downstream steps
-    # (which also read from v7_pairs_npz) find the file.  Fall back to the same
-    # default as build_sparse_octree_pairs.py when the key is absent.
-    output_npz = data.get("v7_pairs_npz") or data.get("v7_pairs_output")
-    if output_npz:
-        argv += ["--output", str(output_npz)]
+    # Always pass --output so the file lands where the per-track validators expect.
+    # Validators default to "sparse_octree_pairs_v7.npz"; without an explicit
+    # --output the CLI would write to "noise_training_data/sparse_octree_pairs_v7.npz"
+    # instead, causing every downstream build_pairs validator to fail.
+    output_npz = data.get("v7_pairs_npz") or data.get("v7_pairs_output") or "sparse_octree_pairs_v7.npz"
+    argv += ["--output", str(output_npz)]
     pairs_main(argv)
 
 
@@ -764,8 +764,15 @@ def _export_density_run(p: dict[str, Any]) -> None:
 
 
 def _deploy_density_run(p: dict[str, Any]) -> None:
-    """Deploy density (re-export to deploy target dir)."""
-    _export_density_run(p)
+    """Deploy density (re-export directly into the deploy target dir)."""
+    from voxel_tree.tasks.density.export_density import main as export_main  # noqa: PLC0415
+
+    train = p.get("train", {})
+    deploy = p.get("deploy", {})
+    out_dir = deploy.get("target_dir") or p.get("export", {}).get("output_dir")
+    checkpoint = Path(train.get("output_dir", ".")) / _DENSITY_CHECKPOINT
+    resolved = Path(out_dir) if out_dir else Path(__file__).parent.parent / "tasks" / "density" / "model"
+    export_main(["--checkpoint", str(checkpoint), "--out-dir", str(resolved)])
 
 
 # ---------------------------------------------------------------------------
@@ -813,8 +820,15 @@ def _export_biome_classifier_run(p: dict[str, Any]) -> None:
 
 
 def _deploy_biome_classifier_run(p: dict[str, Any]) -> None:
-    """Deploy biome_classifier (re-export to deploy target dir)."""
-    _export_biome_classifier_run(p)
+    """Deploy biome_classifier (re-export directly into the deploy target dir)."""
+    from voxel_tree.tasks.biome.export_biome import main as export_main  # noqa: PLC0415
+
+    train = p.get("train", {})
+    deploy = p.get("deploy", {})
+    out_dir = deploy.get("target_dir") or p.get("export", {}).get("output_dir")
+    checkpoint = Path(train.get("output_dir", ".")) / _BIOME_CHECKPOINT
+    resolved = Path(out_dir) if out_dir else Path(__file__).parent.parent / "tasks" / "biome" / "model"
+    export_main(["--checkpoint", str(checkpoint), "--out-dir", str(resolved)])
 
 
 # ---------------------------------------------------------------------------
@@ -862,8 +876,15 @@ def _export_heightmap_run(p: dict[str, Any]) -> None:
 
 
 def _deploy_heightmap_run(p: dict[str, Any]) -> None:
-    """Deploy heightmap_predictor (re-export to deploy target dir)."""
-    _export_heightmap_run(p)
+    """Deploy heightmap_predictor (re-export directly into the deploy target dir)."""
+    from voxel_tree.tasks.heightmap.export_heightmap import main as export_main  # noqa: PLC0415
+
+    train = p.get("train", {})
+    deploy = p.get("deploy", {})
+    out_dir = deploy.get("target_dir") or p.get("export", {}).get("output_dir")
+    checkpoint = Path(train.get("output_dir", ".")) / _HEIGHTMAP_CHECKPOINT
+    resolved = Path(out_dir) if out_dir else Path(__file__).parent.parent / "tasks" / "heightmap" / "model"
+    export_main(["--checkpoint", str(checkpoint), "--out-dir", str(resolved)])
 
 
 # ---------------------------------------------------------------------------
