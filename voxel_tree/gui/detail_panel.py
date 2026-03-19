@@ -383,6 +383,17 @@ class DetailPanel(QDockWidget):
                 elif hasattr(parent, "_dashboard"):
                     parent._dashboard.refresh_profile(self._profile_name)
 
+            # DataHarvester ingest progress: "  In progress: 500 / 51,237 (1.0%) — ..."
+            m_harvest = re.search(r"In progress:.*\((\d+\.?\d*)%\)", line)
+            if m_harvest:
+                self._registry.set_progress(step_id, float(m_harvest.group(1)) / 100.0)
+                parent = cast(_ParentInterface, self.parent())
+                assert self._profile_name is not None
+                if hasattr(parent, "on_step_progress"):
+                    parent.on_step_progress(self._profile_name, step_id)
+                elif hasattr(parent, "_dashboard"):
+                    parent._dashboard.refresh_profile(self._profile_name)
+
     @Slot(str, int)
     def _on_step_finished(self, step_id: str, exit_code: int) -> None:
         assert self._registry is not None

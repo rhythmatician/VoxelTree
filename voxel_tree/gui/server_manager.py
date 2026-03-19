@@ -332,7 +332,19 @@ class ServerManager(QObject):
             return
 
         self._set_status("starting")
-        _JVM_FLAGS = ["-Xmx6g", "-Xms2g", "-XX:+UseZGC"]
+        _JVM_FLAGS = [
+            "-Xmx12g", "-Xms4g",
+            "-XX:+UseG1GC",
+            "-XX:+ParallelRefProcEnabled",
+            "-XX:MaxGCPauseMillis=200",
+            "-XX:+UnlockExperimentalVMOptions",
+            "-XX:+DisableExplicitGC",
+            "-XX:G1NewSizePercent=30",
+            "-XX:G1MaxNewSizePercent=40",
+            "-XX:G1HeapRegionSize=8M",
+            "-XX:G1ReservePercent=20",
+            "-XX:InitiatingHeapOccupancyPercent=15",
+        ]
         self._process.setWorkingDirectory(str(_RUNTIME_DIR))
         self._process.start("java", [*_JVM_FLAGS, "-jar", str(_JAR_PATH), "--nogui"])
 

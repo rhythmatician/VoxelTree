@@ -8,6 +8,7 @@ no argparse round-trip.  The profile dict is passed as JSON on stdin.
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 import sys
@@ -58,15 +59,18 @@ class RunWorker(QThread):
     def run(self) -> None:  # called by QThread.start()
         self.step_started.emit(self.step_id)
         try:
-            cmd = [sys.executable, "-m", "voxel_tree.step_runner", self.step_id]
+            cmd = [sys.executable, "-u", "-m", "voxel_tree.step_runner", self.step_id]
+            child_env = {**os.environ, "PYTHONIOENCODING": "utf-8"}
             self._proc = subprocess.Popen(
                 cmd,
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
+                encoding="utf-8",
                 bufsize=1,
                 cwd=str(self._VT_ROOT),
+                env=child_env,
             )
             # Send profile as JSON on stdin, then close to unblock the child.
             assert self._proc.stdin is not None
