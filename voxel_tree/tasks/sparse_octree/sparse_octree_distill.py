@@ -188,7 +188,15 @@ def _evaluate_student(
     for batch in loader:
         noise_2d = batch["noise_2d"].to(device)
         noise_3d = batch["noise_3d"].to(device)
-        preds = model(noise_2d, noise_3d)
+        biome_ids = batch["biome_ids"].to(device)
+        heightmap_surface = batch["heightmap_surface"].to(device)
+        heightmap_ocean_floor = batch["heightmap_ocean_floor"].to(device)
+        pos_bits = batch["position_bits"].to(device)
+        preds = model(
+            noise_2d, noise_3d, biome_ids,
+            heightmap_surface, heightmap_ocean_floor,
+            position_bits=pos_bits,
+        )
         for lvl, out in preds.items():
             split_pred = (out["split"] > 0).to(torch.int64)
             split_tgt = batch["targets"][lvl]["split"].to(device).to(torch.int64)
@@ -285,10 +293,22 @@ def distill_sparse_octree(
         for batch in loader:
             noise_2d = batch["noise_2d"].to(_device)
             noise_3d = batch["noise_3d"].to(_device)
+            biome_ids = batch["biome_ids"].to(_device)
+            heightmap_surface = batch["heightmap_surface"].to(_device)
+            heightmap_ocean_floor = batch["heightmap_ocean_floor"].to(_device)
+            pos_bits = batch["position_bits"].to(_device)
 
             with torch.no_grad():
-                teacher_preds = teacher(noise_2d, noise_3d)
-            student_preds = student(noise_2d, noise_3d)
+                teacher_preds = teacher(
+                    noise_2d, noise_3d, biome_ids,
+                    heightmap_surface, heightmap_ocean_floor,
+                    position_bits=pos_bits,
+                )
+            student_preds = student(
+                noise_2d, noise_3d, biome_ids,
+                heightmap_surface, heightmap_ocean_floor,
+                position_bits=pos_bits,
+            )
 
             losses = _distill_loss(
                 student_preds,

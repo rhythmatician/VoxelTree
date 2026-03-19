@@ -319,3 +319,64 @@ def test_run_from_aborts_chain_on_failure(monkeypatch):
     # The run-from chain should be empty — no further steps queued
     assert panel._run_from_targets == set()
     assert launched == [], "No downstream steps should have been launched after a failure"
+
+
+def test_run_from_scoped_to_profile_dag(monkeypatch):
+    """_run_from must only walk the per-profile step list, not the global
+    ACTIVE_STEPS.  Steps outside the profile's DAG (like distill_sparse_octree)
+    should never appear in the reachable set."""
+    from voxel_tree.gui.step_definitions import STEP_BY_ID
+
+    reg = RunRegistry("p")
+    panel = DetailPanel()
+
+    from PySide6.QtWidgets import QWidget
+
+    class _Parent(QWidget):
+        def __init__(self):
+            super().__init__()
+
+        def on_step_finished(self, profile, step_id, exit_code, summary):
+            pass
+
+    parent = _Parent()
+    panel.setParent(parent)
+    panel.load_profile("p", reg)
+
+    # Simulate a profile DAG that includes build→train→export→deploy but NOT distill
+    from dataclasses import replace as dc_replace
+
+    profile_step_ids = [
+        "build_pairs_sparse_octree",
+        "train_sparse_octree",
+        "export_sparse_octree",
+        "deploy_sparse_octree",
+    ]
+    # Build a step list stripped of prereqs outside the set (mimics resolve_steps)
+    id_set = set(profile_step_ids)
+    profile_steps = []
+    for sid in profile_step_ids:
+        template = STEP_BY_ID[sid]
+        pruned_prereqs = [p for p in template.prereqs if p in id_set]
+        profile_steps.append(dc_replace(template, prereqs=pruned_prereqs))
+
+    # Patch _profile_steps to return our custom set
+    monkeypatch.setattr(panel, "_profile_steps", lambda: profile_steps)
+
+    # Prevent actual subprocess launches
+    launched: list[str] = []
+    monkeypatch.setattr(panel, "_run_step", lambda sid: launched.append(sid))
+
+    # Mark build_pairs and train as already succeeded so downstream steps are runnable
+    reg.mark_started("build_pairs_sparse_octree")
+    reg.mark_success("build_pairs_sparse_octree")
+    reg.mark_started("train_sparse_octree")
+    reg.mark_success("train_sparse_octree")
+
+    # Run from build_pairs
+    panel._run_from("build_pairs_sparse_octree")
+
+    # distill_sparse_octree must NOT be in the reachable set
+    assert "distill_sparse_octree" not in panel._run_from_targets
+    # Only profile-scoped steps should be reachable
+    assert panel._run_from_targets <= id_set

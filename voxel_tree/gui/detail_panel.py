@@ -317,10 +317,28 @@ class DetailPanel(QDockWidget):
             return
         self._launch_worker(step_id, profile_dict)
 
+    def _profile_steps(self) -> list[StepDef]:
+        """Return the per-profile step list, falling back to the global default.
+
+        Profiles with a ``dag:`` section define a custom step subset; the BFS
+        in ``_run_from`` must be scoped to that subset so it never touches
+        steps outside the profile's visible DAG.
+        """
+        profile_dict = self._get_profile_dict()
+        if profile_dict is not None:
+            from voxel_tree.gui.dag_definition import ProfileDag  # noqa: PLC0415
+
+            dag = ProfileDag.from_profile_dict(profile_dict)
+            if dag is not None:
+                return dag.resolve_steps()
+        return list(ACTIVE_STEPS)
+
     def _run_from(self, step_id: str) -> None:
         """Run step_id and all downstream steps reachable through the DAG."""
         if not self._registry:
             return
+        # Use the per-profile step list so the BFS never escapes the visible DAG
+        steps = self._profile_steps()
         # BFS from step_id through the DAG to collect all reachable step IDs
         reachable: set[str] = set()
         queue = [step_id]
@@ -330,7 +348,7 @@ class DetailPanel(QDockWidget):
                 continue
             reachable.add(current)
             # Add any active step that lists current as a prereq
-            for step in ACTIVE_STEPS:
+            for step in steps:
                 if current in step.prereqs and step.id not in reachable:
                     queue.append(step.id)
         self._run_from_targets = reachable

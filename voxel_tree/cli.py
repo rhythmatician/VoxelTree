@@ -9,6 +9,7 @@ Usage
   voxel-tree --step STEP_ID                        Show step info
   voxel-tree --step STEP_ID --run                  Run step (default profile)
   voxel-tree --step STEP_ID --run --profile NAME   Run step with a named profile
+  voxel-tree --new-profile NAME                    Create a new profile YAML (formatted for commit)
   voxel-tree --server start [--role NAME]          Start the Fabric server
   voxel-tree --server stop                         Stop the Fabric server via RCON
 
@@ -64,6 +65,52 @@ def _default_profile_name() -> str | None:
     """Return the stem of the first YAML in ``profiles/``, or None."""
     yamls = sorted(_profiles_dir().glob("*.yaml"))
     return yamls[0].stem if yamls else None
+
+
+def _default_profile_dict(name: str) -> dict[str, Any]:
+    """Return a new profile dict with sensible defaults for the given name."""
+    return {
+        "name": name,
+        "description": "",
+        "rcon": {"timeout": 300},
+        "data": {
+            "voxy_dir": None,
+            "data_dir": "data/voxy_octree",
+            "max_sections": 1000,
+            "min_solid": 0.02,
+            "val_split": 0.1,
+            "noise_dump_dir": "tools/fabric-server/runtime/noise_dumps",
+        },
+        "train": {
+            "output_dir": f"models/{name}",
+            "max_samples": 5000,
+            "epochs": 20,
+            "batch_size": 4,
+            "lr": 0.0001,
+            "target_mse": 0.001,
+            "device": "auto",
+        },
+        "export": {"output_dir": f"production/{name}"},
+        "deploy": {"target_dir": "../LODiffusion/run/config/lodiffusion"},
+    }
+
+
+def _cmd_new_profile(name: str, overwrite: bool = False) -> None:
+    """Create a new profile YAML file, formatted consistently for git commits."""
+
+    import yaml  # noqa: PLC0415
+
+    profiles = _profiles_dir()
+    profiles.mkdir(parents=True, exist_ok=True)
+    path = profiles / f"{name}.yaml"
+    if path.exists() and not overwrite:
+        print(f"error: profile {name!r} already exists at {path}", file=sys.stderr)
+        sys.exit(1)
+
+    data = _default_profile_dict(name)
+    with open(path, "w", encoding="utf-8") as f:
+        yaml.dump(data, f, default_flow_style=False, allow_unicode=True)
+    print(f"Created profile {path}")
 
 
 # ---------------------------------------------------------------------------
@@ -270,6 +317,11 @@ def main(argv: list[str] | None = None) -> None:
         choices=["start", "stop"],
         help="Start or stop the Fabric server (start | stop)",
     )
+    mode.add_argument(
+        "--new-profile",
+        metavar="NAME",
+        help="Create a new profile YAML file (formatted consistently)",
+    )
 
     # Step selection + execution
     parser.add_argument("--step", metavar="STEP_ID", help="Step to inspect or run")
@@ -279,6 +331,11 @@ def main(argv: list[str] | None = None) -> None:
         metavar="NAME",
         default=None,
         help="Profile name (default: first YAML in profiles/)",
+    )
+    parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Overwrite existing profile when used with --new-profile",
     )
 
     # Server role selection
@@ -299,6 +356,8 @@ def main(argv: list[str] | None = None) -> None:
         _cmd_list_steps()
     elif args.server:
         _cmd_server(args.server, args.role)
+    elif args.new_profile:
+        _cmd_new_profile(args.new_profile, overwrite=args.overwrite)
     elif args.step and args.run:
         _cmd_run_step(args.step, args.profile)
     elif args.step:
