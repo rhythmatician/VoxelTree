@@ -140,7 +140,12 @@ class RunRegistry:
         # helper to update a step once
         def _set_success(step_id: str) -> None:
             nonlocal changed
-            if self.get_status(step_id) != "success":
+            # Do not override an in-progress run.  Running status should be
+            # authoritative even if output artifacts appear early.
+            current = self.get_status(step_id)
+            if current == "running":
+                return
+            if current != "success":
                 self.mark_success(step_id)
                 changed = True
 

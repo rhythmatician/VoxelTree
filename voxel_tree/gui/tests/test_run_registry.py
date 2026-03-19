@@ -142,11 +142,18 @@ def test_reconcile_marks_early_steps(tmp_path: Path, monkeypatch: pytest.MonkeyP
     reg.mark_failed("dumpnoise")
     reg.mark_failed("column_heights")
 
+    # If a step is currently running, we should not overwrite it even if the
+    # expected output files exist.
+    reg.mark_started("extract_octree")
+    assert reg.get_status("extract_octree") == "running"
+
     reg.reconcile_with_profile(profile)
     assert reg.get_status("pregen") == "success"
     assert reg.get_status("dumpnoise") == "success"
     # heightmap present should also mark column_heights
     assert reg.get_status("column_heights") == "success"
+    # running state should not be overwritten by artifact presence
+    assert reg.get_status("extract_octree") == "running"
 
     # metadata setter should work and persist
     reg.set_metadata("pregen", "foo", 123)
