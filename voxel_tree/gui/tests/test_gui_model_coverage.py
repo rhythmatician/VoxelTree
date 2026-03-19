@@ -164,3 +164,71 @@ class TestArtifactGraph:
                     f"Prereq mismatch for '{step_id}'. "
                     f"Expected to include {expected_prereqs}, got {actual[step_id]}"
                 )
+
+
+class TestCheckpointFilenames:
+    """Validate that each ModelTrack correctly declares its checkpoint filename.
+
+    These tests guard against the recurring handoff mismatch where the train
+    runner saves to one filename and the export runner looks for another.
+    The module-level _*_CHECKPOINT constants + these tests form a circuit-
+    breaker: changing a filename in one place without updating the constant
+    will cause these tests to fail.
+    """
+
+    def test_all_trained_tracks_declare_checkpoint_filename(self):
+        """Every track with a train_factory must set checkpoint_filename."""
+        for track in MODEL_TRACKS:
+            if track.train_factory is not None:
+                assert track.checkpoint_filename, (
+                    f"Track '{track.track_id}' has train_factory "
+                    f"but no checkpoint_filename — export runner cannot find "
+                    f"the checkpoint.  Add checkpoint_filename=_<NAME>_CHECKPOINT "
+                    f"to the ModelTrack declaration."
+                )
+
+    def test_checkpoint_filenames_end_with_pt(self):
+        """All declared checkpoint filenames must be .pt files."""
+        for track in MODEL_TRACKS:
+            if track.checkpoint_filename:
+                assert track.checkpoint_filename.endswith(".pt"), (
+                    f"Track '{track.track_id}' checkpoint_filename "
+                    f"'{track.checkpoint_filename}' must end with '.pt'"
+                )
+
+    def test_checkpoint_filenames_are_unique(self):
+        """No two tracks may share the same checkpoint filename.
+
+        If they did, parallel runs could overwrite each other's checkpoints
+        in the same output_dir.
+        """
+        seen: dict[str, str] = {}
+        for track in MODEL_TRACKS:
+            fn = track.checkpoint_filename
+            if not fn:
+                continue
+            assert fn not in seen, (
+                f"Tracks '{track.track_id}' and '{seen[fn]}' share "
+                f"checkpoint_filename '{fn}' — exports may overwrite each other"
+            )
+            seen[fn] = track.track_id
+
+    def test_known_checkpoint_filenames(self):
+        """Snapshot: verify the exact checkpoint filenames for all current tracks."""
+        from voxel_tree.gui.step_definitions import TRACK_BY_ID
+
+        expected = {
+            "sparse_octree": "sparse_octree_model.pt",
+            "density": "density_best.pt",
+            "biome_classifier": "biome_classifier.pt",
+            "heightmap_predictor": "heightmap_predictor.pt",
+            "sparse_octree_v7": "sparse_octree_v7_model.pt",
+        }
+        for track_id, filename in expected.items():
+            track = TRACK_BY_ID.get(track_id)
+            assert track is not None, f"Track '{track_id}' not found in registry"
+            assert track.checkpoint_filename == filename, (
+                f"Track '{track_id}' checkpoint_filename changed: "
+                f"expected '{filename}', got '{track.checkpoint_filename}'. "
+                f"Update both the _*_CHECKPOINT constant AND the training script."
+            )

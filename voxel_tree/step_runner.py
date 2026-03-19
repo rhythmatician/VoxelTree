@@ -41,6 +41,26 @@ def main() -> None:
         print(f"error: unknown step {step_id!r}", file=sys.stderr)
         sys.exit(1)
 
+    # Preflight: check contract alignment for this step's track.
+    # Errors (missing contract) block execution; stale (newer revision
+    # available) print a warning but allow the run to proceed.
+    if step.track:
+        try:
+            from voxel_tree.contracts import check_track_alignment  # noqa: PLC0415
+            from voxel_tree.gui.step_definitions import TRACK_BY_ID  # noqa: PLC0415
+
+            track = TRACK_BY_ID.get(step.track)
+            if track is not None:
+                for issue in check_track_alignment([track]):
+                    tag = "CONTRACT ERROR" if issue.severity == "error" else "CONTRACT WARNING"
+                    print(f"[{tag}] {issue.message}", flush=True)
+                    if issue.severity == "error":
+                        raise RuntimeError(
+                            f"Contract error for track '{step.track}': {issue.message}"
+                        )
+        except ImportError:
+            pass  # contracts package not available — skip check
+
     try:
         step.run_fn(profile)
     except SystemExit as exc:

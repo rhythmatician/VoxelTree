@@ -157,6 +157,13 @@ class ModelTrack:
     # include them explicitly.
     in_default_dag: bool = True
 
+    # ── Checkpoint filename ────────────────────────────────────────────────
+    # The .pt file saved by the train phase and loaded by the export phase.
+    # Use the module-level _*_CHECKPOINT constants so the runner functions
+    # and the ModelTrack declaration stay in sync — one string, no drift.
+    # Tests enforce that every track with a train_factory declares this.
+    checkpoint_filename: str = ""
+
     # ── Contract binding ─────────────────────────────────────────────────
     # Links this track to a model I/O contract in voxel_tree.contracts.
     # When set, the contracts system can detect when a contract revision
@@ -567,6 +574,19 @@ def _deploy_leaf_cmd(profile: dict[str, Any]) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
+# Checkpoint filename constants — single source of truth for train↔export
+# ---------------------------------------------------------------------------
+# Each constant is referenced by BOTH the train runner (writes the file)
+# and the export/deploy runner (reads it).  Change here → all usages update.
+
+_DENSITY_CHECKPOINT = "density_best.pt"
+_BIOME_CHECKPOINT = "biome_classifier.pt"
+_HEIGHTMAP_CHECKPOINT = "heightmap_predictor.pt"
+_SPARSE_OCTREE_CHECKPOINT = "sparse_octree_model.pt"
+_SPARSE_OCTREE_V7_CHECKPOINT = "sparse_octree_v7_model.pt"
+
+
+# ---------------------------------------------------------------------------
 # Step runners — Sparse Octree
 # ---------------------------------------------------------------------------
 
@@ -597,7 +617,7 @@ def _train_sparse_octree_run(p: dict[str, Any]) -> None:
     data = p.get("data", {})
     train = p.get("train", {})
     data_dir = data.get("data_dir", "noise_training_data")
-    out_path = Path(train.get("output_dir", ".")) / "sparse_octree_model.pt"
+    out_path = Path(train.get("output_dir", ".")) / _SPARSE_OCTREE_CHECKPOINT
     train_sparse_octree(
         data_path=Path(data_dir) / "sparse_octree_pairs.npz",
         out_path=out_path,
@@ -619,7 +639,7 @@ def _export_sparse_octree_run(p: dict[str, Any]) -> None:
     export = p.get("export", {})
     _out = export.get("output_dir")
     export_sparse_octree(
-        checkpoint=Path(train.get("output_dir", ".")) / "sparse_octree_model.pt",
+        checkpoint=Path(train.get("output_dir", ".")) / _SPARSE_OCTREE_CHECKPOINT,
         out_dir=(
             Path(_out)
             if _out
@@ -636,7 +656,7 @@ def _deploy_sparse_octree_run(p: dict[str, Any]) -> None:
     deploy = p.get("deploy", {})
     out_dir = deploy.get("target_dir") or p.get("export", {}).get("output_dir")
     export_sparse_octree(
-        checkpoint=Path(p.get("train", {}).get("output_dir", ".")) / "sparse_octree_model.pt",
+        checkpoint=Path(p.get("train", {}).get("output_dir", ".")) / _SPARSE_OCTREE_CHECKPOINT,
         out_dir=(
             Path(out_dir)
             if out_dir
@@ -734,7 +754,7 @@ def _export_density_run(p: dict[str, Any]) -> None:
 
     train = p.get("train", {})
     export = p.get("export", {})
-    checkpoint = Path(train.get("output_dir", ".")) / "density_best.pt"
+    checkpoint = Path(train.get("output_dir", ".")) / _DENSITY_CHECKPOINT
     _out = export.get("output_dir")
     out_dir = Path(_out) if _out else Path(__file__).parent.parent / "tasks" / "density" / "model"
     export_main(["--checkpoint", str(checkpoint), "--out-dir", str(out_dir)])
@@ -783,7 +803,7 @@ def _export_biome_classifier_run(p: dict[str, Any]) -> None:
 
     train = p.get("train", {})
     export = p.get("export", {})
-    checkpoint = Path(train.get("output_dir", ".")) / "biome_classifier.pt"
+    checkpoint = Path(train.get("output_dir", ".")) / _BIOME_CHECKPOINT
     _out = export.get("output_dir")
     out_dir = Path(_out) if _out else Path(__file__).parent.parent / "tasks" / "biome" / "model"
     export_main(["--checkpoint", str(checkpoint), "--out-dir", str(out_dir)])
@@ -832,7 +852,7 @@ def _export_heightmap_run(p: dict[str, Any]) -> None:
 
     train = p.get("train", {})
     export = p.get("export", {})
-    checkpoint = Path(train.get("output_dir", ".")) / "heightmap_predictor.pt"
+    checkpoint = Path(train.get("output_dir", ".")) / _HEIGHTMAP_CHECKPOINT
     _out = export.get("output_dir")
     out_dir = Path(_out) if _out else Path(__file__).parent.parent / "tasks" / "heightmap" / "model"
     export_main(["--checkpoint", str(checkpoint), "--out-dir", str(out_dir)])
@@ -863,7 +883,7 @@ def _train_sparse_octree_v7_run(p: dict[str, Any]) -> None:
     data = p.get("data", {})
     train = p.get("train", {})
     npz = data.get("v7_pairs_npz", "sparse_octree_pairs_v7.npz")
-    out_path = Path(train.get("output_dir", ".")) / "sparse_octree_v7_model.pt"
+    out_path = Path(train.get("output_dir", ".")) / _SPARSE_OCTREE_V7_CHECKPOINT
     train_sparse_octree(
         data_path=Path(npz),
         out_path=out_path,
@@ -885,7 +905,7 @@ def _export_sparse_octree_v7_run(p: dict[str, Any]) -> None:
     export = p.get("export", {})
     _out = export.get("output_dir")
     export_sparse_octree(
-        checkpoint=Path(train.get("output_dir", ".")) / "sparse_octree_v7_model.pt",
+        checkpoint=Path(train.get("output_dir", ".")) / _SPARSE_OCTREE_V7_CHECKPOINT,
         out_dir=(
             Path(_out)
             if _out
@@ -926,6 +946,7 @@ MODEL_TRACKS: list[ModelTrack] = [
         export_factory=_export_sparse_octree_run,
         deploy_factory=_deploy_sparse_octree_run,
         build_pairs_consumes=frozenset({"voxy_db", "noise_dumps"}),
+        checkpoint_filename=_SPARSE_OCTREE_CHECKPOINT,
         contract_name="sparse_octree",
         contract_revision=0,
         extra_steps=[
@@ -951,6 +972,7 @@ MODEL_TRACKS: list[ModelTrack] = [
         export_factory=_export_density_run,
         deploy_factory=_deploy_density_run,
         build_pairs_consumes=frozenset({"v7_pairs_npz"}),
+        checkpoint_filename=_DENSITY_CHECKPOINT,
         contract_name="density",
         contract_revision=1,
     ),
@@ -964,6 +986,7 @@ MODEL_TRACKS: list[ModelTrack] = [
         export_factory=_export_biome_classifier_run,
         deploy_factory=_deploy_biome_classifier_run,
         build_pairs_consumes=frozenset({"v7_pairs_npz"}),
+        checkpoint_filename=_BIOME_CHECKPOINT,
         contract_name="biome",
         contract_revision=1,
     ),
@@ -977,6 +1000,7 @@ MODEL_TRACKS: list[ModelTrack] = [
         export_factory=_export_heightmap_run,
         deploy_factory=_deploy_heightmap_run,
         build_pairs_consumes=frozenset({"v7_pairs_npz"}),
+        checkpoint_filename=_HEIGHTMAP_CHECKPOINT,
         contract_name="heightmap",
         contract_revision=1,
     ),
@@ -990,8 +1014,9 @@ MODEL_TRACKS: list[ModelTrack] = [
         export_factory=_export_sparse_octree_v7_run,
         deploy_factory=_deploy_sparse_octree_v7_run,
         build_pairs_consumes=frozenset({"v7_pairs_npz"}),
+        checkpoint_filename=_SPARSE_OCTREE_V7_CHECKPOINT,
         contract_name="sparse_octree",
-        contract_revision=1,
+        contract_revision=2,
     ),
 ]
 

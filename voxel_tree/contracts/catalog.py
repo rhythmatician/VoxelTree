@@ -268,3 +268,63 @@ _register(
         export_fn="voxel_tree.tasks.sparse_octree.export_sparse_octree:export_sparse_octree",
     )
 )
+
+# ── revision 2 (v7 actual: 13 cave noise ch / 4×2×4 spatial) ─────────────
+# Revision 1 was a speculative pre-release spec (15ch/4×4×4) that was never
+# matched by real DataHarvester output.  Revision 2 documents what the
+# extract_octree + build_v7_pairs pipeline actually produces.
+_register(
+    ModelContract(
+        model_name="sparse_octree",
+        revision=2,
+        contract_id="lodiffusion.v7.sparse_octree_v2",
+        inputs=(
+            TensorSpec(
+                name="noise_3d",
+                shape=(1, 13, 4, 2, 4),
+                dtype="float32",
+                channels=(
+                    "offset",
+                    "factor",
+                    "jaggedness",
+                    "depth",
+                    "sloped_cheese",
+                    "y",
+                    "entrances",
+                    "pillars",
+                    "spaghetti_2d",
+                    "spaghetti_roughness",
+                    "noodle",
+                    "base_3d_noise",
+                    "final_density",
+                ),
+                channel_indices=tuple(range(13)),
+                description="13 cave noise channels at 4×2×4 quart resolution",
+            ),
+        ),
+        outputs=tuple(
+            spec
+            for lvl in range(4, -1, -1)
+            for spec in (
+                TensorSpec(
+                    name=f"split_L{lvl}",
+                    shape=(1, 8 ** (4 - lvl)),
+                    dtype="float32",
+                ),
+                TensorSpec(
+                    name=f"label_L{lvl}",
+                    shape=(1, 8 ** (4 - lvl), "num_classes"),
+                    dtype="float32",
+                ),
+            )
+        ),
+        onnx_opset=18,
+        description="Sparse octree v7: 13ch/4×2×4 cave noise → 5-level block hierarchy",
+        changelog="Corrected channel count from 15 to 13 (actual DataHarvester output). "
+        "Corrected spatial_y from 4 to 2 (actual NPZ shape from build_v7_pairs). "
+        "Rev 1 was a speculative spec never matched by real data.",
+        build_pairs_fn="voxel_tree.tasks.sparse_octree.build_sparse_octree_pairs:main",
+        train_fn="voxel_tree.tasks.sparse_octree.train:train_sparse_octree",
+        export_fn="voxel_tree.tasks.sparse_octree.export_sparse_octree:export_sparse_octree",
+    )
+)

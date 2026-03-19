@@ -278,6 +278,15 @@ class TestCatalogContracts:
         assert c.inputs[0].shape == (1, 15, 4, 4, 4)
         assert len(c.inputs[0].channels) == 15
 
+    def test_sparse_octree_rev2_shapes(self):
+        """Revision 2 reflects the actual v7 DataHarvester output: 13ch / 4×2×4."""
+        c = get_contract("sparse_octree", revision=2)
+        assert c.inputs[0].shape == (1, 13, 4, 2, 4)
+        assert c.inputs[0].channels is not None
+        assert len(c.inputs[0].channels) == 13
+        assert c.inputs[0].channels[0] == "offset"
+        assert c.inputs[0].channels[-1] == "final_density"
+
     def test_sparse_octree_rev1_has_10_outputs(self):
         c = get_contract("sparse_octree", revision=1)
         assert len(c.outputs) == 10  # 5 levels × 2 (split + label)
@@ -383,8 +392,9 @@ class TestTrackAlignment:
         """Smoke test: the actual MODEL_TRACKS should have no errors.
 
         The ``sparse_octree`` track is intentionally pinned to rev 0
-        (legacy v6 pipeline) while ``sparse_octree_v7`` uses rev 1,
-        so one stale issue is expected.
+        (legacy v6 pipeline).  ``sparse_octree_v7`` is pinned to rev 2
+        (the actual v7 contract) and should always be aligned.
+        Only ``sparse_octree`` is expected to be stale.
         """
         from voxel_tree.contracts.registry import check_track_alignment
 
