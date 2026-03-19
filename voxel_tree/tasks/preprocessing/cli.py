@@ -305,17 +305,38 @@ def cmd_voxy_import(cfg: PipelineConfig) -> None:
     )
 
 
+# ---------------------------------------------------------------------------
+# RCON response validation
+# ---------------------------------------------------------------------------
+
+# Brigadier / Minecraft error patterns that indicate a failed command.
+_RCON_ERROR_PATTERNS = (
+    "<--[HERE]",  # Brigadier parse error pointer
+    "Unknown or incomplete",  # Unknown command prefix
+    "Expected ",  # Brigadier type-mismatch (e.g. "Expected integer")
+    "No entity was found",  # /kill with no matches (non-fatal for kill, but
+    # indicates an issue for other commands)
+)
+
+
+def _check_rcon_error(response: str, cmd: str) -> None:
+    """Raise if the RCON response looks like a Brigadier / server error."""
+    for pattern in _RCON_ERROR_PATTERNS:
+        if pattern in response:
+            raise RuntimeError(f"Server command failed: /{cmd}\n  Response: {response}")
+
+
 def cmd_dumpnoise(cfg: PipelineConfig) -> None:
     """Consolidate all training noise dumps via single /dumpnoise command.
 
-    Sends both /dumpnoise terrain_shaper and /dumpnoise sparse_octree in sequence,
+    Sends both /dumpnoise stage1 and /dumpnoise sparse_root in sequence,
     generating all noise data needed for the full training pipeline:
-    - terrain_shaper format (4×48×4 cells): 12 input features + final_density per chunk
-    - sparse_octree format (4×2×4 cells): 13 noise channels + biome_ids per section
+    - stage1 format (4×48×4 cells): 12 input features + final_density per chunk
+    - sparse_root format (4×2×4 cells): 13 noise channels + biome_ids per section
 
     Output:
-      <game_dir>/terrain_shaper_dumps/chunk_<cx>_<cz>.json
-      <game_dir>/sparse_octree_dumps/section_<cx>_<sy>_<cz>.json
+      <game_dir>/stage1_dumps/chunk_<cx>_<cz>.json
+      <game_dir>/sparse_root_dumps/section_<cx>_<sy>_<cz>.json
     """
     # Convert block-radius to chunk-radius (round up to cover the requested area)
     chunk_radius = max(1, (cfg.radius + 15) // 16)
@@ -324,8 +345,8 @@ def cmd_dumpnoise(cfg: PipelineConfig) -> None:
         print("\n  [DRY-RUN] Would send:")
         print("    (freeze commands — see 'freeze' subcommand for full list)")
         print("    /kill @e[type=!player]  # clear spawn-bloat mobs before dump")
-        print(f"    /dumpnoise terrain_shaper {chunk_radius}")
-        print(f"    /dumpnoise sparse_octree {chunk_radius}")
+        print(f"    /dumpnoise stage1 {chunk_radius}")
+        print(f"    /dumpnoise sparse_root {chunk_radius}")
         print(f"  (block radius {cfg.radius} -> chunk radius {chunk_radius})")
         return
 
@@ -372,8 +393,8 @@ def cmd_dumpnoise(cfg: PipelineConfig) -> None:
         time.sleep(5)
 
         # ── Stage 1 dump ────────────────────────────────────────────────────
-        print("\n  [1/2] Dumping TerrainShaper noise...")
-        cmd_str = f"dumpnoise terrain_shaper {chunk_radius}"
+        print("\n  [1/2] Dumping Stage1 (TerrainShaper) noise...")
+        cmd_str = f"dumpnoise stage1 {chunk_radius}"
         resp = rcon.command(cmd_str)
         resp_text = resp.strip() or "(no response)"
         try:
@@ -382,6 +403,7 @@ def cmd_dumpnoise(cfg: PipelineConfig) -> None:
         except Exception:
             resp_text = resp_text.encode("utf-8", errors="replace").decode("utf-8")
         print(f"        Server: {resp_text}")
+        _check_rcon_error(resp_text, cmd_str)
 
         start = time.time()
         while time.time() - start < timeout:
@@ -396,9 +418,9 @@ def cmd_dumpnoise(cfg: PipelineConfig) -> None:
                 f"(~{int(estimate - elapsed)}s remaining)..."
             )
 
-        # ── SparseOctree dump ─────────────────────────────────────────────────
-        print("\n  [2/2] Dumping SparseOctree noise...")
-        cmd_str = f"dumpnoise sparse_octree {chunk_radius}"
+        # ── SparseRoot dump ──────────────────────────────────────────────────
+        print("\n  [2/2] Dumping SparseRoot noise...")
+        cmd_str = f"dumpnoise sparse_root {chunk_radius}"
         resp = rcon.command(cmd_str)
         resp_text = resp.strip() or "(no response)"
         try:
@@ -407,6 +429,7 @@ def cmd_dumpnoise(cfg: PipelineConfig) -> None:
         except Exception:
             resp_text = resp_text.encode("utf-8", errors="replace").decode("utf-8")
         print(f"        Server: {resp_text}")
+        _check_rcon_error(resp_text, cmd_str)
 
         start = time.time()
         while time.time() - start < timeout:
@@ -423,8 +446,8 @@ def cmd_dumpnoise(cfg: PipelineConfig) -> None:
 
     # ── Summary ─────────────────────────────────────────────────────────
     print("\n  Noise consolidation complete:")
-    print(f"    [OK] TerrainShaper:    <game_dir>/terrain_shaper_dumps/ ({total_chunks:,} files)")
-    print(f"    [OK] SparseOctree: <game_dir>/sparse_octree_dumps/ ({total_sections:,} files)")
+    print(f"    [OK] Stage1:       <game_dir>/stage1_dumps/ ({total_chunks:,} files)")
+    print(f"    [OK] SparseRoot:   <game_dir>/sparse_root_dumps/ ({total_sections:,} files)")
 
 
 # ---------------------------------------------------------------------------

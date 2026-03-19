@@ -24,7 +24,7 @@ data:
   data_dir: data/voxy_octree
   max_sections: 50
   min_solid: 0.02
-  v7_dumps_dir: v7_dumps_smoke
+  v7_dumps_dir: data/v7_dumps_smoke
   v7_pairs_npz: sparse_octree_pairs_v7_smoke.npz
   val_split: 0.1
   voxy_dir: ../LODiffusion/run/saves

@@ -313,10 +313,14 @@ def _wire_prereqs(steps: list[StepDef]) -> None:
 
 
 def _dumpnoise_run(p: dict[str, Any]) -> None:
+    import shutil  # noqa: PLC0415
+
     from voxel_tree.gui.server_manager import get_rcon_settings  # noqa: PLC0415
+    from voxel_tree.preprocessing.cli import DEFAULT_SERVER_DIR  # noqa: PLC0415
     from voxel_tree.preprocessing.cli import main as cli_main  # noqa: PLC0415
 
     world = p.get("world", {})
+    data = p.get("data", {})
     rcon = get_rcon_settings()
     rcon_timeout = p.get("rcon", {}).get("timeout", 3600)
     try:
@@ -338,6 +342,24 @@ def _dumpnoise_run(p: dict[str, Any]) -> None:
     except SystemExit as e:
         if e.code != 0:
             raise RuntimeError(f"Dumpnoise failed with exit code {e.code}") from e
+
+    # The DataHarvester mod writes section_*.json to the server's
+    # sparse_root_dumps/ directory.  Move them into the profile-configured
+    # v7_dumps_dir so that build_v7_pairs can find them.
+    server_sparse_root = DEFAULT_SERVER_DIR / "sparse_root_dumps"
+    v7_dumps_dir = Path(data.get("v7_dumps_dir", "data/v7_dumps"))
+    if server_sparse_root.is_dir() and server_sparse_root != v7_dumps_dir.resolve():
+        section_files = list(server_sparse_root.glob("section_*.json"))
+        if section_files:
+            v7_dumps_dir.mkdir(parents=True, exist_ok=True)
+            print(
+                f"\n  Moving {len(section_files):,} section_*.json files"
+                f"\n    from {server_sparse_root}"
+                f"\n    to   {v7_dumps_dir}"
+            )
+            for f in section_files:
+                shutil.move(str(f), v7_dumps_dir / f.name)
+            print("  Done.")
 
 
 def _extract_octree_run(p: dict[str, Any]) -> None:
@@ -649,7 +671,7 @@ def _build_v7_pairs_run(p: dict[str, Any]) -> None:
 
     data = p.get("data", {})
     argv: list[str] = []
-    dumps_dir = data.get("v7_dumps_dir", "v7_dumps")
+    dumps_dir = data.get("v7_dumps_dir", "data/v7_dumps")
     argv += ["--dumps", str(dumps_dir)]
 
     # Resolve voxy-dir: explicit profile value → active server port → CLI default.
