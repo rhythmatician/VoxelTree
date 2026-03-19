@@ -193,8 +193,11 @@ def _evaluate_student(
         heightmap_ocean_floor = batch["heightmap_ocean_floor"].to(device)
         pos_bits = batch["position_bits"].to(device)
         preds = model(
-            noise_2d, noise_3d, biome_ids,
-            heightmap_surface, heightmap_ocean_floor,
+            noise_2d,
+            noise_3d,
+            biome_ids,
+            heightmap_surface,
+            heightmap_ocean_floor,
             position_bits=pos_bits,
         )
         for lvl, out in preds.items():
@@ -300,13 +303,19 @@ def distill_sparse_octree(
 
             with torch.no_grad():
                 teacher_preds = teacher(
-                    noise_2d, noise_3d, biome_ids,
-                    heightmap_surface, heightmap_ocean_floor,
+                    noise_2d,
+                    noise_3d,
+                    biome_ids,
+                    heightmap_surface,
+                    heightmap_ocean_floor,
                     position_bits=pos_bits,
                 )
             student_preds = student(
-                noise_2d, noise_3d, biome_ids,
-                heightmap_surface, heightmap_ocean_floor,
+                noise_2d,
+                noise_3d,
+                biome_ids,
+                heightmap_surface,
+                heightmap_ocean_floor,
                 position_bits=pos_bits,
             )
 

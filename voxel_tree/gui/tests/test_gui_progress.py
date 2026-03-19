@@ -247,9 +247,13 @@ def test_main_window_handles_dashboard_run_from_and_cancel(monkeypatch):
     window = main_window_module.MainWindow()
     events: list[tuple[str, str | None]] = []
 
-    monkeypatch.setattr(window, "_on_details_clicked", lambda profile: events.append(("details", profile)))
+    monkeypatch.setattr(
+        window, "_on_details_clicked", lambda profile: events.append(("details", profile))
+    )
     monkeypatch.setattr(window, "_queue_clear", lambda: events.append(("queue_clear", None)))
-    monkeypatch.setattr(window._detail, "run_from_step", lambda step_id: events.append(("from", step_id)))
+    monkeypatch.setattr(
+        window._detail, "run_from_step", lambda step_id: events.append(("from", step_id))
+    )
     monkeypatch.setattr(window._detail, "cancel", lambda: events.append(("cancel", None)))
 
     window._dashboard.node_run_from.emit("p", "export_sparse_octree")

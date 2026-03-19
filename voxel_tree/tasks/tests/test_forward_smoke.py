@@ -141,8 +141,11 @@ class TestSparseOctreeSmoke:
         pos_bits = batch["position_bits"]
 
         preds = model(
-            noise_2d, noise_3d, biome_ids,
-            heightmap_surface, heightmap_ocean_floor,
+            noise_2d,
+            noise_3d,
+            biome_ids,
+            heightmap_surface,
+            heightmap_ocean_floor,
             position_bits=pos_bits,
         )
         assert isinstance(preds, dict) and len(preds) > 0
@@ -198,14 +201,16 @@ class TestHeightmapPredictor:
 # "batch keys" are what the dataset+collate provides — each must cover
 # every required param of forward().
 
-_SPARSE_BATCH_KEYS = frozenset({
-    "noise_2d",
-    "noise_3d",
-    "biome_ids",
-    "heightmap_surface",
-    "heightmap_ocean_floor",
-    "position_bits",
-})
+_SPARSE_BATCH_KEYS = frozenset(
+    {
+        "noise_2d",
+        "noise_3d",
+        "biome_ids",
+        "heightmap_surface",
+        "heightmap_ocean_floor",
+        "position_bits",
+    }
+)
 
 _MODEL_BATCH_COVERAGE: list[tuple[type, frozenset[str]]] = [
     (SparseOctreeModel, _SPARSE_BATCH_KEYS),
@@ -287,7 +292,11 @@ def test_distill_evaluate_student_call_pattern() -> None:
         )
         ds = SparseOctreeDataset(npz, cache_targets=True)
         model = SparseOctreeFastModel(
-            n2d=0, n3d=13, hidden=16, num_classes=4, spatial_y=2,
+            n2d=0,
+            n3d=13,
+            hidden=16,
+            num_classes=4,
+            spatial_y=2,
         )
         # This must not raise TypeError — the whole purpose of this test.
         metrics = _evaluate_student(model, ds, batch_size=2, device=torch.device("cpu"))
