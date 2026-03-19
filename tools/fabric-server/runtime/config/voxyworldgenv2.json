@@ -1,5 +1,5 @@
 {
-  "enabled": true,
+  "enabled": false,
   "showF3MenuStats": true,
   "generationRadius": 128,
   "update_interval": 20,
