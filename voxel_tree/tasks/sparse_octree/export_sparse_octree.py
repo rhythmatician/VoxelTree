@@ -200,6 +200,23 @@ def _infer_model_variant(state_dict: dict[str, Any]) -> str:
     return "baseline"
 
 
+def _infer_hidden(state_dict: dict[str, Any]) -> int:
+    """Infer hidden dimension from the saved weight shapes.
+
+    ``pos_emb.level_emb.weight`` has shape ``[num_levels, hidden]`` and is
+    present in both the *fast* and *baseline* variants, making it the most
+    reliable probe.  Falls back to ``noise_enc.mlp.0.weight`` whose output
+    dimension equals ``hidden * 2`` for the *fast* variant.
+    """
+    key = "pos_emb.level_emb.weight"
+    if key in state_dict:
+        return int(state_dict[key].shape[1])
+    key2 = "noise_enc.mlp.0.weight"
+    if key2 in state_dict:
+        return int(state_dict[key2].shape[0]) // 2
+    return -1
+
+
 # Default block vocabulary shipped alongside this script.
 # Prefer the Voxy canonical vocabulary (alphabetical) used during training.
 # Fall back to standard_minecraft_blocks.json if voxy_vocab.json is absent.
@@ -259,6 +276,13 @@ def export_sparse_octree(
 
     if model_variant is None:
         model_variant = _infer_model_variant(state)
+
+    inferred_hidden = _infer_hidden(state)
+    if inferred_hidden > 0 and inferred_hidden != hidden:
+        print(
+            f"[export] Overriding hidden={hidden} → {inferred_hidden} (inferred from checkpoint)"
+        )
+        hidden = inferred_hidden
 
     print(
         f"[export] variant={model_variant}  n2d={n2d}  n3d={n3d}  "
