@@ -1,81 +1,51 @@
-# smoke_test.yaml — Minimal e2e smoke test for LODiffusion MVP validation
-#
-# Goal: confirm the full v7 pipeline runs end-to-end and produces all four
-# model files needed by LODiffusion.  Numbers are as small as sensible;
-# quality of trained models is irrelevant — we just need them to exist and
-# pass the ONNX load/run checks.
-#
-# Pipeline:
-#   pregen → dumpnoise_v7 → build_v7_pairs
-#     → [density | biome_classifier | heightmap_predictor | sparse_octree_v7]
-#       × [build_pairs → train → export → deploy]
-
 dag:
   steps:
-    # ── v7 Data Acquisition ───────────────────────────────────
-    - id: pregen
-    - id: harvest
-    - id: dumpnoise_v7
-    - id: build_v7_pairs
-    # ── Density ───────────────────────────────────────────────
-    - id: build_pairs_density
-    - id: train_density
-    - id: export_density
-    - id: deploy_density
-    # ── Biome Classifier ──────────────────────────────────────
-    - id: build_pairs_biome_classifier
-    - id: train_biome_classifier
-    - id: export_biome_classifier
-    - id: deploy_biome_classifier
-    # ── Heightmap Predictor ───────────────────────────────────
-    - id: build_pairs_heightmap_predictor
-    - id: train_heightmap_predictor
-    - id: export_heightmap_predictor
-    - id: deploy_heightmap_predictor
-    # ── Sparse Octree V7 ─────────────────────────────────────
-    - id: build_pairs_sparse_octree_v7
-    - id: train_sparse_octree_v7
-    - id: export_sparse_octree_v7
-    - id: deploy_sparse_octree_v7
-
-name: smoke_test
-description: >
-  Smoke test — tiny dataset, minimum epochs, verifies that all four v7 models
-  (density, biome_classifier, heightmap_predictor, sparse_octree_v7) can be
-  trained and exported end-to-end.  Use the "train" world role in the server
-  status bar.  Not intended for production-quality model weights.
-
-# ── World size ────────────────────────────────────────────────────────────
-# Keep extremely small so pregen + dumpnoise_v7 finish in minutes.
-world:
-  radius: 128
-
-# ── Data settings ─────────────────────────────────────────────────────────
+  - id: pregen
+  - id: harvest
+  - id: dumpnoise
+  - id: build_v7_pairs
+  - id: build_pairs_density
+  - id: train_density
+  - id: export_density
+  - id: deploy_density
+  - id: build_pairs_biome_classifier
+  - id: train_biome_classifier
+  - id: export_biome_classifier
+  - id: deploy_biome_classifier
+  - id: build_pairs_heightmap_predictor
+  - id: train_heightmap_predictor
+  - id: export_heightmap_predictor
+  - id: deploy_heightmap_predictor
+  - id: build_pairs_sparse_octree_v7
+  - id: train_sparse_octree_v7
+  - id: export_sparse_octree_v7
+  - id: deploy_sparse_octree_v7
 data:
-  v7_dumps_dir: v7_dumps_smoke
-  v7_pairs_npz: sparse_octree_pairs_v7_smoke.npz
+  data_dir: data/voxy_octree
   max_sections: 50
   min_solid: 0.02
+  v7_dumps_dir: v7_dumps_smoke
+  v7_pairs_npz: sparse_octree_pairs_v7_smoke.npz
   val_split: 0.1
-
-# ── Training hyperparameters ──────────────────────────────────────────────
-train:
-  epochs: 2
-  batch_size: 4
-  lr: 0.0001
-  device: auto
-  output_dir: models/smoke_test
-  # Sparse octree — small hidden layer to keep train time short
-  sparse_octree_variant: fast
-  sparse_octree_hidden: 32
-
-# ── Export / deploy ───────────────────────────────────────────────────────
-export:
-  output_dir: production/smoke_test
-
+  voxy_dir: ../LODiffusion/run/saves
 deploy:
   target_dir: ../LODiffusion/run/config/lodiffusion
-
-# ── RCON timeout — small world, 30 min is plenty ─────────────────────────
+description: Smoke test — tiny dataset, minimum epochs, verifies that all four v7
+  models (density, biome_classifier, heightmap_predictor, sparse_octree_v7) can be
+  trained and exported end-to-end.  Use the "train" world role in the server status
+  bar.  Not intended for production-quality model weights.
+export:
+  output_dir: production/smoke_test
+name: smoke_test
 rcon:
   timeout: 1800
+train:
+  batch_size: 4
+  device: auto
+  epochs: 2
+  lr: 0.0001
+  max_samples: null
+  output_dir: models/smoke_test
+  sparse_octree_hidden: 32
+  sparse_octree_variant: fast
+  target_mse: 0.001
