@@ -1,0 +1,23 @@
+data:
+  data_dir: data/voxy_octree
+  max_sections: 1000
+  min_solid: 0.02
+  noise_dump_dir: tools/fabric-server/runtime/noise_dumps
+  val_split: 0.1
+  voxy_dir: None
+deploy:
+  target_dir: ../LODiffusion/run/config/lodiffusion
+description: ''
+export:
+  output_dir: production/new_profile
+name: new_profile
+rcon:
+  timeout: 300
+train:
+  batch_size: 4
+  device: auto
+  epochs: 20
+  lr: 0.0001
+  max_samples: null
+  output_dir: models/new_profile
+  target_mse: 0.001
