@@ -1,8 +1,13 @@
 """dag_definition.py — Per-profile pipeline DAG configuration.
 
-A ProfileDag records which steps are active for a given profile and allows
-optional per-step prereq overrides.  It is serialized into a ``dag:`` section
-in the profile YAML so that the topology is preserved alongside other settings.
+A ProfileDag records which steps are active for a given profile.
+It is serialized into a ``dag:`` section in the profile YAML so that the
+topology is preserved alongside other settings.
+
+Prerequisites are always derived from the global artifact dependency graph
+(computed by ``_wire_prereqs`` in ``step_definitions.py``).  The per-profile
+DAG only controls *which* steps are visible; it never overrides the
+prerequisite edges themselves.
 
 Format in profile YAML
 ----------------------
@@ -13,7 +18,6 @@ Format in profile YAML
         - id: pregen
         - id: dumpnoise
         - id: train_terrain_shaper_density
-          prereqs: [dumpnoise]     # optional override; absent → registry default
 
 Persistence note
 ----------------
@@ -38,32 +42,21 @@ class DagStepEntry:
     ----------
     id:
         Must match a ``StepDef.id`` in the step registry.
-    prereqs:
-        When *None* the registry default prereqs are used (with any entries
-        not in this DAG's active set automatically stripped).  Set to an
-        explicit list to hard-wire specific connections.
     """
 
     id: str
-    prereqs: list[str] | None = None
 
     # ------------------------------------------------------------------
 
     def to_dict(self) -> dict:
-        d: dict = {"id": self.id}
-        if self.prereqs is not None:
-            d["prereqs"] = list(self.prereqs)
-        return d
+        return {"id": self.id}
 
     @classmethod
     def from_dict(cls, d) -> DagStepEntry:
         if isinstance(d, str):
             # shorthand: just a bare step id
             return cls(id=d)
-        return cls(
-            id=d["id"],
-            prereqs=list(d["prereqs"]) if "prereqs" in d else None,
-        )
+        return cls(id=d["id"])
 
 
 @dataclass
@@ -151,8 +144,11 @@ class ProfileDag:
 
         Steps not present in the registry are silently skipped (forward-compat
         with older profiles that reference step ids not yet implemented).
-        Prereqs that reference a step not in *this* DAG's active set are also
+        Prereqs that reference a step not in *this* DAG's active set are
         stripped so the rendered graph is always self-consistent.
+
+        Prerequisites always come from the global artifact dependency graph —
+        they are never overridden per-profile.
         """
         from dataclasses import replace
 
@@ -167,12 +163,8 @@ class ProfileDag:
                 # not yet in the registry.  Skip silently.
                 continue
 
-            # Determine effective prereqs
-            if entry.prereqs is not None:
-                prereqs = [p for p in entry.prereqs if p in ids]
-            else:
-                prereqs = [p for p in template.prereqs if p in ids]
-
+            # Always use global prereqs, pruned to this DAG's active set
+            prereqs = [p for p in template.prereqs if p in ids]
             step = replace(template, prereqs=prereqs, enabled=True)
             result.append(step)
         return result

@@ -22,8 +22,8 @@ def summarize_training_run(
     step: StepDef,
     log_lines: Sequence[str],
     profile_name: str | None = None,
-) -> dict[str, str] | None:
-    """Build a compact popup summary for a completed training step."""
+) -> dict[str, Any] | None:
+    """Build a popup summary for a completed training step."""
     summary_lines = _summary_lines_for_step(step, log_lines)
     if not summary_lines:
         return None
@@ -34,7 +34,21 @@ def summarize_training_run(
         text_lines.append(f"Profile: {profile_name}")
         text_lines.append("")
     text_lines.extend(summary_lines)
-    return {"title": title, "text": "\n".join(text_lines)}
+
+    result: dict[str, Any] = {
+        "title": title,
+        "text": "\n".join(text_lines),
+    }
+
+    # Attach history for sparse_octree and similar models
+    track = step.track or ""
+    if track == "sparse_octree":
+        parsed_result = _parse_last_sparse_result(log_lines)
+        if parsed_result and isinstance(parsed_result.get("history"), list):
+            result["history"] = parsed_result["history"]
+            result["metric_key"] = "loss"
+
+    return result
 
 
 def _summary_lines_for_step(step: StepDef, log_lines: Sequence[str]) -> list[str]:

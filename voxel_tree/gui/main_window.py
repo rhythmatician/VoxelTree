@@ -22,6 +22,7 @@ from voxel_tree.gui.profile_editor import (
 from voxel_tree.gui.run_registry import RunRegistry
 from voxel_tree.gui.server_manager import ServerManager
 from voxel_tree.gui.server_status_bar import ServerStatusBar
+from voxel_tree.gui.training_popup import TrainingResultsPopup
 
 # same logic as profile_editor: we want the workspace/project root, not the
 # interior Python package folder.  ``parents[2]`` handles both development and
@@ -320,15 +321,20 @@ class MainWindow(QMainWindow):
         profile_name: str | None,
         step_id: str,
         exit_code: int = 0,
-        training_summary: dict[str, str] | None = None,
+        training_summary: dict[str, Any] | None = None,
     ) -> None:
         """Called by DetailPanel when a step completes."""
         if exit_code == 0 and training_summary:
-            QMessageBox.information(
-                self,
-                training_summary["title"],
-                training_summary["text"],
+            history = training_summary.get("history")
+            metric_key = training_summary.get("metric_key")
+            popup = TrainingResultsPopup(
+                title=training_summary["title"],
+                summary_text=training_summary["text"],
+                history=history,
+                metric_key=metric_key,
+                parent=self,
             )
+            popup.exec()
 
         if not self._server_session_active:
             return
