@@ -993,7 +993,7 @@ MODEL_TRACKS: list[ModelTrack] = [
         build_pairs_consumes=frozenset({"voxy_db", "noise_dumps"}),
         checkpoint_filename=_SPARSE_OCTREE_CHECKPOINT,
         contract_name="sparse_octree",
-        contract_revision=0,
+        contract_revision=None,  # None = always track latest revision
         extra_steps=[
             StepDef(
                 id="distill_sparse_octree",

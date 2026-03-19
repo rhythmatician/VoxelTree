@@ -606,9 +606,11 @@ def build(
 
     sparse_octree_count = 0
     if sparse_octree:
-        print("""
+        print(
+            """
   Building sparse-root pairs (from all sections)...
-""")
+"""
+        )
         sparse_pairs: list[dict[str, Any]] = []
         for p in all_pairs:
             labels = p["labels32"]
@@ -705,16 +707,16 @@ def main(argv: list[str] | None = None) -> None:
         ),
     )
     parser.add_argument(
-        "--sparse-root",
+        "--sparse-octree",
         action="store_true",
-        help="Generate an additional sparse-root pair cache.",
+        help="Generate an additional sparse-octree pair cache.",
     )
     parser.add_argument(
-        "--sparse-root-output",
+        "--sparse-octree-output",
         type=Path,
         default=None,
         metavar="PATH",
-        help="Output path for sparse-root cache (default: <output_dir>/sparse_octree_pairs.npz).",
+        help="Output path for sparse-octree cache (default: <output_dir>/sparse_octree_pairs.npz).",
     )
     args = parser.parse_args(argv)
 

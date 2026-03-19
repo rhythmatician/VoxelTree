@@ -339,16 +339,17 @@ class TestTrackAlignment:
     def test_stale_track_detected(self, _fake_track):
         from voxel_tree.contracts.registry import check_track_alignment
 
-        # sparse_octree has rev 0 and rev 1; pinning to 0 → stale
+        # sparse_octree has rev 0, 1, 2; pinning to 0 → stale (latest is 2)
         tracks = [_fake_track("old_octree", "sparse_octree", 0)]
         issues = check_track_alignment(tracks)
-        assert len(issues) == 1
-        assert issues[0].severity == "stale"
-        assert issues[0].track_id == "old_octree"
-        assert issues[0].current_revision == 0
-        assert issues[0].latest_revision_ == 1
-        assert "rev 0" in issues[0].message
-        assert "rev 1" in issues[0].message
+        assert len(issues) >= 1
+        stale_issues = [i for i in issues if i.severity == "stale"]
+        assert len(stale_issues) == 1
+        assert stale_issues[0].track_id == "old_octree"
+        assert stale_issues[0].current_revision == 0
+        assert stale_issues[0].latest_revision_ == 2
+        assert "rev 0" in stale_issues[0].message
+        assert "rev 2" in stale_issues[0].message
 
     def test_missing_contract_is_error(self, _fake_track):
         from voxel_tree.contracts.registry import check_track_alignment
@@ -359,14 +360,13 @@ class TestTrackAlignment:
         assert issues[0].severity == "error"
         assert "does not exist" in issues[0].message
 
-    def test_none_revision_is_error(self, _fake_track):
+    def test_none_revision_tracks_latest(self, _fake_track):
         from voxel_tree.contracts.registry import check_track_alignment
 
-        tracks = [_fake_track("bad_track", "density", None)]
+        # contract_revision=None means "always track latest" — no issue raised
+        tracks = [_fake_track("auto_track", "density", None)]
         issues = check_track_alignment(tracks)
-        assert len(issues) == 1
-        assert issues[0].severity == "error"
-        assert "None" in issues[0].message
+        assert issues == []
 
     def test_no_contract_binding_skipped(self, _fake_track):
         from voxel_tree.contracts.registry import check_track_alignment

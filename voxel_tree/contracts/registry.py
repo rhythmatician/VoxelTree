@@ -255,33 +255,36 @@ def check_track_alignment(
 
         crev = track.contract_revision
 
-        # --- Does the contract even exist? ---
-        if crev is not None:
-            key = (cname, crev)
-            if key not in CONTRACTS:
+        # --- Resolve None → latest ("always track latest" semantics) ---
+        if crev is None:
+            try:
+                crev = latest_revision(cname)
+            except KeyError:
                 issues.append(
                     AlignmentIssue(
                         track_id=track.track_id,
                         severity="error",
                         message=(
-                            f"Track '{track.track_id}' references contract "
-                            f"'{cname}' rev {crev}, but that revision does "
-                            f"not exist in the catalog."
+                            f"Track '{track.track_id}' has contract_name='{cname}' "
+                            f"but no revisions are registered for that model."
                         ),
-                        current_revision=crev,
                     )
                 )
                 continue
-        else:
-            # contract_name set but revision is None — unusual but flag it.
+
+        # --- Does the contract even exist? ---
+        key = (cname, crev)
+        if key not in CONTRACTS:
             issues.append(
                 AlignmentIssue(
                     track_id=track.track_id,
                     severity="error",
                     message=(
-                        f"Track '{track.track_id}' has contract_name='{cname}' "
-                        f"but contract_revision is None."
+                        f"Track '{track.track_id}' references contract "
+                        f"'{cname}' rev {crev}, but that revision does "
+                        f"not exist in the catalog."
                     ),
+                    current_revision=crev,
                 )
             )
             continue
