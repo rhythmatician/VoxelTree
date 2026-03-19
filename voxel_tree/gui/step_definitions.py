@@ -348,9 +348,10 @@ def _extract_octree_run(p: dict[str, Any]) -> None:
         "dataprep",
         "--from-step",
         "extract-octree",
-        "--voxy-dir",
-        str(data.get("voxy_dir", "../LODiffusion/run/saves")),
     ]
+    voxy_dir = data.get("voxy_dir")
+    if voxy_dir:
+        argv += ["--voxy-dir", str(voxy_dir)]
     if data.get("data_dir"):
         argv += ["--data-dir", str(data["data_dir"])]
     if data.get("max_sections"):
@@ -460,7 +461,11 @@ def _export_octree_run(p: dict[str, Any], model: str) -> None:
     train = p.get("train", {})
     export = p.get("export", {})
     checkpoint_dir = Path(train.get("output_dir")) if train.get("output_dir") else None
-    export_dir = Path(export["output_dir"]) if export.get("output_dir") else Path(__file__).parent.parent / "tasks" / "octree" / "model"
+    export_dir = (
+        Path(export["output_dir"])
+        if export.get("output_dir")
+        else Path(__file__).parent.parent / "tasks" / "octree" / "model"
+    )
     phase3_export(None, export_dir, checkpoint_dir=checkpoint_dir, models=[model])
 
 
@@ -470,7 +475,11 @@ def _deploy_octree_run(p: dict[str, Any], model: str) -> None:
 
     export = p.get("export", {})
     deploy = p.get("deploy", {})
-    export_dir = Path(export["output_dir"]) if export.get("output_dir") else Path(__file__).parent.parent / "tasks" / "octree" / "model"
+    export_dir = (
+        Path(export["output_dir"])
+        if export.get("output_dir")
+        else Path(__file__).parent.parent / "tasks" / "octree" / "model"
+    )
     dest = Path(deploy.get("target_dir")) if deploy.get("target_dir") else None
     phase4_deploy(export_dir, dest, models=[model])
 
@@ -581,7 +590,11 @@ def _export_sparse_octree_run(p: dict[str, Any]) -> None:
     _out = export.get("output_dir")
     export_sparse_octree(
         checkpoint=Path(train.get("output_dir", ".")) / "sparse_octree_model.pt",
-        out_dir=Path(_out) if _out else Path(__file__).parent.parent / "tasks" / "sparse_octree" / "model",
+        out_dir=(
+            Path(_out)
+            if _out
+            else Path(__file__).parent.parent / "tasks" / "sparse_octree" / "model"
+        ),
     )
 
 
@@ -591,13 +604,14 @@ def _deploy_sparse_octree_run(p: dict[str, Any]) -> None:
     )  # noqa: PLC0415
 
     deploy = p.get("deploy", {})
-    out_dir = (
-        deploy.get("target_dir")
-        or p.get("export", {}).get("output_dir")
-    )
+    out_dir = deploy.get("target_dir") or p.get("export", {}).get("output_dir")
     export_sparse_octree(
         checkpoint=Path(p.get("train", {}).get("output_dir", ".")) / "sparse_octree_model.pt",
-        out_dir=Path(out_dir) if out_dir else Path(__file__).parent.parent / "tasks" / "sparse_octree" / "model",
+        out_dir=(
+            Path(out_dir)
+            if out_dir
+            else Path(__file__).parent.parent / "tasks" / "sparse_octree" / "model"
+        ),
     )
 
 
@@ -846,7 +860,11 @@ def _export_sparse_octree_v7_run(p: dict[str, Any]) -> None:
     _out = export.get("output_dir")
     export_sparse_octree(
         checkpoint=Path(train.get("output_dir", ".")) / "sparse_octree_v7_model.pt",
-        out_dir=Path(_out) if _out else Path(__file__).parent.parent / "tasks" / "sparse_octree" / "model",
+        out_dir=(
+            Path(_out)
+            if _out
+            else Path(__file__).parent.parent / "tasks" / "sparse_octree" / "model"
+        ),
         n3d=15,
         spatial_y=4,
     )

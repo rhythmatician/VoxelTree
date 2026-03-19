@@ -55,7 +55,7 @@ _DEFAULT_PROFILE: dict = {
         "timeout": 300,
     },
     "data": {
-        "voxy_dir": "../LODiffusion/run/saves",
+        "voxy_dir": None,  # null → auto-resolved from server-port via MODRINTH_VOXY_SAVES
         "data_dir": "data/voxy_octree",
         "max_sections": 1000,
         "min_solid": 0.02,
