@@ -15,7 +15,7 @@ import json
 import os
 import sys
 import traceback
-from typing import Any
+from typing import Any, cast
 
 
 def _json_safe(value: Any) -> Any:
@@ -74,7 +74,8 @@ def main() -> None:
             pass  # contracts package not available — skip check
 
     try:
-        result = step.run_fn(profile)
+        run_fn = cast(Any, step.run_fn)
+        result = run_fn(profile)  # type: ignore[func-returns-value]
         if result is not None:
             print(f"[STEP_RESULT]{json.dumps(_json_safe(result), sort_keys=True)}", flush=True)
     except SystemExit as exc:
