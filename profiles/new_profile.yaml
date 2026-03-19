@@ -1,13 +1,39 @@
+dag:
+  steps:
+    - id: pregen
+    - id: harvest
+    - id: dumpnoise
+    - id: extract_octree
+    - id: column_heights
+    - id: build_v7_pairs
+    - id: build_pairs_sparse_octree
+    - id: train_sparse_octree
+    - id: export_sparse_octree
+    - id: deploy_sparse_octree
+    - id: distill_sparse_octree
+    - id: build_pairs_density
+    - id: train_density
+    - id: export_density
+    - id: deploy_density
+    - id: build_pairs_biome_classifier
+    - id: train_biome_classifier
+    - id: export_biome_classifier
+    - id: deploy_biome_classifier
+    - id: build_pairs_heightmap_predictor
+    - id: train_heightmap_predictor
+    - id: export_heightmap_predictor
+    - id: deploy_heightmap_predictor
 data:
   data_dir: data/voxy_octree
   max_sections: 1000
   min_solid: 0.02
   noise_dump_dir: tools/fabric-server/runtime/noise_dumps
+  v7_pairs_npz: noise_training_data/sparse_octree_pairs_v7.npz
   val_split: 0.1
   voxy_dir: None
 deploy:
   target_dir: ../LODiffusion/run/config/lodiffusion
-description: ''
+description: ""
 export:
   output_dir: production/new_profile
 name: new_profile

@@ -6,6 +6,8 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
+from voxel_tree.utils.progress import report as _report_progress
+
 try:
     from voxel_tree.tasks.sparse_octree.sparse_octree_distill import distill_sparse_octree
 except ModuleNotFoundError:
@@ -94,6 +96,7 @@ def main(argv=None):
     args = parser.parse_args(argv)
 
     def _progress(epoch, total, metrics):
+        _report_progress(epoch, total)
         print(
             f"[{epoch}/{total}] loss={metrics['loss']:.6f} "
             f"hard={metrics['hard_loss']:.6f} "

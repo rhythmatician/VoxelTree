@@ -613,13 +613,14 @@ def _resolve_device(raw: str) -> str:
 
 def _train_sparse_octree_run(p: dict[str, Any]) -> None:
     from voxel_tree.tasks.sparse_octree.train import train_sparse_octree  # noqa: PLC0415
+    from voxel_tree.utils.progress import report as _report_progress  # noqa: PLC0415
 
     data = p.get("data", {})
     train = p.get("train", {})
-    data_dir = data.get("data_dir", "noise_training_data")
+    npz_path = Path(data.get("v7_pairs_npz", "sparse_octree_pairs_v7.npz"))
     out_path = Path(train.get("output_dir", ".")) / _SPARSE_OCTREE_CHECKPOINT
     train_sparse_octree(
-        data_path=Path(data_dir) / "sparse_octree_pairs.npz",
+        data_path=npz_path,
         out_path=out_path,
         model_variant=train.get("sparse_octree_variant", "fast"),
         hidden=train.get("sparse_octree_hidden", 80),
@@ -630,6 +631,7 @@ def _train_sparse_octree_run(p: dict[str, Any]) -> None:
         # Explicit num_classes prevents auto-detect from undersizing
         # when rare blocks are absent from the training data.
         num_classes=train.get("num_classes", 1104),
+        progress_callback=lambda epoch, total, _m: _report_progress(epoch, total),
     )
 
 
@@ -670,17 +672,19 @@ def _deploy_sparse_octree_run(p: dict[str, Any]) -> None:
 
 def _distill_sparse_octree_run(p: dict[str, Any]) -> None:
     from voxel_tree.tasks.sparse_octree.distill import distill_sparse_octree  # noqa: PLC0415
+    from voxel_tree.utils.progress import report as _report_progress  # noqa: PLC0415
 
     data = p.get("data", {})
     train = p.get("train", {})
-    data_dir = data.get("data_dir", "noise_training_data")
+    npz_path = Path(data.get("v7_pairs_npz", "sparse_octree_pairs_v7.npz"))
     teacher_dir = train.get("output_dir", ".")
     distill_sparse_octree(
         teacher_checkpoint=Path(teacher_dir) / "sparse_octree_model.pt",
-        data_path=Path(data_dir) / "sparse_octree_pairs.npz",
+        data_path=npz_path,
         out_path=Path(teacher_dir) / "sparse_octree_distilled.pt",
         student_variant=train.get("sparse_octree_variant", "fast"),
         student_hidden=train.get("sparse_octree_hidden", 80),
+        progress_callback=lambda epoch, total, _m: _report_progress(epoch, total),
     )
 
 
@@ -903,6 +907,7 @@ def _build_pairs_sparse_octree_v7_run(p: dict[str, Any]) -> None:
 
 def _train_sparse_octree_v7_run(p: dict[str, Any]) -> None:
     from voxel_tree.tasks.sparse_octree.train import train_sparse_octree  # noqa: PLC0415
+    from voxel_tree.utils.progress import report as _report_progress  # noqa: PLC0415
 
     data = p.get("data", {})
     train = p.get("train", {})
@@ -921,6 +926,7 @@ def _train_sparse_octree_v7_run(p: dict[str, Any]) -> None:
         # when rare blocks (e.g. white_wool, zombie_head) are absent
         # from the training data. Must match voxy_vocab.json (1104).
         num_classes=train.get("num_classes", 1104),
+        progress_callback=lambda epoch, total, _m: _report_progress(epoch, total),
     )
 
 

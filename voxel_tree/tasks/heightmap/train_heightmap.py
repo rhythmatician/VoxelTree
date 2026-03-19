@@ -52,6 +52,8 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader, TensorDataset
 
+from voxel_tree.utils.progress import report as _report_progress
+
 try:
     from voxel_tree.utils.router_field import CLIMATE_FIELDS
 except ImportError:
@@ -252,6 +254,7 @@ def train(
                 "climate_indices": CLIMATE_INDICES,
             }, ckpt_path)
 
+        _report_progress(epoch, epochs)
         if epoch % 10 == 0 or epoch == 1:
             elapsed = time.time() - t0
             cur_lr = optimizer.param_groups[0]["lr"]
