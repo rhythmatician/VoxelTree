@@ -410,12 +410,29 @@ def export_sparse_octree(
         contract = f"lodiffusion.custom.sparse_octree_n3d{n3d}_sy{spatial_y}"
         channel_names = [f"ch_{i}" for i in range(n3d)]
 
+    # Load block vocab and trim to reachable classes only.
+    full_vocab = _load_block_vocab(block_vocab)
+    if full_vocab:
+        trimmed_vocab = {k: v for k, v in full_vocab.items() if v < num_classes}
+        dropped = {k: v for k, v in full_vocab.items() if v >= num_classes}
+        if dropped:
+            lo, hi = min(dropped.values()), max(dropped.values())
+            print(
+                f"[export] WARNING: Trimmed {len(dropped)} blocks from blockMapping "
+                f"(indices {lo}\u2013{hi} \u2265 num_classes={num_classes}). "
+                f"These blocks are unreachable by the model."
+            )
+            for bk, bv in sorted(dropped.items(), key=lambda x: x[1]):
+                print(f"[export]   dropped: {bk} -> {bv}")
+    else:
+        trimmed_vocab = {}
+
     config = {
         "modelName": "sparse_octree",
         "version": contract,
         "contract": contract,
         "blockVocabSize": num_classes,
-        "blockMapping": _load_block_vocab(block_vocab),
+        "blockMapping": trimmed_vocab,
         "noise3dChannels": channel_names,
         "spatialY": spatial_y,
         "splitThreshold": split_threshold,

@@ -627,6 +627,9 @@ def _train_sparse_octree_run(p: dict[str, Any]) -> None:
         batch_size=train.get("batch_size", 4),
         lr=train.get("lr", 1e-4),
         device=_resolve_device(train.get("device", "auto")),
+        # Explicit num_classes prevents auto-detect from undersizing
+        # when rare blocks are absent from the training data.
+        num_classes=train.get("num_classes", 1104),
     )
 
 
@@ -893,6 +896,10 @@ def _train_sparse_octree_v7_run(p: dict[str, Any]) -> None:
         batch_size=train.get("batch_size", 4),
         lr=train.get("lr", 1e-4),
         device=_resolve_device(train.get("device", "auto")),
+        # Explicit num_classes prevents auto-detect from undersizing
+        # when rare blocks (e.g. white_wool, zombie_head) are absent
+        # from the training data. Must match voxy_vocab.json (1104).
+        num_classes=train.get("num_classes", 1104),
     )
 
 

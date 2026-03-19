@@ -354,12 +354,36 @@ def train_sparse_octree(
     _device = torch.device(device)
     ds = SparseOctreeDataset(data_path, cache_targets=cache_targets)
 
-    # Auto-detect num_classes from the actual max block ID in the dataset
+    # Auto-detect num_classes from the actual max block ID in the dataset.
+    # Validate against the canonical Voxy vocab to prevent silent under-sizing
+    # (blocks beyond num_classes become permanently unreachable).
+    _VOCAB_PATH = Path(__file__).resolve().parents[2] / "config" / "voxy_vocab.json"
+    _vocab_size: Optional[int] = None
+    if _VOCAB_PATH.exists():
+        try:
+            import json as _json
+
+            _vmap = _json.loads(_VOCAB_PATH.read_text(encoding="utf-8"))
+            _vocab_size = max(_vmap.values()) + 1 if _vmap else None
+        except Exception:  # noqa: BLE001
+            pass
+
     if num_classes <= 0:
         raw = np.load(data_path)
         num_classes = int(raw["subchunk16"].max()) + 1
         raw.close()
-        print(f"  auto-detected num_classes={num_classes}")
+        if _vocab_size is not None and num_classes < _vocab_size:
+            print(
+                f"  WARNING: auto-detected num_classes={num_classes} from data, "
+                f"but canonical vocab has {_vocab_size} entries. "
+                f"{_vocab_size - num_classes} block(s) will be unreachable. "
+                f"Consider passing --num-classes {_vocab_size}."
+            )
+            # Upgrade to vocab size so all blocks are representable.
+            num_classes = _vocab_size
+            print(f"  Upgraded num_classes to {num_classes} (canonical vocab size)")
+        else:
+            print(f"  auto-detected num_classes={num_classes}")
 
     loader = DataLoader(ds, batch_size=batch_size, shuffle=True, collate_fn=sparse_octree_collate)
 
