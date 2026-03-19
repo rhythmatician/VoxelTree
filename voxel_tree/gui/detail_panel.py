@@ -443,7 +443,9 @@ class DetailPanel(QDockWidget):
         self._refresh_buttons()
 
         # Auto-advance: if this step succeeded and 'run from' mode is active,
-        # launch any downstream steps that are now eligible
+        # launch any downstream steps that are now eligible.
+        # If a step in the chain *failed*, abort the entire run-from chain so
+        # no downstream steps are launched (their prerequisites are now stale).
         if exit_code == 0 and self._run_from_targets:
             self._run_from_targets.discard(step_id)
             for sid in list(self._run_from_targets):
@@ -453,6 +455,14 @@ class DetailPanel(QDockWidget):
                     and self._registry.get_status(sid) not in ("running", "success")
                 ):
                     self._run_step(sid)
+        elif exit_code != 0 and step_id in self._run_from_targets:
+            n_aborted = len(self._run_from_targets) - 1  # don't count the failed step
+            self._run_from_targets.clear()
+            if n_aborted > 0:
+                self.append_log(
+                    f"[run-from] Aborting chain — {n_aborted} downstream step(s) "
+                    f"will not run because {step_id} failed."
+                )
 
         # Notify the parent window so the dashboard row refreshes
         parent = cast(_ParentInterface, self.parent())

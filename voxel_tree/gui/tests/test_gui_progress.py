@@ -283,3 +283,39 @@ def test_progress_helper_prints(capsys):
         "[PROGRESS] 0.0%",
         "[PROGRESS] 100%",
     ]
+
+
+def test_run_from_aborts_chain_on_failure(monkeypatch):
+    """When a step in the run-from chain fails, remaining targets must be cleared
+    so no downstream steps are launched (regression test for stale-prereq bug)."""
+    from PySide6.QtWidgets import QWidget
+
+    class _Parent(QWidget):
+        def __init__(self):
+            super().__init__()
+
+        def on_step_finished(self, profile, step_id, exit_code, summary):
+            pass
+
+    reg = RunRegistry("p")
+    panel = DetailPanel()
+    parent = _Parent()
+    panel.setParent(parent)
+    panel.load_profile("p", reg)
+
+    # Pretend we are mid-run-from with three steps remaining
+    panel._run_from_targets = {"step_a", "step_b", "step_c"}
+
+    # Record any calls to _run_step so we can assert none happen
+    launched: list[str] = []
+    monkeypatch.setattr(panel, "_run_step", lambda sid: launched.append(sid))
+
+    # Mark step_a as running so _on_step_finished doesn't choke
+    reg.mark_started("step_a")
+
+    # Simulate step_a finishing with a failure exit code
+    panel._on_step_finished("step_a", 1)
+
+    # The run-from chain should be empty — no further steps queued
+    assert panel._run_from_targets == set()
+    assert launched == [], "No downstream steps should have been launched after a failure"
