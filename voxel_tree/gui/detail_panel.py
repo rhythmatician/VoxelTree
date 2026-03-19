@@ -27,6 +27,7 @@ from voxel_tree.gui.step_definitions import (
     TRACK_ORDER,
     StepDef,
 )
+from voxel_tree.gui.training_summary import summarize_training_run
 
 
 class _ParentInterface(Protocol):
@@ -40,7 +41,13 @@ class _ParentInterface(Protocol):
         """Called when a step reports progress."""
         ...
 
-    def on_step_finished(self, profile_name: str, step_id: str) -> None:
+    def on_step_finished(
+        self,
+        profile_name: str,
+        step_id: str,
+        exit_code: int = 0,
+        training_summary: dict[str, str] | None = None,
+    ) -> None:
         """Called when a step completes (success or failure)."""
         ...
 
@@ -63,8 +70,8 @@ class DetailPanel(QDockWidget):
     - Live log output (QTextEdit)
     """
 
-    def __init__(self, parent: _ParentInterface | None = None) -> None:
-        super().__init__("Details", parent)  # type: ignore[arg-type]
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__("Details", parent)
         self.setAllowedAreas(
             Qt.DockWidgetArea.RightDockWidgetArea | Qt.DockWidgetArea.BottomDockWidgetArea
         )
@@ -77,6 +84,7 @@ class DetailPanel(QDockWidget):
         self._profile_name: str | None = None
         self._registry: RunRegistry | None = None
         self._workers: dict[str, RunWorker] = {}  # step_id → worker
+        self._step_log_buffers: dict[str, list[str]] = {}
         self._run_from_targets: set[str] = set()  # step_ids queued by 'run from'
         self._edit_callback = None  # callable(profile_name) → open editor
 
@@ -352,6 +360,7 @@ class DetailPanel(QDockWidget):
         worker.step_finished.connect(self._on_step_finished)
         worker.progress.connect(self._on_progress)
         self._workers[step_id] = worker
+        self._step_log_buffers[step_id] = []
         worker.start()
         self._poll_timer.start()
 
@@ -359,6 +368,10 @@ class DetailPanel(QDockWidget):
     def _on_log_line(self, step_id: str, line: str) -> None:
         # Forward the raw log output to the log panel
         self.append_log(line)
+        buffer = self._step_log_buffers.setdefault(step_id, [])
+        buffer.append(line)
+        if len(buffer) > 500:
+            del buffer[:-500]
 
         # Tight coupling: allow certain common training scripts to drive GUI metadata
         # (epoch count) so their nodes can show progress/epoch info.
@@ -397,6 +410,15 @@ class DetailPanel(QDockWidget):
     @Slot(str, int)
     def _on_step_finished(self, step_id: str, exit_code: int) -> None:
         assert self._registry is not None
+        step = STEP_BY_ID.get(step_id)
+        training_summary: dict[str, str] | None = None
+        if step and exit_code == 0 and step.phase == "train":
+            training_summary = summarize_training_run(
+                step,
+                self._step_log_buffers.get(step_id, []),
+                profile_name=self._profile_name,
+            )
+
         ts = datetime.now().strftime("%H:%M:%S")
         if exit_code == 0:
             self._registry.mark_success(step_id)
@@ -412,7 +434,9 @@ class DetailPanel(QDockWidget):
         # also clear any stored progress metadata for this step
         if self._registry:
             self._registry.set_metadata(step_id, "progress", None)
+            self._registry.set_metadata(step_id, "training_summary", training_summary)
         self._workers.pop(step_id, None)
+        self._step_log_buffers.pop(step_id, None)
         if not self._workers:
             self._poll_timer.stop()
 
@@ -434,7 +458,7 @@ class DetailPanel(QDockWidget):
         parent = cast(_ParentInterface, self.parent())
         assert self._profile_name is not None
         if hasattr(parent, "on_step_finished"):
-            parent.on_step_finished(self._profile_name, step_id)
+            parent.on_step_finished(self._profile_name, step_id, exit_code, training_summary)
 
     def _cancel(self) -> None:
         for worker in list(self._workers.values()):

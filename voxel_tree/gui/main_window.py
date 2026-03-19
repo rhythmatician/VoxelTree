@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import yaml  # noqa: F401  (reserved for future profile migrations)
 from PySide6.QtCore import Qt, QTimer, Slot
@@ -56,7 +57,7 @@ class MainWindow(QMainWindow):
         # Registry cache: profile_name → RunRegistry
         self._registries: dict[str, RunRegistry] = {}
         # Profile dict cache: profile_name → loaded YAML dict
-        self._profiles: dict[str, dict] = {}
+        self._profiles: dict[str, Any] = {}
         # Step queue for server session: list of (profile_name, step_id)
         self._step_queue: list[tuple[str, str]] = []
         # Server session queue state (step IDs to run sequentially)
@@ -142,9 +143,13 @@ class MainWindow(QMainWindow):
         steps = dag.resolve_steps() if dag is not None else None
         self._dashboard.add_profile(name, self._registries[name], steps=steps)
 
-    def get_profile_dict(self, profile_name: str) -> dict | None:
+    def get_profile_dict(self, profile_name: str) -> dict[str, Any] | None:
         """Called by DetailPanel to get CLI arguments for a step."""
         return self._profiles.get(profile_name)
+
+    def on_step_progress(self, profile_name: str, step_id: str) -> None:
+        """Refresh the dashboard row for a profile reporting live progress."""
+        self._dashboard.refresh_profile(profile_name)
 
     # ------------------------------------------------------------------
     # Slots
@@ -293,8 +298,21 @@ class MainWindow(QMainWindow):
         self._server_session_current = next_step
         self._detail.run_from_step(next_step)
 
-    def on_step_finished(self, profile_name: str | None, step_id: str) -> None:
+    def on_step_finished(
+        self,
+        profile_name: str | None,
+        step_id: str,
+        exit_code: int = 0,
+        training_summary: dict[str, str] | None = None,
+    ) -> None:
         """Called by DetailPanel when a step completes."""
+        if exit_code == 0 and training_summary:
+            QMessageBox.information(
+                self,
+                training_summary["title"],
+                training_summary["text"],
+            )
+
         if not self._server_session_active:
             return
         if step_id != self._server_session_current:

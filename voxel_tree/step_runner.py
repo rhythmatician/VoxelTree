@@ -15,6 +15,18 @@ import json
 import os
 import sys
 import traceback
+from typing import Any
+
+
+def _json_safe(value: Any) -> Any:
+    """Convert step results into JSON-serializable data."""
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    if isinstance(value, dict):
+        return {str(k): _json_safe(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(v) for v in value]
+    return str(value)
 
 
 def main() -> None:
@@ -62,7 +74,9 @@ def main() -> None:
             pass  # contracts package not available — skip check
 
     try:
-        step.run_fn(profile)
+        result = step.run_fn(profile)
+        if result is not None:
+            print(f"[STEP_RESULT]{json.dumps(_json_safe(result), sort_keys=True)}", flush=True)
     except SystemExit as exc:
         sys.exit(exc.code if exc.code is not None else 0)
     except Exception:

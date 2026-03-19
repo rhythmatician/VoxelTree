@@ -607,11 +607,14 @@ def _resolve_device(raw: str) -> str:
     """Resolve 'auto' to 'cuda' or 'cpu'; pass other values through."""
     if raw == "auto":
         import torch  # noqa: PLC0415
+
         return "cuda" if torch.cuda.is_available() else "cpu"
     return raw
 
 
 def _train_sparse_octree_run(p: dict[str, Any]) -> None:
+    import json  # noqa: PLC0415
+
     from voxel_tree.tasks.sparse_octree.train import train_sparse_octree  # noqa: PLC0415
     from voxel_tree.utils.progress import report as _report_progress  # noqa: PLC0415
 
@@ -619,7 +622,7 @@ def _train_sparse_octree_run(p: dict[str, Any]) -> None:
     train = p.get("train", {})
     npz_path = Path(data.get("v7_pairs_npz", "sparse_octree_pairs_v7.npz"))
     out_path = Path(train.get("output_dir", ".")) / _SPARSE_OCTREE_CHECKPOINT
-    train_sparse_octree(
+    result = train_sparse_octree(
         data_path=npz_path,
         out_path=out_path,
         model_variant=train.get("sparse_octree_variant", "fast"),
@@ -633,6 +636,7 @@ def _train_sparse_octree_run(p: dict[str, Any]) -> None:
         num_classes=train.get("num_classes", 1104),
         progress_callback=lambda epoch, total, _m: _report_progress(epoch, total),
     )
+    print(f"[STEP_RESULT]{json.dumps(result, sort_keys=True)}")
 
 
 def _export_sparse_octree_run(p: dict[str, Any]) -> None:
@@ -718,7 +722,9 @@ def _build_v7_pairs_run(p: dict[str, Any]) -> None:
     # Validators default to "sparse_octree_pairs_v7.npz"; without an explicit
     # --output the CLI would write to "noise_training_data/sparse_octree_pairs_v7.npz"
     # instead, causing every downstream build_pairs validator to fail.
-    output_npz = data.get("v7_pairs_npz") or data.get("v7_pairs_output") or "sparse_octree_pairs_v7.npz"
+    output_npz = (
+        data.get("v7_pairs_npz") or data.get("v7_pairs_output") or "sparse_octree_pairs_v7.npz"
+    )
     argv += ["--output", str(output_npz)]
     pairs_main(argv)
 
@@ -775,7 +781,9 @@ def _deploy_density_run(p: dict[str, Any]) -> None:
     deploy = p.get("deploy", {})
     out_dir = deploy.get("target_dir") or p.get("export", {}).get("output_dir")
     checkpoint = Path(train.get("output_dir", ".")) / _DENSITY_CHECKPOINT
-    resolved = Path(out_dir) if out_dir else Path(__file__).parent.parent / "tasks" / "density" / "model"
+    resolved = (
+        Path(out_dir) if out_dir else Path(__file__).parent.parent / "tasks" / "density" / "model"
+    )
     export_main(["--checkpoint", str(checkpoint), "--out-dir", str(resolved)])
 
 
@@ -831,7 +839,9 @@ def _deploy_biome_classifier_run(p: dict[str, Any]) -> None:
     deploy = p.get("deploy", {})
     out_dir = deploy.get("target_dir") or p.get("export", {}).get("output_dir")
     checkpoint = Path(train.get("output_dir", ".")) / _BIOME_CHECKPOINT
-    resolved = Path(out_dir) if out_dir else Path(__file__).parent.parent / "tasks" / "biome" / "model"
+    resolved = (
+        Path(out_dir) if out_dir else Path(__file__).parent.parent / "tasks" / "biome" / "model"
+    )
     export_main(["--checkpoint", str(checkpoint), "--out-dir", str(resolved)])
 
 
@@ -887,7 +897,9 @@ def _deploy_heightmap_run(p: dict[str, Any]) -> None:
     deploy = p.get("deploy", {})
     out_dir = deploy.get("target_dir") or p.get("export", {}).get("output_dir")
     checkpoint = Path(train.get("output_dir", ".")) / _HEIGHTMAP_CHECKPOINT
-    resolved = Path(out_dir) if out_dir else Path(__file__).parent.parent / "tasks" / "heightmap" / "model"
+    resolved = (
+        Path(out_dir) if out_dir else Path(__file__).parent.parent / "tasks" / "heightmap" / "model"
+    )
     export_main(["--checkpoint", str(checkpoint), "--out-dir", str(resolved)])
 
 
@@ -906,6 +918,8 @@ def _build_pairs_sparse_octree_v7_run(p: dict[str, Any]) -> None:
 
 
 def _train_sparse_octree_v7_run(p: dict[str, Any]) -> None:
+    import json  # noqa: PLC0415
+
     from voxel_tree.tasks.sparse_octree.train import train_sparse_octree  # noqa: PLC0415
     from voxel_tree.utils.progress import report as _report_progress  # noqa: PLC0415
 
@@ -913,7 +927,7 @@ def _train_sparse_octree_v7_run(p: dict[str, Any]) -> None:
     train = p.get("train", {})
     npz = data.get("v7_pairs_npz", "sparse_octree_pairs_v7.npz")
     out_path = Path(train.get("output_dir", ".")) / _SPARSE_OCTREE_V7_CHECKPOINT
-    train_sparse_octree(
+    result = train_sparse_octree(
         data_path=Path(npz),
         out_path=out_path,
         model_variant=train.get("sparse_octree_variant", "fast"),
@@ -928,6 +942,7 @@ def _train_sparse_octree_v7_run(p: dict[str, Any]) -> None:
         num_classes=train.get("num_classes", 1104),
         progress_callback=lambda epoch, total, _m: _report_progress(epoch, total),
     )
+    print(f"[STEP_RESULT]{json.dumps(result, sort_keys=True)}")
 
 
 def _export_sparse_octree_v7_run(p: dict[str, Any]) -> None:
