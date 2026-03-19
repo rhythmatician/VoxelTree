@@ -27,7 +27,7 @@ from voxel_tree.gui.step_definitions import (
     TRACK_ORDER,
     StepDef,
 )
-from voxel_tree.gui.training_summary import summarize_training_run
+from voxel_tree.gui.training_summary import summarize_build_pairs_run, summarize_training_run
 
 
 class _ParentInterface(Protocol):
@@ -435,6 +435,10 @@ class DetailPanel(QDockWidget):
                 step,
                 self._step_log_buffers.get(step_id, []),
                 profile_name=self._profile_name,
+            )
+        elif step and exit_code == 0 and step.phase == "build_pairs":
+            training_summary = summarize_build_pairs_run(
+                self._step_log_buffers.get(step_id, []),
             )
 
         ts = datetime.now().strftime("%H:%M:%S")

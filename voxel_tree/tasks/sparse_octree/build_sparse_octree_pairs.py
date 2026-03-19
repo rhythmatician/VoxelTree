@@ -131,10 +131,17 @@ def build_pairs(
     dumps_dir: Path,
     voxy_dir: Path,
     output_path: Path,
-) -> int:
+) -> tuple[int, dict[str, int]]:
     """Build and save sparse-root training pairs.
 
-    Returns number of pairs saved.
+    Returns (pairs_saved, failure_stats) where failure_stats contains:
+      - pairs_saved: total training samples written
+      - matched_sections: sections with both a dump and a Voxy NPZ
+      - total_dump_files: dump files discovered in dumps_dir
+      - total_voxy_sections: Voxy L4 sections discovered in voxy_dir/level_4
+      - skipped_no_voxy: dump files with no matching Voxy section
+      - skipped_no_dump: Voxy sections with no matching dump file
+      - total_skipped: skipped_no_voxy + skipped_no_dump
     """
     dump_files = sorted(dumps_dir.glob("section_*.json"))
     if not dump_files:
@@ -155,18 +162,22 @@ def build_pairs(
     chunk_z_list: list[int] = []
     section_y_list: list[int] = []
 
+    # Build a set of all (cx, sy, cz) keys parseable from dump files so we can
+    # detect Voxy sections that have no corresponding noise dump.
+    dump_keys: set[tuple[int, int, int]] = set()
     matched_sections = 0
-    skipped_sections = 0
+    skipped_no_voxy = 0  # dump exists, but no matching Voxy section
 
     for dump_path in dump_files:
         m = section_pattern.search(dump_path.name)
         if not m:
             continue
         cx, sy, cz = int(m.group(1)), int(m.group(2)), int(m.group(3))
+        dump_keys.add((cx, sy, cz))
 
         voxy_key = (cx, sy, cz)
         if voxy_key not in voxy_index:
-            skipped_sections += 1
+            skipped_no_voxy += 1
             continue
 
         # Load JSON — noise fields are flat 32-value arrays indexed [qx*8 + qy*4 + qz]
@@ -215,8 +226,16 @@ def build_pairs(
         print("ERROR: No pairs generated — check that dumps_dir and voxy_dir overlap.")
         sys.exit(1)
 
+    # Voxy sections for which no dump file was found.
+    skipped_no_dump = sum(1 for key in voxy_index if key not in dump_keys)
+    total_skipped = skipped_no_voxy + skipped_no_dump
+
     n = len(subchunks)
     print(f"  Total pairs: {n:,} ({matched_sections:,} sections × 8 octants)")
+    if skipped_no_voxy:
+        print(f"  Skipped (no Voxy section):  {skipped_no_voxy:,}")
+    if skipped_no_dump:
+        print(f"  Skipped (no noise dump):    {skipped_no_dump:,}")
 
     # Stack and save
     all_subchunks = np.stack(subchunks).astype(np.int32)  # (N, 16, 16, 16)
@@ -243,7 +262,17 @@ def build_pairs(
 
     size_mb = output_path.stat().st_size / (1024 * 1024)
     print(f"  Saved -> {output_path}  ({size_mb:.1f} MB)")
-    return n
+
+    failure_stats: dict[str, int] = {
+        "pairs_saved": n,
+        "matched_sections": matched_sections,
+        "total_dump_files": len(dump_files),
+        "total_voxy_sections": len(voxy_index),
+        "skipped_no_voxy": skipped_no_voxy,
+        "skipped_no_dump": skipped_no_dump,
+        "total_skipped": total_skipped,
+    }
+    return n, failure_stats
 
 
 # ---------------------------------------------------------------------------
@@ -287,12 +316,13 @@ def main(argv: list[str] | None = None) -> None:
     print(f"  Output    : {args.output}")
     print()
 
-    n = build_pairs(args.dumps, args.voxy, args.output)
+    n, failure_stats = build_pairs(args.dumps, args.voxy, args.output)
 
     print()
     print("=" * 62)
     print(f"  DONE — {n:,} pairs saved")
     print("=" * 62)
+    print(f"[STEP_RESULT]{json.dumps(failure_stats, sort_keys=True)}", flush=True)
 
 
 if __name__ == "__main__":

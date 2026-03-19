@@ -51,6 +51,72 @@ def summarize_training_run(
     return result
 
 
+def summarize_build_pairs_run(
+    log_lines: Sequence[str],
+) -> dict[str, Any] | None:
+    """Build a popup summary for a completed build_pairs step.
+
+    Parses the ``[STEP_RESULT]`` JSON emitted by build_sparse_octree_pairs.main()
+    and returns a dict with ``title`` and ``text`` keys (same shape as the
+    dict returned by :func:`summarize_training_run`).
+    """
+    result = _parse_last_build_pairs_result(log_lines)
+    if not result:
+        return None
+
+    pairs_saved = int(result.get("pairs_saved", 0))
+    matched = int(result.get("matched_sections", 0))
+    total_dumps = int(result.get("total_dump_files", 0))
+    total_voxy = int(result.get("total_voxy_sections", 0))
+    skipped_no_voxy = int(result.get("skipped_no_voxy", 0))
+    skipped_no_dump = int(result.get("skipped_no_dump", 0))
+    total_skipped = int(result.get("total_skipped", 0))
+
+    lines: list[str] = [
+        f"Pairs saved:           {pairs_saved:,}  ({matched:,} sections \u00d7 8 octants)",
+        f"Dump files found:      {total_dumps:,}",
+        f"Voxy sections found:   {total_voxy:,}",
+        f"Matched sections:      {matched:,}",
+    ]
+
+    if total_skipped > 0:
+        lines.append("")
+        lines.append(f"Failures ({total_skipped:,} total):")
+        if skipped_no_voxy > 0:
+            lines.append(
+                f"  Missing Voxy section:  {skipped_no_voxy:,}"
+                "  (dump exists, no Voxy NPZ)"
+            )
+        if skipped_no_dump > 0:
+            lines.append(
+                f"  Missing dump file:     {skipped_no_dump:,}"
+                "  (Voxy exists, no noise dump)"
+            )
+    else:
+        lines.append("")
+        lines.append("No failures \u2014 all sections matched.")
+
+    return {
+        "title": "Build pairs complete",
+        "text": "\n".join(lines),
+    }
+
+
+def _parse_last_build_pairs_result(lines: Sequence[str]) -> dict[str, Any] | None:
+    """Return the last ``[STEP_RESULT]`` payload from a build_pairs log, or None."""
+    for line in reversed(lines):
+        stripped = line.strip()
+        if stripped.startswith("[STEP_RESULT]"):
+            payload = stripped[len("[STEP_RESULT]"):]
+            try:
+                parsed = json.loads(payload)
+            except (ValueError, json.JSONDecodeError):
+                continue
+            if isinstance(parsed, dict) and "pairs_saved" in parsed:
+                return parsed
+    return None
+
+
 def _summary_lines_for_step(step: StepDef, log_lines: Sequence[str]) -> list[str]:
     track = step.track or ""
     if track == "biome_classifier":

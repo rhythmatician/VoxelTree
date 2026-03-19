@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from voxel_tree.gui.step_definitions import StepDef
-from voxel_tree.gui.training_summary import summarize_training_run
+from voxel_tree.gui.training_summary import summarize_build_pairs_run, summarize_training_run
 
 
 def _step(track: str) -> StepDef:
@@ -101,3 +101,94 @@ def test_octree_style_summary_parses_validation_metrics() -> None:
     assert "Validation accuracy: 87.5%" in summary["text"]
     assert "Occupancy recall: 80.0%" in summary["text"]
     assert "Duration: 1.50 hours" in summary["text"]
+
+
+# ---------------------------------------------------------------------------
+# summarize_build_pairs_run tests
+# ---------------------------------------------------------------------------
+
+_STEP_RESULT_ALL_MATCHED = (
+    '[STEP_RESULT]{"matched_sections": 120, "pairs_saved": 960, '
+    '"skipped_no_dump": 0, "skipped_no_voxy": 0, '
+    '"total_dump_files": 120, "total_skipped": 0, "total_voxy_sections": 120}'
+)
+
+_STEP_RESULT_SOME_FAILURES = (
+    '[STEP_RESULT]{"matched_sections": 80, "pairs_saved": 640, '
+    '"skipped_no_dump": 15, "skipped_no_voxy": 25, '
+    '"total_dump_files": 105, "total_skipped": 40, "total_voxy_sections": 95}'
+)
+
+
+def test_build_pairs_summary_no_failures() -> None:
+    summary = summarize_build_pairs_run([_STEP_RESULT_ALL_MATCHED])
+
+    assert summary is not None
+    assert summary["title"] == "Build pairs complete"
+    assert "960" in summary["text"]
+    assert "120" in summary["text"]
+    assert "No failures" in summary["text"]
+    assert "Missing" not in summary["text"]
+
+
+def test_build_pairs_summary_with_failures_shows_breakdown() -> None:
+    summary = summarize_build_pairs_run([_STEP_RESULT_SOME_FAILURES])
+
+    assert summary is not None
+    assert "Failures" in summary["text"]
+    assert "40" in summary["text"]       # total_skipped
+    assert "25" in summary["text"]       # skipped_no_voxy
+    assert "15" in summary["text"]       # skipped_no_dump
+    assert "Missing Voxy section" in summary["text"]
+    assert "Missing dump file" in summary["text"]
+
+
+def test_build_pairs_summary_only_missing_voxy() -> None:
+    log = (
+        '[STEP_RESULT]{"matched_sections": 50, "pairs_saved": 400, '
+        '"skipped_no_dump": 0, "skipped_no_voxy": 10, '
+        '"total_dump_files": 60, "total_skipped": 10, "total_voxy_sections": 50}'
+    )
+    summary = summarize_build_pairs_run([log])
+
+    assert summary is not None
+    assert "Missing Voxy section" in summary["text"]
+    assert "Missing dump file" not in summary["text"]
+
+
+def test_build_pairs_summary_only_missing_dump() -> None:
+    log = (
+        '[STEP_RESULT]{"matched_sections": 50, "pairs_saved": 400, '
+        '"skipped_no_dump": 7, "skipped_no_voxy": 0, '
+        '"total_dump_files": 50, "total_skipped": 7, "total_voxy_sections": 57}'
+    )
+    summary = summarize_build_pairs_run([log])
+
+    assert summary is not None
+    assert "Missing dump file" in summary["text"]
+    assert "Missing Voxy section" not in summary["text"]
+
+
+def test_build_pairs_summary_returns_none_without_step_result() -> None:
+    summary = summarize_build_pairs_run(
+        ["Building v7 training pairs", "  Found 100 section dump files", "  DONE"]
+    )
+    assert summary is None
+
+
+def test_build_pairs_summary_uses_last_step_result_line() -> None:
+    """When multiple [STEP_RESULT] lines appear, the last one wins."""
+    early = (
+        '[STEP_RESULT]{"matched_sections": 10, "pairs_saved": 80, '
+        '"skipped_no_dump": 0, "skipped_no_voxy": 0, '
+        '"total_dump_files": 10, "total_skipped": 0, "total_voxy_sections": 10}'
+    )
+    final = (
+        '[STEP_RESULT]{"matched_sections": 200, "pairs_saved": 1600, '
+        '"skipped_no_dump": 0, "skipped_no_voxy": 0, '
+        '"total_dump_files": 200, "total_skipped": 0, "total_voxy_sections": 200}'
+    )
+    summary = summarize_build_pairs_run([early, final])
+
+    assert summary is not None
+    assert "1,600" in summary["text"]
