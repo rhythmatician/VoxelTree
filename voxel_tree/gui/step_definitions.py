@@ -592,15 +592,12 @@ _SPARSE_OCTREE_V7_CHECKPOINT = "sparse_octree_v7_model.pt"
 
 
 def _build_pairs_sparse_octree_run(p: dict[str, Any]) -> None:
-    from voxel_tree.tasks.octree.build_pairs import (
-        main as pairs_main,
-    )  # noqa: PLC0415
-
+    """Validate v7 pairs NPZ exists (pairs built by shared build_v7_pairs)."""
     data = p.get("data", {})
-    argv = ["--sparse-octree", "--val-split", str(data.get("val_split", 0.1))]
-    if data.get("data_dir"):
-        argv += ["--data-dir", str(data["data_dir"])]
-    pairs_main(argv)
+    npz = Path(data.get("v7_pairs_npz", "sparse_octree_pairs_v7.npz"))
+    if not npz.exists():
+        raise FileNotFoundError(f"v7 pairs NPZ not found: {npz}")
+    print(f"[sparse_octree] v7 pairs validated: {npz}")
 
 
 def _resolve_device(raw: str) -> str:
@@ -1011,7 +1008,7 @@ MODEL_TRACKS: list[ModelTrack] = [
         train_factory=_train_sparse_octree_run,
         export_factory=_export_sparse_octree_run,
         deploy_factory=_deploy_sparse_octree_run,
-        build_pairs_consumes=frozenset({"voxy_db", "noise_dumps"}),
+        build_pairs_consumes=frozenset({"v7_pairs_npz"}),
         checkpoint_filename=_SPARSE_OCTREE_CHECKPOINT,
         contract_name="sparse_octree",
         contract_revision=None,  # None = always track latest revision
@@ -1082,7 +1079,7 @@ MODEL_TRACKS: list[ModelTrack] = [
         build_pairs_consumes=frozenset({"v7_pairs_npz"}),
         checkpoint_filename=_SPARSE_OCTREE_V7_CHECKPOINT,
         contract_name="sparse_octree",
-        contract_revision=2,
+        contract_revision=3,
     ),
 ]
 

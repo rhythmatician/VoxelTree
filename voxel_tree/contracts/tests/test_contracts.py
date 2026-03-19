@@ -339,7 +339,7 @@ class TestTrackAlignment:
     def test_stale_track_detected(self, _fake_track):
         from voxel_tree.contracts.registry import check_track_alignment
 
-        # sparse_octree has rev 0, 1, 2; pinning to 0 → stale (latest is 2)
+        # sparse_octree has rev 0, 1, 2, 3; pinning to 0 → stale (latest is 3)
         tracks = [_fake_track("old_octree", "sparse_octree", 0)]
         issues = check_track_alignment(tracks)
         assert len(issues) >= 1
@@ -347,9 +347,9 @@ class TestTrackAlignment:
         assert len(stale_issues) == 1
         assert stale_issues[0].track_id == "old_octree"
         assert stale_issues[0].current_revision == 0
-        assert stale_issues[0].latest_revision_ == 2
+        assert stale_issues[0].latest_revision_ == 3
         assert "rev 0" in stale_issues[0].message
-        assert "rev 2" in stale_issues[0].message
+        assert "rev 3" in stale_issues[0].message
 
     def test_missing_contract_is_error(self, _fake_track):
         from voxel_tree.contracts.registry import check_track_alignment
@@ -392,8 +392,8 @@ class TestTrackAlignment:
         """Smoke test: the actual MODEL_TRACKS should have no errors.
 
         The ``sparse_octree`` track is intentionally pinned to rev 0
-        (legacy v6 pipeline).  ``sparse_octree_v7`` is pinned to rev 2
-        (the actual v7 contract) and should always be aligned.
+        (legacy v6 pipeline).  ``sparse_octree_v7`` is pinned to rev 3
+        (the v7 + position-bits contract) and should always be aligned.
         Only ``sparse_octree`` is expected to be stale.
         """
         from voxel_tree.contracts.registry import check_track_alignment
