@@ -31,6 +31,9 @@ Output
   biome_ids            : (N, 4, 2, 4)      int32   — biome index per quart cell
   heightmap_surface    : (N, 16, 16)       int32   — WORLD_SURFACE_WG heights (x-major)
   heightmap_ocean_floor: (N, 16, 16)       int32   — OCEAN_FLOOR_WG heights (x-major)
+    chunk_x              : (N,)              int32   — chunk X coordinate
+    chunk_z              : (N,)              int32   — chunk Z coordinate
+    section_y            : (N,)              int32   — vertical section index (block_y = section_y * 16)
 
 Usage
 -----
@@ -148,6 +151,9 @@ def build_pairs(
     biome_slices: list[np.ndarray] = []  # each (4, 2, 4) int32
     hm_surface_slices: list[np.ndarray] = []  # each (16, 16) int32
     hm_ocean_slices: list[np.ndarray] = []  # each (16, 16) int32
+    chunk_x_list: list[int] = []
+    chunk_z_list: list[int] = []
+    section_y_list: list[int] = []
 
     matched_sections = 0
     skipped_sections = 0
@@ -201,6 +207,9 @@ def build_pairs(
             biome_slices.append(biome_arr)
             hm_surface_slices.append(hm_surface)
             hm_ocean_slices.append(hm_ocean)
+            chunk_x_list.append(cx)
+            chunk_z_list.append(cz)
+            section_y_list.append(sy)
 
     if not subchunks:
         print("ERROR: No pairs generated — check that dumps_dir and voxy_dir overlap.")
@@ -215,6 +224,9 @@ def build_pairs(
     all_biome_ids = np.stack(biome_slices).astype(np.int32)  # (N, 4, 2, 4)
     all_hm_surface = np.stack(hm_surface_slices).astype(np.int32)  # (N, 16, 16)
     all_hm_ocean = np.stack(hm_ocean_slices).astype(np.int32)  # (N, 16, 16)
+    all_chunk_x = np.array(chunk_x_list, dtype=np.int32)  # (N,)
+    all_chunk_z = np.array(chunk_z_list, dtype=np.int32)  # (N,)
+    all_section_y = np.array(section_y_list, dtype=np.int32)  # (N,)
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     np.savez_compressed(
@@ -224,6 +236,9 @@ def build_pairs(
         biome_ids=all_biome_ids,
         heightmap_surface=all_hm_surface,
         heightmap_ocean_floor=all_hm_ocean,
+        chunk_x=all_chunk_x,
+        chunk_z=all_chunk_z,
+        section_y=all_section_y,
     )
 
     size_mb = output_path.stat().st_size / (1024 * 1024)
