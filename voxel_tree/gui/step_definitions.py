@@ -925,8 +925,25 @@ def _export_sparse_octree_v7_run(p: dict[str, Any]) -> None:
 
 
 def _deploy_sparse_octree_v7_run(p: dict[str, Any]) -> None:
-    """Deploy sparse_octree_v7 (re-export to deploy target dir)."""
-    _export_sparse_octree_v7_run(p)
+    """Deploy sparse_octree_v7 (re-export directly into the deploy target dir)."""
+    from voxel_tree.tasks.sparse_octree.export_sparse_octree import (
+        export_sparse_octree,
+    )  # noqa: PLC0415
+
+    train = p.get("train", {})
+    deploy = p.get("deploy", {})
+    out_dir = deploy.get("target_dir") or p.get("export", {}).get("output_dir")
+    export_sparse_octree(
+        checkpoint=Path(train.get("output_dir", ".")) / _SPARSE_OCTREE_V7_CHECKPOINT,
+        out_dir=(
+            Path(out_dir)
+            if out_dir
+            else Path(__file__).parent.parent / "tasks" / "sparse_octree" / "model"
+        ),
+        n3d=13,
+        spatial_y=2,
+        hidden=train.get("sparse_octree_hidden", 80),
+    )
 
 
 # ═══════════════════════════════════════════════════════════════════════════
