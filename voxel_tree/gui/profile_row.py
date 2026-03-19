@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from graphlib import TopologicalSorter
+from pathlib import Path
 
-from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen
+from PySide6.QtCore import QByteArray, QMimeData, QPoint, Qt, Signal
+from PySide6.QtGui import QColor, QCursor, QDrag, QPainter, QPainterPath, QPen, QPixmap
+from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QMenu, QPushButton, QSizePolicy, QWidget
 
 from voxel_tree.gui.run_registry import RunRegistry
@@ -19,6 +21,102 @@ _ROW_GAP = 8  # vertical gap between rows
 _COL_W = _NODE_W + _COL_GAP
 _ROW_H = _NODE_H + _ROW_GAP
 _V_PAD = 6  # vertical padding inside the nodes container
+
+_ASSET_DIR = Path(__file__).resolve().parent / "assets"
+# MIME type used for drag-and-drop profile reordering
+MIME_TYPE_PROFILE = "application/x-voxeltree-profile"
+
+
+def _make_drag_handle_pixmap(size: int = 18, color: str = "#666666") -> QPixmap:
+    """Render the drag-handle SVG in *color* at *size*×*size* pixels."""
+    svg_path = _ASSET_DIR / "drag-handle-svgrepo-com.svg"
+    svg_bytes = svg_path.read_bytes().decode("utf-8")
+    # Replace the dark default fill with the requested colour
+    svg_bytes = svg_bytes.replace('fill="#121923"', f'fill="{color}"')
+    renderer = QSvgRenderer(QByteArray(svg_bytes.encode()))
+    pix = QPixmap(size, size)
+    pix.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pix)
+    renderer.render(painter)
+    painter.end()
+    return pix
+
+
+class DragHandle(QWidget):
+    """Small drag-handle widget that initiates a QDrag for row reordering.
+
+    The parent ProfileRow's *profile_name* is encoded into the MIME data so
+    that the receiving container knows which row is being dragged.
+    """
+
+    def __init__(self, profile_name: str, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.profile_name = profile_name
+        self._drag_start: QPoint | None = None
+
+        self.setFixedSize(20, 40)
+        self.setCursor(QCursor(Qt.CursorShape.SizeVerCursor))
+        self.setToolTip("Drag to reorder")
+
+        # Pre-render both states
+        self._pix_normal = _make_drag_handle_pixmap(size=16, color="#555555")
+        self._pix_hover = _make_drag_handle_pixmap(size=16, color="#aaaaaa")
+        self._hovered = False
+
+    # ------------------------------------------------------------------
+    def enterEvent(self, event) -> None:
+        self._hovered = True
+        self.update()
+        super().enterEvent(event)
+
+    def leaveEvent(self, event) -> None:
+        self._hovered = False
+        self.update()
+        super().leaveEvent(event)
+
+    def paintEvent(self, event) -> None:
+        pix = self._pix_hover if self._hovered else self._pix_normal
+        painter = QPainter(self)
+        x = (self.width() - pix.width()) // 2
+        y = (self.height() - pix.height()) // 2
+        painter.drawPixmap(x, y, pix)
+
+    def mousePressEvent(self, event) -> None:
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._drag_start = event.pos()
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event) -> None:
+        if self._drag_start is None:
+            return
+        if (event.pos() - self._drag_start).manhattanLength() < 6:
+            return
+
+        # Build drag pixmap: a small translucent badge with the profile name
+        badge = QPixmap(160, 28)
+        badge.fill(QColor(0, 0, 0, 0))
+        p = QPainter(badge)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setBrush(QColor("#2a4a6e"))
+        p.setPen(QColor("#5a9aff"))
+        p.drawRoundedRect(0, 0, badge.width() - 1, badge.height() - 1, 5, 5)
+        p.setPen(QColor("#cce0ff"))
+        p.drawText(badge.rect(), Qt.AlignmentFlag.AlignCenter, self.profile_name)
+        p.end()
+
+        mime = QMimeData()
+        mime.setData(MIME_TYPE_PROFILE, QByteArray(self.profile_name.encode("utf-8")))
+
+        drag = QDrag(self)
+        drag.setMimeData(mime)
+        drag.setPixmap(badge)
+        drag.setHotSpot(QPoint(badge.width() // 2, badge.height() // 2))
+        drag.exec(Qt.DropAction.MoveAction)
+        self._drag_start = None
+
+    def mouseReleaseEvent(self, event) -> None:
+        self._drag_start = None
+        super().mouseReleaseEvent(event)
 
 
 def _compute_dag_layout(
@@ -140,6 +238,11 @@ class ProfileRow(QWidget):
         layout = QHBoxLayout(self)
         layout.setContentsMargins(8, 6, 8, 6)
         layout.setSpacing(0)
+
+        # Drag handle (leftmost)
+        handle = DragHandle(self.profile_name, self)
+        layout.addWidget(handle)
+        layout.addSpacing(4)
 
         # Profile name label
         name_lbl = QLabel(self.profile_name)

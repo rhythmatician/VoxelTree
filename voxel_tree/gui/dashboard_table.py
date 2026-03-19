@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Signal
+from PySide6.QtGui import QColor, QPainter, QPen
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QPushButton,
@@ -12,9 +13,162 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from voxel_tree.gui.profile_row import ProfileRow
+from voxel_tree.gui.profile_editor import save_profile_order
+from voxel_tree.gui.profile_row import MIME_TYPE_PROFILE, ProfileRow
 from voxel_tree.gui.run_registry import RunRegistry
 from voxel_tree.gui.step_definitions import StepDef
+
+
+class _RowsContainer(QWidget):
+    """VBox container that accepts drag-and-drop reordering of ProfileRow children.
+
+    Emits ``order_changed`` with the new ordered list of profile names whenever the
+    user drops a row into a different position.
+    """
+
+    order_changed: Signal = Signal(list)  # list[str]
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setAcceptDrops(True)
+        self.setStyleSheet("background: #1a1a1a;")
+
+        self._layout = QVBoxLayout(self)
+        self._layout.setContentsMargins(0, 4, 0, 4)
+        self._layout.setSpacing(2)
+        self._layout.addStretch()  # keeps rows pushed to the top
+
+        self._order: list[str] = []
+        self._name_to_widget: dict[str, QWidget] = {}
+        self._drop_line_y: int | None = None
+
+    # ------------------------------------------------------------------
+    # Row management
+    # ------------------------------------------------------------------
+
+    def add_row(self, name: str, widget: QWidget) -> None:
+        """Append *widget* for *name* at the end (before the trailing stretch)."""
+        idx = self._layout.count() - 1  # just before stretch
+        self._layout.insertWidget(idx, widget)
+        self._order.append(name)
+        self._name_to_widget[name] = widget
+
+    def insert_row(self, idx: int, name: str, widget: QWidget) -> None:
+        """Insert *widget* for *name* at display position *idx*."""
+        self._layout.insertWidget(idx, widget)
+        self._order.insert(idx, name)
+        self._name_to_widget[name] = widget
+
+    def remove_row(self, name: str) -> None:
+        """Remove the row for *name*, deleting the widget."""
+        widget = self._name_to_widget.pop(name, None)
+        if widget:
+            self._layout.removeWidget(widget)
+            widget.deleteLater()
+        if name in self._order:
+            self._order.remove(name)
+
+    def move_row(self, name: str, to_idx: int) -> None:
+        """Move an already-added row to position *to_idx* without deleting it."""
+        if name not in self._name_to_widget:
+            return
+        cur_idx = self._order.index(name)
+        if cur_idx == to_idx:
+            return
+        widget = self._name_to_widget[name]
+        self._layout.removeWidget(widget)
+        self._order.pop(cur_idx)
+        if to_idx > cur_idx:
+            to_idx -= 1
+        self._layout.insertWidget(to_idx, widget)
+        self._order.insert(to_idx, name)
+
+    def current_order(self) -> list[str]:
+        """Return the current display order of profile names."""
+        return list(self._order)
+
+    # ------------------------------------------------------------------
+    # Drag-and-drop
+    # ------------------------------------------------------------------
+
+    def dragEnterEvent(self, event) -> None:  # noqa: N802
+        if event.mimeData().hasFormat(MIME_TYPE_PROFILE):
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dragMoveEvent(self, event) -> None:  # noqa: N802
+        if event.mimeData().hasFormat(MIME_TYPE_PROFILE):
+            drop_idx = self._find_drop_index(event.pos().y())
+            self._drop_line_y = self._y_for_drop_index(drop_idx)
+            self.update()
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dragLeaveEvent(self, event) -> None:  # noqa: N802
+        self._drop_line_y = None
+        self.update()
+
+    def dropEvent(self, event) -> None:  # noqa: N802
+        self._drop_line_y = None
+        self.update()
+
+        if not event.mimeData().hasFormat(MIME_TYPE_PROFILE):
+            event.ignore()
+            return
+
+        profile_name = bytes(event.mimeData().data(MIME_TYPE_PROFILE)).decode("utf-8")
+        if profile_name not in self._name_to_widget:
+            event.ignore()
+            return
+
+        target_idx = self._find_drop_index(event.pos().y())
+        src_idx = self._order.index(profile_name)
+
+        # Dropped in the same logical slot — no-op
+        if target_idx == src_idx or target_idx == src_idx + 1:
+            event.ignore()
+            return
+
+        widget = self._name_to_widget[profile_name]
+        self._layout.removeWidget(widget)
+        self._order.pop(src_idx)
+        if target_idx > src_idx:
+            target_idx -= 1
+        self._layout.insertWidget(target_idx, widget)
+        self._order.insert(target_idx, profile_name)
+
+        event.acceptProposedAction()
+        self.order_changed.emit(list(self._order))
+
+    def _find_drop_index(self, y: int) -> int:
+        """Return the insertion index (0…len) for a drop at y-coordinate *y*."""
+        for i, name in enumerate(self._order):
+            w = self._name_to_widget.get(name)
+            if w and y < w.y() + w.height() // 2:
+                return i
+        return len(self._order)
+
+    def _y_for_drop_index(self, idx: int) -> int:
+        """Return the y pixel position at which to draw the drop-indicator line."""
+        if idx < len(self._order):
+            w = self._name_to_widget.get(self._order[idx])
+            if w:
+                return w.y() - 1
+        if self._order:
+            w = self._name_to_widget.get(self._order[-1])
+            if w:
+                return w.y() + w.height() + 1
+        return 4
+
+    def paintEvent(self, event) -> None:  # noqa: N802
+        super().paintEvent(event)
+        if self._drop_line_y is None:
+            return
+        p = QPainter(self)
+        p.setPen(QPen(QColor("#5a9aff"), 2))
+        p.drawLine(8, self._drop_line_y, self.width() - 8, self._drop_line_y)
 
 
 class DashboardTable(QWidget):
@@ -51,12 +205,8 @@ class DashboardTable(QWidget):
         scroll.setWidgetResizable(True)
         scroll.setStyleSheet("QScrollArea { border: none; background: #1a1a1a; }")
 
-        self._rows_container = QWidget()
-        self._rows_container.setStyleSheet("background: #1a1a1a;")
-        self._rows_layout = QVBoxLayout(self._rows_container)
-        self._rows_layout.setContentsMargins(0, 4, 0, 4)
-        self._rows_layout.setSpacing(2)
-        self._rows_layout.addStretch()  # pushes rows to the top
+        self._rows_container = _RowsContainer()
+        self._rows_container.order_changed.connect(self._on_order_changed)
 
         scroll.setWidget(self._rows_container)
         root.addWidget(scroll, stretch=1)
@@ -126,8 +276,7 @@ class DashboardTable(QWidget):
         row.setStyleSheet("ProfileRow { background: #232323; border-bottom: 1px solid #2e2e2e; }")
 
         # Insert before the stretch item at the end
-        count = self._rows_layout.count()
-        self._rows_layout.insertWidget(count - 1, row)
+        self._rows_container.add_row(profile_name, row)
         self._rows[profile_name] = row
 
     def update_profile_steps(self, profile_name: str, steps: list[StepDef] | None) -> None:
@@ -141,16 +290,18 @@ class DashboardTable(QWidget):
         if row is None:
             return
         registry = row.registry
-        self._rows_layout.removeWidget(row)
-        row.deleteLater()
+        # Remember position so the rebuilt row lands in the same slot
+        order = self._rows_container.current_order()
+        idx = order.index(profile_name) if profile_name in order else None
+        self._rows_container.remove_row(profile_name)
         del self._rows[profile_name]
         self.add_profile(profile_name, registry, steps=steps)
+        if idx is not None:
+            self._rows_container.move_row(profile_name, idx)
 
     def remove_profile(self, profile_name: str) -> None:
-        row = self._rows.pop(profile_name, None)
-        if row:
-            self._rows_layout.removeWidget(row)
-            row.deleteLater()
+        self._rows.pop(profile_name, None)
+        self._rows_container.remove_row(profile_name)
 
     def refresh_profile(self, profile_name: str) -> None:
         row = self._rows.get(profile_name)
@@ -162,7 +313,11 @@ class DashboardTable(QWidget):
             row.refresh()
 
     def profile_names(self) -> list[str]:
-        return list(self._rows.keys())
+        return self._rows_container.current_order()
+
+    def _on_order_changed(self, new_order: list[str]) -> None:
+        """Persist the new order whenever the user drag-drops a row."""
+        save_profile_order(new_order)
 
     # ------------------------------------------------------------------
     # Compatibility helpers

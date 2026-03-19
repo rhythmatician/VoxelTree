@@ -16,6 +16,7 @@ from voxel_tree.gui.profile_editor import (
     delete_profile,
     list_profiles,
     load_profile,
+    load_profile_order,
 )
 from voxel_tree.gui.run_registry import RunRegistry
 from voxel_tree.gui.server_manager import ServerManager
@@ -117,7 +118,12 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
 
     def _load_all_profiles(self) -> None:
-        for name in list_profiles():
+        all_names = set(list_profiles())
+        saved_order = load_profile_order()
+        # Profiles that appear in the saved order come first; the rest follow alphabetically
+        ordered = [n for n in saved_order if n in all_names]
+        remaining = sorted(all_names - set(ordered))
+        for name in ordered + remaining:
             self._load_profile(name)
 
     def _load_profile(self, name: str) -> None:

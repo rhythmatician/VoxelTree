@@ -77,3 +77,5 @@ tools/data-harvester/bin/
 *.cpython-314-pytest-9.0.2.pyc.*
 tools/fabric-server/runtime/train/
 tools/fabric-server/runtime/validate/
+profile_order.json
+tools/fabric-server/runtime/crash-reports/

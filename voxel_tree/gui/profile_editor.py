@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import shutil
 from pathlib import Path
 
@@ -44,6 +45,7 @@ def _find_project_root(start: Path) -> Path:
 _PROJECT_ROOT = _find_project_root(Path(__file__).resolve().parent)
 _PROFILES_DIR = _PROJECT_ROOT / "profiles"
 _RUNS_DIR = _PROJECT_ROOT / "runs"
+_ORDER_FILE = _PROJECT_ROOT / "profile_order.json"
 
 # Default profile structure — used when creating a new profile
 _DEFAULT_PROFILE: dict = {
@@ -100,6 +102,26 @@ def list_profiles() -> list[str]:
     """Return sorted list of profile names (stems of *.yaml in profiles/)."""
     _PROFILES_DIR.mkdir(parents=True, exist_ok=True)
     return sorted(p.stem for p in _PROFILES_DIR.glob("*.yaml"))
+
+
+def load_profile_order() -> list[str]:
+    """Return the persisted display order for profiles (may be empty or incomplete)."""
+    if _ORDER_FILE.exists():
+        try:
+            data = json.loads(_ORDER_FILE.read_text(encoding="utf-8"))
+            if isinstance(data, list):
+                return [str(x) for x in data]
+        except Exception:
+            pass
+    return []
+
+
+def save_profile_order(order: list[str]) -> None:
+    """Persist the profile display order to disk."""
+    try:
+        _ORDER_FILE.write_text(json.dumps(order, indent=2), encoding="utf-8")
+    except Exception:
+        pass
 
 
 def delete_profile(profile_name: str) -> bool:
