@@ -617,46 +617,11 @@ def _distill_sparse_octree_run(p: dict[str, Any]) -> None:
     )
 
 
-# ---------------------------------------------------------------------------
-# Step runners — v7 Data Acquisition
-# ---------------------------------------------------------------------------
-
-
-def _dumpnoise_v7_run(p: dict[str, Any]) -> None:
-    """Dump v7 noise fields (15 RouterField channels, 4×4×4) via RCON."""
-    from voxel_tree.gui.server_manager import get_rcon_settings  # noqa: PLC0415
-    from voxel_tree.preprocessing.cli import main as cli_main  # noqa: PLC0415
-
-    world = p.get("world", {})
-    rcon = get_rcon_settings()
-    rcon_timeout = p.get("rcon", {}).get("timeout", 3600)
-    try:
-        cli_main(
-            [
-                "dumpnoise",
-                "--v7",
-                "--radius",
-                str(world.get("radius", 2048)),
-                "--password",
-                str(rcon["password"]),
-                "--host",
-                str(rcon["host"]),
-                "--port",
-                str(rcon["port"]),
-                "--timeout",
-                str(rcon_timeout),
-            ]
-        )
-    except SystemExit as e:
-        if e.code != 0:
-            raise RuntimeError(f"Dumpnoise v7 failed with exit code {e.code}") from e
-
-
 def _build_v7_pairs_run(p: dict[str, Any]) -> None:
-    """Build v7 training pairs NPZ from v7 noise dumps + Voxy L4 sections.
+    """Build v7 training pairs NPZ from noise dumps + Voxy L4 sections.
 
     Requires both:
-      - v7 noise dumps  (section_*.json from dumpnoise_v7)
+      - noise dumps  (section_*.json from dumpnoise)
       - Voxy L4 data    (voxy_L4_*.npz from harvest)
 
     Voxy dir resolution mirrors ``_harvest_run``:
@@ -1041,17 +1006,6 @@ _DATA_ACQ_STEPS: list[StepDef] = [
         produces=frozenset({"octree_with_heights"}),
         consumes=frozenset({"octree_npz", "noise_dumps"}),
     ),
-    # ── v7 data acquisition ───────────────────────────────────────────
-    StepDef(
-        id="dumpnoise_v7",
-        label="Noise·v7",
-        prereqs=[],
-        run_fn=_dumpnoise_v7_run,
-        server_required=True,
-        phase="data_acq",
-        produces=frozenset({"v7_noise_dumps"}),
-        consumes=frozenset(),
-    ),
     StepDef(
         id="build_v7_pairs",
         label="Pairs·v7",
@@ -1059,7 +1013,7 @@ _DATA_ACQ_STEPS: list[StepDef] = [
         run_fn=_build_v7_pairs_run,
         phase="data_acq",
         produces=frozenset({"v7_pairs_npz"}),
-        consumes=frozenset({"v7_noise_dumps", "voxy_db"}),
+        consumes=frozenset({"noise_dumps", "voxy_db"}),
     ),
 ]
 

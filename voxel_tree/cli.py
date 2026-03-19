@@ -189,10 +189,13 @@ def _cmd_server(action: str, role: str | None) -> None:
                 file=sys.stderr,
             )
             sys.exit(1)
-        print(f"[server] java -jar {_JAR_PATH.name} --nogui  (cwd: {_RUNTIME_DIR})")
+        _JVM_FLAGS = ["-Xmx6g", "-Xms2g", "-XX:+UseZGC"]
+        print(
+            f"[server] java {' '.join(_JVM_FLAGS)} -jar {_JAR_PATH.name} --nogui  (cwd: {_RUNTIME_DIR})"
+        )
         # Run in foreground so Ctrl-C cleanly stops the server.
         result = subprocess.run(
-            ["java", "-jar", str(_JAR_PATH), "--nogui"],
+            ["java", *_JVM_FLAGS, "-jar", str(_JAR_PATH), "--nogui"],
             cwd=str(_RUNTIME_DIR),
         )
         sys.exit(result.returncode)

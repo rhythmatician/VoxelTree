@@ -2,7 +2,7 @@
 
 Invoked by ``RunWorker`` as::
 
-    python -m VoxelTree.step_runner <step_id>
+    python -m voxel_tree.step_runner <step_id>
 
 The profile dict is read as JSON from **stdin**.  The step's ``run_fn``
 is looked up from the step registry and called directly — no argparse
@@ -19,7 +19,7 @@ import traceback
 
 def main() -> None:
     if len(sys.argv) < 2:
-        print("usage: python -m VoxelTree.step_runner <step_id>", file=sys.stderr)
+        print("usage: python -m voxel_tree.step_runner <step_id>", file=sys.stderr)
         sys.exit(2)
 
     step_id = sys.argv[1]

@@ -1,6 +1,6 @@
 """run_worker.py — QThread-based subprocess runner for pipeline steps.
 
-Steps are executed via the ``VoxelTree.step_runner`` module in a child
+Steps are executed via the ``voxel_tree.step_runner`` module in a child
 process.  The step's ``run_fn`` is called directly — no CLI arg-building,
 no argparse round-trip.  The profile dict is passed as JSON on stdin.
 """
@@ -19,7 +19,7 @@ from PySide6.QtCore import QThread, Signal
 class RunWorker(QThread):
     """Runs a single pipeline step as a subprocess.
 
-    The child process executes ``python -m VoxelTree.step_runner <step_id>``
+    The child process executes ``python -m voxel_tree.step_runner <step_id>``
     and receives the profile dict as JSON on stdin.  stdout/stderr are
     captured and forwarded as ``log_line`` signals.
 
@@ -58,7 +58,7 @@ class RunWorker(QThread):
     def run(self) -> None:  # called by QThread.start()
         self.step_started.emit(self.step_id)
         try:
-            cmd = [sys.executable, "-m", "VoxelTree.step_runner", self.step_id]
+            cmd = [sys.executable, "-m", "voxel_tree.step_runner", self.step_id]
             self._proc = subprocess.Popen(
                 cmd,
                 stdin=subprocess.PIPE,

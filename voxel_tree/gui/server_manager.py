@@ -332,15 +332,18 @@ class ServerManager(QObject):
             return
 
         self._set_status("starting")
+        _JVM_FLAGS = ["-Xmx6g", "-Xms2g", "-XX:+UseZGC"]
         self._process.setWorkingDirectory(str(_RUNTIME_DIR))
-        self._process.start("java", ["-jar", str(_JAR_PATH), "--nogui"])
+        self._process.start("java", [*_JVM_FLAGS, "-jar", str(_JAR_PATH), "--nogui"])
 
         if not self._process.waitForStarted(5000):
             self._set_status("stopped")
             self.log_line.emit("[Server] ERROR: Failed to launch JVM (is Java installed?)")
             return
 
-        self.log_line.emit(f"[Server] Launched: java -jar {_JAR_PATH.name} --nogui")
+        self.log_line.emit(
+            f"[Server] Launched: java {' '.join(_JVM_FLAGS)} -jar {_JAR_PATH.name} --nogui"
+        )
         self.log_line.emit(f"[Server] Runtime: {_RUNTIME_DIR}")
         self.log_line.emit("[Server] Waiting for RCON to become available…")
 
