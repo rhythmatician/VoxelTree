@@ -639,7 +639,7 @@ def _step_extract_octree(args: argparse.Namespace) -> bool:
     data_dir: Path = getattr(args, "data_dir", DEFAULT_DATA_DIR)
     print(f"Found {len(dbs)} Voxy database(s), output \u2192 {data_dir}")
 
-    from voxel_tree.tasks.extract_octree_data import main as _extract_main
+    from voxel_tree.tasks.octree.extract_octree_data import main as _extract_main
 
     extract_args = [
         *[str(d) for d in dbs],

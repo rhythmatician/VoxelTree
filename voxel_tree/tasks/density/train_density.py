@@ -14,9 +14,11 @@ The model operates **per quart cell** — each sample is one (field_0 … field_
 Training data
 -------------
   Reads ``sparse_octree_pairs_v7.npz`` produced by ``build_sparse_octree_pairs.py``.
-  ``noise_3d`` has shape (N, 15, 4, 4, 4).  We extract:
-    - Input  channels 0–5  (climate)           → flatten to (N*64, 6)
-    - Target channels 6, 7 (psl, final_density) → flatten to (N*64, 2)
+  ``noise_3d`` has shape (N, C, qx, qy, qz).  C >= 8 channels.
+  We extract:
+    - Input  channels 0–5  (first 6)             → flatten to (N*S, 6)
+    - Target channels 6, 7 (psl, final_density) → flatten to (N*S, 2)
+  where S = qx*qy*qz (32 for v7 data, 64 for legacy).
 
 Model output
 ------------
@@ -104,20 +106,25 @@ def load_data(npz_path: Path) -> tuple[torch.Tensor, torch.Tensor]:
     Returns (inputs, targets) where:
         inputs:  (M, 6) float32  — climate fields per quart cell
         targets: (M, 2) float32  — (preliminary_surface_level, final_density)
-    M = N_sections * 64 (4×4×4 quart cells per section).
+    M = N_sections * S (S = spatial cells per section).
     """
     print(f"  Loading {npz_path} ...")
     with np.load(npz_path) as data:
-        noise_3d = data["noise_3d"]  # (N, 15, 4, 4, 4) float32
+        noise_3d = data["noise_3d"]  # (N, C, qx, qy, qz) float32
 
     n = noise_3d.shape[0]
-    assert noise_3d.shape[1] == 15, f"Expected 15 channels, got {noise_3d.shape[1]}"
+    n_ch = noise_3d.shape[1]
+    # Need at least 8 channels: 0-5 for input, 6-7 for targets.
+    # v7 dumps have 13 cave-density channels; legacy had 15 RouterField channels.
+    assert n_ch >= 8, (
+        f"Need >= 8 noise channels (6 input + 2 target), got {n_ch}"
+    )
 
     # Extract climate (input) and density (target) channels
-    clim = noise_3d[:, CLIMATE_INDICES, :, :, :]  # (N, 6, 4, 4, 4)
-    dens = noise_3d[:, TARGET_INDICES, :, :, :]  # (N, 2, 4, 4, 4)
+    clim = noise_3d[:, CLIMATE_INDICES, :, :, :]  # (N, 6, qx, qy, qz)
+    dens = noise_3d[:, TARGET_INDICES, :, :, :]  # (N, 2, qx, qy, qz)
 
-    # Flatten spatial dims: (N, C, 4, 4, 4) → (N, C, 64) → (N*64, C)
+    # Flatten spatial dims: (N, C, qx, qy, qz) → (N, C, S) → (N*S, C)
     clim_flat = clim.reshape(n, INPUT_SIZE, -1).transpose(0, 2, 1).reshape(-1, INPUT_SIZE)
     dens_flat = dens.reshape(n, OUTPUT_SIZE, -1).transpose(0, 2, 1).reshape(-1, OUTPUT_SIZE)
 

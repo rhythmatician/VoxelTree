@@ -583,6 +583,14 @@ def _build_pairs_sparse_octree_run(p: dict[str, Any]) -> None:
     pairs_main(argv)
 
 
+def _resolve_device(raw: str) -> str:
+    """Resolve 'auto' to 'cuda' or 'cpu'; pass other values through."""
+    if raw == "auto":
+        import torch  # noqa: PLC0415
+        return "cuda" if torch.cuda.is_available() else "cpu"
+    return raw
+
+
 def _train_sparse_octree_run(p: dict[str, Any]) -> None:
     from voxel_tree.tasks.sparse_octree.train import train_sparse_octree  # noqa: PLC0415
 
@@ -598,7 +606,7 @@ def _train_sparse_octree_run(p: dict[str, Any]) -> None:
         epochs=train.get("epochs", 20),
         batch_size=train.get("batch_size", 4),
         lr=train.get("lr", 1e-4),
-        device=train.get("device", "auto"),
+        device=_resolve_device(train.get("device", "auto")),
     )
 
 
@@ -658,12 +666,12 @@ def _build_v7_pairs_run(p: dict[str, Any]) -> None:
 
     Requires both:
       - noise dumps  (section_*.json from dumpnoise)
-      - Voxy L4 data    (voxy_L4_*.npz from harvest)
+      - Voxy L4 data  (voxy_L4_*.npz produced by the extract_octree step)
 
-    Voxy dir resolution mirrors ``_harvest_run``:
-      1. Explicit ``data.voxy_dir`` in the profile.
-      2. Derived from the active server port in ``server.properties``.
-      3. CLI default when neither is set.
+    The extracted Voxy data lives in ``data.data_dir`` (e.g. ``data/voxy_octree``),
+    which is the output directory of the ``extract_octree`` pipeline step.
+    That directory must exist and contain a ``level_4/`` sub-directory before
+    this step is run.
     """
     from voxel_tree.tasks.sparse_octree.build_sparse_octree_pairs import (  # noqa: PLC0415
         main as pairs_main,
@@ -674,21 +682,17 @@ def _build_v7_pairs_run(p: dict[str, Any]) -> None:
     dumps_dir = data.get("v7_dumps_dir", "data/v7_dumps")
     argv += ["--dumps", str(dumps_dir)]
 
-    # Resolve voxy-dir: explicit profile value → active server port → CLI default.
-    voxy_dir = data.get("voxy_dir")
-    if not voxy_dir:
-        from voxel_tree.gui.server_manager import read_server_property  # noqa: PLC0415
+    # --voxy should point at the extract_octree output dir (contains level_4/*.npz),
+    # NOT the raw Voxy LevelDB saves directory.
+    voxy_npz_dir = data.get("data_dir", "data/voxy_octree")
+    argv += ["--voxy", str(voxy_npz_dir)]
 
-        server_port = read_server_property("server-port", "25565")
-        if server_port:
-            from voxel_tree.preprocessing.harvest import MODRINTH_VOXY_SAVES  # noqa: PLC0415
-
-            voxy_dir = str(MODRINTH_VOXY_SAVES / f"localhost_{server_port}")
-    if voxy_dir:
-        argv += ["--voxy", str(voxy_dir)]
-
-    if data.get("v7_pairs_output"):
-        argv += ["--output", str(data["v7_pairs_output"])]
+    # Use v7_pairs_npz as the canonical output path so that all downstream steps
+    # (which also read from v7_pairs_npz) find the file.  Fall back to the same
+    # default as build_sparse_octree_pairs.py when the key is absent.
+    output_npz = data.get("v7_pairs_npz") or data.get("v7_pairs_output")
+    if output_npz:
+        argv += ["--output", str(output_npz)]
     pairs_main(argv)
 
 
@@ -779,7 +783,7 @@ def _export_biome_classifier_run(p: dict[str, Any]) -> None:
 
     train = p.get("train", {})
     export = p.get("export", {})
-    checkpoint = Path(train.get("output_dir", ".")) / "biome_classifier_best.pt"
+    checkpoint = Path(train.get("output_dir", ".")) / "biome_classifier.pt"
     _out = export.get("output_dir")
     out_dir = Path(_out) if _out else Path(__file__).parent.parent / "tasks" / "biome" / "model"
     export_main(["--checkpoint", str(checkpoint), "--out-dir", str(out_dir)])
@@ -828,7 +832,7 @@ def _export_heightmap_run(p: dict[str, Any]) -> None:
 
     train = p.get("train", {})
     export = p.get("export", {})
-    checkpoint = Path(train.get("output_dir", ".")) / "heightmap_predictor_best.pt"
+    checkpoint = Path(train.get("output_dir", ".")) / "heightmap_predictor.pt"
     _out = export.get("output_dir")
     out_dir = Path(_out) if _out else Path(__file__).parent.parent / "tasks" / "heightmap" / "model"
     export_main(["--checkpoint", str(checkpoint), "--out-dir", str(out_dir)])
@@ -868,7 +872,7 @@ def _train_sparse_octree_v7_run(p: dict[str, Any]) -> None:
         epochs=train.get("epochs", 20),
         batch_size=train.get("batch_size", 4),
         lr=train.get("lr", 1e-4),
-        device=train.get("device", "auto"),
+        device=_resolve_device(train.get("device", "auto")),
     )
 
 
@@ -887,8 +891,9 @@ def _export_sparse_octree_v7_run(p: dict[str, Any]) -> None:
             if _out
             else Path(__file__).parent.parent / "tasks" / "sparse_octree" / "model"
         ),
-        n3d=15,
-        spatial_y=4,
+        n3d=13,
+        spatial_y=2,
+        hidden=train.get("sparse_octree_hidden", 80),
     )
 
 
@@ -975,7 +980,7 @@ MODEL_TRACKS: list[ModelTrack] = [
         contract_name="heightmap",
         contract_revision=1,
     ),
-    # ── v7 Sparse Octree (15ch/4×4×4 noise → block hierarchy) ───────
+    # ── v7 Sparse Octree (13ch/4×2×4 cave noise → block hierarchy) ──
     ModelTrack(
         track_id="sparse_octree_v7",
         label="OctreeV7",
@@ -1053,7 +1058,7 @@ _DATA_ACQ_STEPS: list[StepDef] = [
         run_fn=_build_v7_pairs_run,
         phase="data_acq",
         produces=frozenset({"v7_pairs_npz"}),
-        consumes=frozenset({"noise_dumps", "voxy_db"}),
+        consumes=frozenset({"noise_dumps", "octree_npz"}),
     ),
 ]
 

@@ -17,12 +17,12 @@ both surface and ocean floor.
 Training data
 -------------
   Reads ``sparse_octree_pairs_v7.npz`` produced by ``build_sparse_octree_pairs.py``.
-    noise_3d             : (N, 15, 4, 4, 4) float32
+    noise_3d             : (N, C, qx, qy, qz) float32   (C >= 6)
     heightmap_surface    : (N, 16, 16)       int32
     heightmap_ocean_floor: (N, 16, 16)       int32
 
-  Climate input is extracted from the first Y-layer of the noise_3d data
-  (channels 0–5, averaged across Y) to get a (N, 6, 4, 4) grid.
+  Climate input is extracted from noise_3d channels 0–5, averaged
+  across the Y axis, to get a (N, 6, 4, 4) grid.
   Heightmaps are downsampled from 16×16 block resolution to 4×4 quart
   resolution by averaging each 4×4 block patch.
 
@@ -118,15 +118,20 @@ def load_data(npz_path: Path) -> tuple[torch.Tensor, torch.Tensor]:
     """
     print(f"  Loading {npz_path} ...")
     with np.load(npz_path) as data:
-        noise_3d = data["noise_3d"]                        # (N, 15, 4, 4, 4)
+        noise_3d = data["noise_3d"]                        # (N, C, qx, qy, qz)
         hm_surface = data["heightmap_surface"]             # (N, 16, 16)
         hm_ocean = data["heightmap_ocean_floor"]           # (N, 16, 16)
 
     n = noise_3d.shape[0]
-    assert noise_3d.shape[1] == 15
+    n_ch = noise_3d.shape[1]
+    # Need at least 6 channels for input (indices 0-5).
+    # v7 dumps have 13 cave-density channels; legacy had 15 RouterField channels.
+    assert n_ch >= 6, (
+        f"Need >= 6 noise channels for climate input, got {n_ch}"
+    )
 
-    # Extract climate channels and average across Y axis (4 Y-levels) → (N, 6, 4, 4)
-    clim = noise_3d[:, CLIMATE_INDICES, :, :, :]  # (N, 6, 4, 4, 4)
+    # Extract climate channels and average across Y axis → (N, 6, 4, 4)
+    clim = noise_3d[:, CLIMATE_INDICES, :, :, :]  # (N, 6, qx, qy, qz)
     clim_2d = clim.mean(axis=3)  # average over qy → (N, 6, 4, 4)
     clim_flat = clim_2d.reshape(n, -1)  # (N, 96)
 

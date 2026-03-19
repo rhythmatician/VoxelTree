@@ -176,6 +176,15 @@ def extract_all_levels(
             print(f"  L{lvl}: {level_counts[lvl]:,} sections")
         print()
 
+        # Global progress tracking (for GUI progress ring)
+        _cap = max_sections_per_level
+        total_expected = sum(
+            min(level_counts.get(lvl, 0), _cap if _cap is not None else level_counts.get(lvl, 0))
+            for lvl in range(MAX_LOD_LEVEL + 1)
+        )
+        global_processed = 0
+        print_interval = max(1, total_expected // 20) if total_expected > 0 else 100
+
         # Extract each level
         for level in range(MAX_LOD_LEVEL + 1):
             if level not in level_counts:
@@ -200,6 +209,7 @@ def extract_all_levels(
                 if max_sections_per_level is not None and section_count >= max_sections_per_level:
                     break
                 section_count += 1
+                global_processed += 1
 
                 block_ids = section.block_ids  # (32,32,32) (y,z,x)
                 biome_ids = section.biome_ids  # (32,32,32)
@@ -233,13 +243,14 @@ def extract_all_levels(
                 )
                 saved += 1
 
-                if section_count % 1000 == 0:
+                if section_count % print_interval == 0:
                     elapsed = time.time() - t0
                     rate = section_count / elapsed if elapsed > 0 else 0
+                    pct = global_processed * 100 // total_expected if total_expected > 0 else 0
                     print(
                         f"  ... L{level}: {section_count:,} processed, "
                         f"{saved:,} saved, {skipped_empty:,} skipped "
-                        f"({rate:.0f} sects/s)"
+                        f"({rate:.0f}/s) — {pct}%"
                     )
 
             elapsed = time.time() - t0
@@ -248,9 +259,10 @@ def extract_all_levels(
                 "skipped": skipped_empty,
                 "total": section_count,
             }
+            pct = global_processed * 100 // total_expected if total_expected > 0 else 0
             print(
                 f"  L{level} complete: {saved:,} saved, {skipped_empty:,} skipped "
-                f"in {elapsed:.1f}s  ({section_count:,} total)"
+                f"in {elapsed:.1f}s  ({section_count:,} total) — {pct}%"
             )
             print()
 

@@ -14,12 +14,12 @@ The model operates **per quart cell** — each sample is one (field_0 … field_
 Training data
 -------------
   Reads ``sparse_octree_pairs_v7.npz`` produced by ``build_sparse_octree_pairs.py``.
-    noise_3d   : (N, 15, 4, 4, 4) float32
-    biome_ids  : (N, 4, 4, 4)     int32
+    noise_3d   : (N, C, qx, qy, qz) float32   (C >= 6)
+    biome_ids  : (N, qx, qy, qz)     int32
 
   We extract:
-    - Input:   climate channels 0–5 from noise_3d → flatten to (N*64, 6)
-    - Target:  biome_ids → flatten to (N*64,) long, remapped via biome_mapping
+    - Input:   channels 0–5 from noise_3d → flatten to (N*S, 6)
+    - Target:  biome_ids → flatten to (N*S,) long, remapped via biome_mapping
 
 Model output
 ------------
@@ -111,20 +111,26 @@ def load_data(npz_path: Path) -> tuple[torch.Tensor, torch.Tensor]:
         inputs:  (M, 6) float32 — climate fields per quart cell
         targets: (M,)   int64   — biome class index [0, 53]
     Cells with unknown biomes (ID >= 54 or 255) are excluded.
+    S = qx*qy*qz (spatial cells per section).
     """
     print(f"  Loading {npz_path} ...")
     with np.load(npz_path) as data:
-        noise_3d = data["noise_3d"]      # (N, 15, 4, 4, 4) float32
-        biome_ids = data["biome_ids"]    # (N, 4, 4, 4) int32
+        noise_3d = data["noise_3d"]      # (N, C, qx, qy, qz) float32
+        biome_ids = data["biome_ids"]    # (N, qx, qy, qz) int32
 
     n = noise_3d.shape[0]
-    assert noise_3d.shape[1] == 15, f"Expected 15 channels, got {noise_3d.shape[1]}"
+    n_ch = noise_3d.shape[1]
+    # Need at least 6 channels for input (indices 0-5).
+    # v7 dumps have 13 cave-density channels; legacy had 15 RouterField channels.
+    assert n_ch >= 6, (
+        f"Need >= 6 noise channels for climate input, got {n_ch}"
+    )
 
-    # Extract climate channels → (N, 6, 4, 4, 4) → (N*64, 6)
+    # Extract climate channels → (N, 6, qx, qy, qz) → (N*S, 6)
     clim = noise_3d[:, CLIMATE_INDICES, :, :, :]
     clim_flat = clim.reshape(n, INPUT_SIZE, -1).transpose(0, 2, 1).reshape(-1, INPUT_SIZE)
 
-    # Biome targets → (N*64,) int64
+    # Biome targets → (N*S,) int64
     biome_flat = _remap_biome_ids(biome_ids.reshape(-1))
 
     # Filter out unknown biomes

@@ -16,6 +16,7 @@ dag:
     # ── v7 Data Acquisition ───────────────────────────────────
     - id: pregen
     - id: harvest
+    - id: extract_octree
     - id: dumpnoise_v7
     - id: build_v7_pairs
     # ── Density ───────────────────────────────────────────────
