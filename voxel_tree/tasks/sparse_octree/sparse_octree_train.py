@@ -31,12 +31,7 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader, Dataset
 
-from .sparse_octree import (
-    POSITION_BITS,
-    SparseOctreeFastModel,
-    SparseOctreeModel,
-    encode_chunk_position_bits,
-)
+from .sparse_octree import SparseOctreeFastModel, SparseOctreeModel
 from .sparse_octree_targets import build_sparse_octree_targets
 
 # ---------------------------------------------------------------------------
@@ -77,19 +72,6 @@ class SparseOctreeDataset(Dataset):  # type: ignore[type-arg]
         else:
             n = len(self.subchunks)
             self.heightmap_ocean_floor = np.zeros((n, 16, 16), dtype=np.float32)
-
-        # Chunk-location coordinates — optional, default zeros (unknown position)
-        n = len(self.subchunks)
-        if "chunk_x" in data and "chunk_z" in data and "section_y" in data:
-            self.chunk_x = data["chunk_x"].astype(np.int32)  # (N,)
-            self.chunk_z = data["chunk_z"].astype(np.int32)  # (N,)
-            self.section_y = data["section_y"].astype(np.int32)  # (N,)
-            self.has_positions = True
-        else:
-            self.chunk_x = np.zeros(n, dtype=np.int32)
-            self.chunk_z = np.zeros(n, dtype=np.int32)
-            self.section_y = np.zeros(n, dtype=np.int32)
-            self.has_positions = False
 
         self.air_id = air_id
         self._cache_targets = cache_targets
@@ -133,19 +115,12 @@ class SparseOctreeDataset(Dataset):  # type: ignore[type-arg]
             self._target_cache[idx] if self._target_cache is not None else self._build_targets(idx)
         )
 
-        position_bits = encode_chunk_position_bits(
-            int(self.chunk_x[idx]),
-            int(self.chunk_z[idx]),
-            int(self.section_y[idx]),
-        ) if self.has_positions else np.zeros(POSITION_BITS, dtype=np.float32)
-
         return {
             "noise_2d": torch.from_numpy(self.noise_2d[idx]),  # [C2,4,4]
             "noise_3d": torch.from_numpy(self.noise_3d[idx]),  # [C3,4,Y,4]
             "biome_ids": torch.from_numpy(self.biome_ids[idx]),  # [4,Y,4]
             "heightmap_surface": torch.from_numpy(self.heightmap_surface[idx]),  # [16,16]
             "heightmap_ocean_floor": torch.from_numpy(self.heightmap_ocean_floor[idx]),  # [16,16]
-            "position_bits": torch.from_numpy(position_bits),  # [POSITION_BITS]
             "targets": targets,
         }
 
@@ -164,7 +139,6 @@ def sparse_octree_collate(batch: List[Dict[str, Any]]) -> Dict[str, Any]:
     heightmap_ocean_floor = torch.stack(
         [b["heightmap_ocean_floor"] for b in batch], dim=0
     )  # [B,16,16]
-    position_bits = torch.stack([b["position_bits"] for b in batch], dim=0)  # [B,POSITION_BITS]
 
     levels = sorted(batch[0]["targets"].keys(), reverse=True)
     targets: Dict[int, Dict[str, torch.Tensor]] = {}
@@ -180,7 +154,6 @@ def sparse_octree_collate(batch: List[Dict[str, Any]]) -> Dict[str, Any]:
         "biome_ids": biome_ids,
         "heightmap_surface": heightmap_surface,
         "heightmap_ocean_floor": heightmap_ocean_floor,
-        "position_bits": position_bits,
         "targets": targets,
     }
 
@@ -332,7 +305,6 @@ def _build_model(
     hidden: int,
     num_classes: int,
     spatial_y: int = 4,
-    position_bits: int = 0,
 ) -> nn.Module:
     variant = model_variant.lower()
     if variant == "baseline":
@@ -342,7 +314,6 @@ def _build_model(
             hidden=hidden,
             num_classes=num_classes,
             spatial_y=spatial_y,
-            position_bits=position_bits,
         )
     if variant == "fast":
         return SparseOctreeFastModel(
@@ -351,7 +322,6 @@ def _build_model(
             hidden=hidden,
             num_classes=num_classes,
             spatial_y=spatial_y,
-            position_bits=position_bits,
         )
     raise ValueError(f"Unknown sparse-root model_variant={model_variant!r}")
 
@@ -373,7 +343,6 @@ def train_sparse_octree(
     device: str = "cpu",
     model_variant: str = "fast",
     cache_targets: bool = True,
-    use_position_bits: bool = True,
     split_weight: float = 1.0,
     label_weight: float = 0.35,
     label_smoothing: float = 0.03,
@@ -432,7 +401,6 @@ def train_sparse_octree(
         hidden=hidden,
         num_classes=num_classes,
         spatial_y=spatial_y,
-        position_bits=POSITION_BITS if use_position_bits and ds.has_positions else 0,
     ).to(_device)
     optimizer = optim.AdamW(model.parameters(), lr=lr)
     max_level_attr = getattr(model, "max_level", 4)
@@ -464,25 +432,8 @@ def train_sparse_octree(
             biome_ids = batch["biome_ids"].to(_device)
             heightmap_surface = batch["heightmap_surface"].to(_device)
             heightmap_ocean_floor = batch["heightmap_ocean_floor"].to(_device)
-            pos_bits = batch["position_bits"].to(_device)
             optimizer.zero_grad()
-            if use_position_bits:
-                preds = model(
-                    noise_2d,
-                    noise_3d,
-                    biome_ids,
-                    heightmap_surface,
-                    heightmap_ocean_floor,
-                    position_bits=pos_bits,
-                )
-            else:
-                preds = model(
-                    noise_2d,
-                    noise_3d,
-                    biome_ids,
-                    heightmap_surface,
-                    heightmap_ocean_floor,
-                )
+            preds = model(noise_2d, noise_3d, biome_ids, heightmap_surface, heightmap_ocean_floor)
             loss = _sparse_octree_loss(
                 preds,
                 batch["targets"],

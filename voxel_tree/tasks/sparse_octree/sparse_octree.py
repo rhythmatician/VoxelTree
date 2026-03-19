@@ -42,49 +42,8 @@ from __future__ import annotations
 
 import typing as t
 
-import numpy as np
 import torch
 import torch.nn as nn
-
-
-# ---------------------------------------------------------------------------
-# Chunk-location binary encoding
-# ---------------------------------------------------------------------------
-
-POSITION_BITS = 17  # 4 (chunk_x % 16) + 4 (chunk_z % 16) + 9 (block_y + 64)
-
-
-def encode_chunk_position_bits(
-    chunk_x: int,
-    chunk_z: int,
-    section_y: int,
-) -> np.ndarray:
-    """Encode chunk location as a 17-element binary float32 vector.
-
-    Layout (LSB-first within each group)::
-
-        [x_bit0 .. x_bit3,  z_bit0 .. z_bit3,  y_bit0 .. y_bit8]
-
-    * chunk_x mod 16 → 4 bits  (wraps — nearby chunks share high bits)
-    * chunk_z mod 16 → 4 bits
-    * block_y + 64   → 9 bits  (encodes subchunk base Y in block coordinates)
-
-    ``section_y`` is the vertical section index. We convert it to the subchunk's
-    absolute block-space base Y via ``block_y = section_y * 16`` so the model
-    sees real world height rather than only a compressed section ordinal.
-    """
-    x_mod = chunk_x % 16       # Python % is always non-negative for positive divisor
-    z_mod = chunk_z % 16
-    block_y = int(section_y) * 16
-    y_val = max(0, min(block_y + 64, 511))  # clamp to 9-bit range
-
-    bits = np.zeros(POSITION_BITS, dtype=np.float32)
-    for i in range(4):
-        bits[i] = float((x_mod >> i) & 1)
-        bits[4 + i] = float((z_mod >> i) & 1)
-    for i in range(9):
-        bits[8 + i] = float((y_val >> i) & 1)
-    return bits
 
 
 # ---------------------------------------------------------------------------
@@ -141,7 +100,6 @@ class _NoiseEncoder(nn.Module):
     biome_vocab_size:   vocabulary size for biome IDs (default 256)
     biome_embed_dim:    embedding dimensionality for biome (default 8)
     spatial_y:          Y-axis quart cells per section (2 for v7 — vanilla cellHeight=8)
-    position_bits:      number of binary chunk-location features (0 = disabled, 17 = full)
     """
 
     def __init__(
@@ -152,16 +110,14 @@ class _NoiseEncoder(nn.Module):
         biome_vocab_size: int = 256,
         biome_embed_dim: int = 8,
         spatial_y: int = 2,
-        position_bits: int = 0,
     ) -> None:
         super().__init__()
         self.spatial_y = spatial_y
-        self.position_bits = position_bits
         flat_2d = n2d * 4 * 4
         flat_3d = n3d * 4 * spatial_y * 4
         flat_biome = 4 * spatial_y * 4 * biome_embed_dim
         flat_heightmaps = 16 * 16 * 2  # surface + ocean_floor, each [16,16]
-        in_dim = flat_2d + flat_3d + flat_biome + flat_heightmaps + position_bits
+        in_dim = flat_2d + flat_3d + flat_biome + flat_heightmaps
 
         self.biome_embed = nn.Embedding(biome_vocab_size, biome_embed_dim)
 
@@ -179,7 +135,6 @@ class _NoiseEncoder(nn.Module):
         biome_ids: torch.Tensor,
         heightmap_surface: torch.Tensor,
         heightmap_ocean_floor: torch.Tensor,
-        position_bits: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """
         Args:
@@ -188,7 +143,6 @@ class _NoiseEncoder(nn.Module):
             biome_ids:             [B, 4, spatial_y, 4] (integer biome indices)
             heightmap_surface:     [B, 16, 16] (WORLD_SURFACE_WG block Y)
             heightmap_ocean_floor: [B, 16, 16] (OCEAN_FLOOR_WG block Y)
-            position_bits:         [B, position_bits] (binary chunk-location bools, or None)
         Returns:
             ctx: [B, hidden]
         """
@@ -203,17 +157,16 @@ class _NoiseEncoder(nn.Module):
         biome_ids_long = biome_ids.long().clamp(0, self.biome_embed.num_embeddings - 1)
         biome_feat = self.biome_embed(biome_ids_long)  # [B, 4, spatial_y, 4, embed_dim]
 
-        parts = [
-            noise_2d_flat,
-            noise_3d.reshape(B, -1),
-            biome_feat.reshape(B, -1),
-            heightmap_surface.reshape(B, -1),
-            heightmap_ocean_floor.reshape(B, -1),
-        ]
-        if self.position_bits > 0 and position_bits is not None:
-            parts.append(position_bits.to(noise_2d.dtype))
-
-        flat = torch.cat(parts, dim=1)
+        flat = torch.cat(
+            [
+                noise_2d_flat,
+                noise_3d.reshape(B, -1),
+                biome_feat.reshape(B, -1),
+                heightmap_surface.reshape(B, -1),
+                heightmap_ocean_floor.reshape(B, -1),
+            ],
+            dim=1,
+        )
         return self.mlp(flat)
 
 
@@ -273,14 +226,12 @@ class SparseOctreeModel(nn.Module):
         biome_vocab_size: int = 256,
         biome_embed_dim: int = 8,
         spatial_y: int = 2,
-        position_bits: int = 0,
     ) -> None:
         super().__init__()
         self.hidden = hidden
         self.num_classes = num_classes
         self.levels = levels  # coarsest level index = levels - 1
         self.max_level = levels - 1  # e.g. 4 for a 5-level tree
-        self.position_bits = position_bits
 
         self.noise_enc = _NoiseEncoder(
             n2d,
@@ -289,7 +240,6 @@ class SparseOctreeModel(nn.Module):
             biome_vocab_size=biome_vocab_size,
             biome_embed_dim=biome_embed_dim,
             spatial_y=spatial_y,
-            position_bits=position_bits,
         )
         self.pos_emb = _OctreePosEmb(hidden)
 
@@ -312,7 +262,6 @@ class SparseOctreeModel(nn.Module):
         biome_ids: torch.Tensor,
         heightmap_surface: torch.Tensor,
         heightmap_ocean_floor: torch.Tensor,
-        position_bits: torch.Tensor | None = None,
     ) -> t.Dict[int, t.Dict[str, torch.Tensor]]:
         """Teacher-forced forward pass; expands ALL nodes at every level.
 
@@ -331,8 +280,7 @@ class SparseOctreeModel(nn.Module):
         device = noise_2d.device
 
         ctx = self.noise_enc(
-            noise_2d, noise_3d, biome_ids, heightmap_surface, heightmap_ocean_floor,
-            position_bits=position_bits,
+            noise_2d, noise_3d, biome_ids, heightmap_surface, heightmap_ocean_floor
         )  # [B, D]
 
         # Initialise root as a single node per sample
@@ -390,14 +338,12 @@ class SparseOctreeFastModel(nn.Module):
         child_rank: int | None = None,
         split_rank: int | None = None,
         spatial_y: int = 2,
-        position_bits: int = 0,
     ) -> None:
         super().__init__()
         self.hidden = hidden
         self.num_classes = num_classes
         self.levels = levels
         self.max_level = levels - 1
-        self.position_bits = position_bits
 
         label_rank = label_rank or max(48, min(hidden, (hidden * 2) // 3))
         child_rank = child_rank or max(32, hidden // 2)
@@ -410,7 +356,6 @@ class SparseOctreeFastModel(nn.Module):
             biome_vocab_size=biome_vocab_size,
             biome_embed_dim=biome_embed_dim,
             spatial_y=spatial_y,
-            position_bits=position_bits,
         )
         self.pos_emb = _OctreePosEmb(hidden)
 
@@ -431,14 +376,12 @@ class SparseOctreeFastModel(nn.Module):
         biome_ids: torch.Tensor,
         heightmap_surface: torch.Tensor,
         heightmap_ocean_floor: torch.Tensor,
-        position_bits: torch.Tensor | None = None,
     ) -> t.Dict[int, t.Dict[str, torch.Tensor]]:
         B = noise_2d.shape[0]
         device = noise_2d.device
 
         ctx = self.noise_enc(
-            noise_2d, noise_3d, biome_ids, heightmap_surface, heightmap_ocean_floor,
-            position_bits=position_bits,
+            noise_2d, noise_3d, biome_ids, heightmap_surface, heightmap_ocean_floor
         )
         cur_feat = self.root_proj(ctx).unsqueeze(1)
 
@@ -464,9 +407,4 @@ class SparseOctreeFastModel(nn.Module):
         return outputs
 
 
-__all__ = [
-    "POSITION_BITS",
-    "encode_chunk_position_bits",
-    "SparseOctreeModel",
-    "SparseOctreeFastModel",
-]
+__all__ = ["SparseOctreeModel", "SparseOctreeFastModel"]

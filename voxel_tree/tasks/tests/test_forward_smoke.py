@@ -34,7 +34,6 @@ import torch
 # ---------------------------------------------------------------------------
 
 from voxel_tree.tasks.sparse_octree.sparse_octree import (
-    POSITION_BITS,
     SparseOctreeFastModel,
     SparseOctreeModel,
 )
@@ -67,7 +66,6 @@ def _sparse_octree_batch(
         "biome_ids": torch.zeros(B, 4, spatial_y, 4, dtype=torch.long),
         "heightmap_surface": torch.randn(B, 16, 16),
         "heightmap_ocean_floor": torch.randn(B, 16, 16),
-        "position_bits": torch.zeros(B, POSITION_BITS),
     }
 
 
@@ -110,20 +108,6 @@ class TestSparseOctreeSmoke:
         )
         assert isinstance(preds, dict) and len(preds) > 0
 
-    def test_train_call_pattern_with_position_bits(self, model_cls: type) -> None:
-        """Mirrors ``sparse_octree_train.train_sparse_octree()`` with position_bits."""
-        model = self._make_model(model_cls)
-        batch = _sparse_octree_batch()
-        preds = model(
-            batch["noise_2d"],
-            batch["noise_3d"],
-            batch["biome_ids"],
-            batch["heightmap_surface"],
-            batch["heightmap_ocean_floor"],
-            position_bits=batch["position_bits"],
-        )
-        assert isinstance(preds, dict) and len(preds) > 0
-
     def test_distill_call_pattern(self, model_cls: type) -> None:
         """Mirrors ``sparse_octree_distill.distill_sparse_octree()`` inner loop.
 
@@ -138,7 +122,6 @@ class TestSparseOctreeSmoke:
         biome_ids = batch["biome_ids"]
         heightmap_surface = batch["heightmap_surface"]
         heightmap_ocean_floor = batch["heightmap_ocean_floor"]
-        pos_bits = batch["position_bits"]
 
         preds = model(
             noise_2d,
@@ -146,7 +129,6 @@ class TestSparseOctreeSmoke:
             biome_ids,
             heightmap_surface,
             heightmap_ocean_floor,
-            position_bits=pos_bits,
         )
         assert isinstance(preds, dict) and len(preds) > 0
 
@@ -208,7 +190,6 @@ _SPARSE_BATCH_KEYS = frozenset(
         "biome_ids",
         "heightmap_surface",
         "heightmap_ocean_floor",
-        "position_bits",
     }
 )
 
