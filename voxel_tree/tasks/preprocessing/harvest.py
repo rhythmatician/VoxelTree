@@ -556,6 +556,8 @@ def run_monitor(args: argparse.Namespace) -> None:
 
 
 def main(argv: list[str] | None = None) -> None:
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     parser = argparse.ArgumentParser(
         description="Automated Voxy training data harvester.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
