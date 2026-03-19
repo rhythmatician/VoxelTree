@@ -264,6 +264,93 @@ class ModelContract:
 
 
 # ---------------------------------------------------------------------------
+# Spec comparison (static I/O compatibility check)
+# ---------------------------------------------------------------------------
+
+
+def _shapes_compatible(a: tuple[str | int, ...], b: tuple[str | int, ...]) -> bool:
+    """Return True if shapes are compatible (string dims are wildcards)."""
+    if len(a) != len(b):
+        return False
+    for x, y in zip(a, b):
+        if isinstance(x, str) or isinstance(y, str):
+            continue  # dynamic axis — anything goes
+        if x != y:
+            return False
+    return True
+
+
+def compare_specs(
+    produced: tuple[TensorSpec, ...],
+    required: tuple[TensorSpec, ...],
+) -> list[str]:
+    """Compare what a pipeline step produces against what a contract requires.
+
+    Returns a list of human-readable mismatch descriptions.
+    An empty list means full compatibility.
+
+    Parameters
+    ----------
+    produced : TensorSpecs declared by the pipeline step (e.g. build_pairs
+               ``OUTPUT_SPEC``).  May include extra arrays (targets, metadata)
+               that the model doesn't consume — those are silently ignored.
+    required : TensorSpecs from the contract's ``inputs`` — every one of
+               these must be satisfied by *produced*.
+    """
+    produced_by_name = {s.name: s for s in produced}
+    mismatches: list[str] = []
+
+    for req in required:
+        prod = produced_by_name.get(req.name)
+        if prod is None:
+            mismatches.append(f"Missing tensor '{req.name}' — required by contract")
+            continue
+
+        # Shape comparison (string dims are wildcards)
+        if not _shapes_compatible(prod.shape, req.shape):
+            mismatches.append(
+                f"Shape mismatch for '{req.name}': "
+                f"produces {prod.shape}, contract expects {req.shape}"
+            )
+
+        # Dtype comparison
+        if prod.dtype != req.dtype:
+            mismatches.append(
+                f"Dtype mismatch for '{req.name}': "
+                f"produces '{prod.dtype}', contract expects '{req.dtype}'"
+            )
+
+        # Channel comparison (the most useful check in practice)
+        if req.channels and prod.channels:
+            req_set = set(req.channels)
+            prod_set = set(prod.channels)
+            missing = sorted(req_set - prod_set)
+            extra = sorted(prod_set - req_set)
+            if missing:
+                mismatches.append(
+                    f"'{req.name}' missing channels: {missing}"
+                )
+            if extra:
+                mismatches.append(
+                    f"'{req.name}' has extra channels not in contract: {extra}"
+                )
+            # Check channel ordering if sets match
+            if not missing and not extra and prod.channels != req.channels:
+                mismatches.append(
+                    f"'{req.name}' channel order differs: "
+                    f"produces {list(prod.channels)}, "
+                    f"contract expects {list(req.channels)}"
+                )
+        elif req.channels and not prod.channels:
+            mismatches.append(
+                f"'{req.name}': contract specifies channels {list(req.channels)} "
+                f"but build_pairs spec has no channel list"
+            )
+
+    return mismatches
+
+
+# ---------------------------------------------------------------------------
 # Exception
 # ---------------------------------------------------------------------------
 

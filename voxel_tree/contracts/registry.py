@@ -21,7 +21,7 @@ import warnings
 from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
 
-from voxel_tree.contracts.spec import ContractViolation, ModelContract
+from voxel_tree.contracts.spec import ContractViolation, ModelContract, TensorSpec, compare_specs
 
 
 # ---------------------------------------------------------------------------
@@ -50,17 +50,21 @@ class AlignmentIssue:
     Attributes
     ----------
     track_id : The pipeline track that has the problem.
-    severity : ``"error"`` (contract missing) or ``"stale"`` (newer revision exists).
+    severity : ``"error"`` (contract missing), ``"stale"`` (newer revision
+               exists), or ``"incompatible"`` (build_pairs OUTPUT_SPEC
+               doesn't match the contract inputs).
     message  : Human-readable description.
     current_revision  : What the track is pinned to (may be None).
     latest_revision_  : The newest revision available in the catalog (may be None).
+    io_mismatches     : Specific I/O mismatches from ``compare_specs()``.
     """
 
     track_id: str
-    severity: str  # "error" | "stale"
+    severity: str  # "error" | "stale" | "incompatible"
     message: str
     current_revision: int | None = None
     latest_revision_: int | None = None
+    io_mismatches: tuple[str, ...] = ()
 
 
 # ---------------------------------------------------------------------------
@@ -174,6 +178,39 @@ def validate_checkpoint_contract(
 
 
 # ---------------------------------------------------------------------------
+# Build-pairs OUTPUT_SPEC loader
+# ---------------------------------------------------------------------------
+
+
+def _load_output_spec(dotted_fn: str) -> tuple[TensorSpec, ...] | None:
+    """Import a build_pairs module and return its OUTPUT_SPEC, or None.
+
+    Parameters
+    ----------
+    dotted_fn : Module path in ``"package.module:callable"`` form.
+                Only the module part (before ``:``) is imported.
+
+    Returns
+    -------
+    The module's ``OUTPUT_SPEC`` attribute, or ``None`` if the module
+    doesn't define one or can't be imported.
+    """
+    if not dotted_fn:
+        return None
+    module_path = dotted_fn.split(":")[0]
+    try:
+        import importlib
+
+        mod = importlib.import_module(module_path)
+    except Exception:
+        return None
+    spec = getattr(mod, "OUTPUT_SPEC", None)
+    if spec is not None and isinstance(spec, tuple):
+        return spec
+    return None
+
+
+# ---------------------------------------------------------------------------
 # Track↔Contract alignment check
 # ---------------------------------------------------------------------------
 
@@ -188,6 +225,10 @@ def check_track_alignment(
       2. Verify the track's ``contract_revision`` matches the latest catalog
          revision — if not, the track is **stale** (the contract was bumped
          but the pipeline wasn't updated to match).
+      3. Load the build_pairs module's ``OUTPUT_SPEC`` and compare it against
+         the contract's ``inputs``.  If the specs don't match, the track is
+         **incompatible** — the script hasn't been updated to produce the
+         data the model now expects.
 
     Parameters
     ----------
@@ -263,20 +304,58 @@ def check_track_alignment(
             continue
 
         if crev < latest:
+            # Show what changed so the user sees exactly what needs updating
             new_contract = CONTRACTS[(cname, latest)]
+
+            # Preview: if upgraded, would build_pairs be incompatible?
+            upgrade_mismatches: tuple[str, ...] = ()
+            output_spec = _load_output_spec(new_contract.build_pairs_fn)
+            if output_spec is not None:
+                diffs = compare_specs(output_spec, new_contract.inputs)
+                upgrade_mismatches = tuple(diffs)
+
+            msg = (
+                f"Track '{track.track_id}' is pinned to "
+                f"'{cname}' rev {crev}, but rev {latest} exists. "
+                f"Changelog: {new_contract.changelog or '(none)'}"
+            )
+            if upgrade_mismatches:
+                msg += (
+                    f"\n  ⚠ build_pairs would be INCOMPATIBLE with rev {latest}:"
+                )
+                for m in upgrade_mismatches:
+                    msg += f"\n    • {m}"
+
             issues.append(
                 AlignmentIssue(
                     track_id=track.track_id,
                     severity="stale",
-                    message=(
-                        f"Track '{track.track_id}' is pinned to "
-                        f"'{cname}' rev {crev}, but rev {latest} exists. "
-                        f"Changelog: {new_contract.changelog or '(none)'}"
-                    ),
+                    message=msg,
                     current_revision=crev,
                     latest_revision_=latest,
+                    io_mismatches=upgrade_mismatches,
                 )
             )
+
+        # --- Does the build_pairs script match the pinned contract? ---
+        contract = CONTRACTS[(cname, crev)]
+        output_spec = _load_output_spec(contract.build_pairs_fn)
+        if output_spec is not None:
+            diffs = compare_specs(output_spec, contract.inputs)
+            if diffs:
+                issues.append(
+                    AlignmentIssue(
+                        track_id=track.track_id,
+                        severity="incompatible",
+                        message=(
+                            f"Track '{track.track_id}' build_pairs OUTPUT_SPEC "
+                            f"doesn't match '{cname}' rev {crev} inputs:\n"
+                            + "\n".join(f"  • {d}" for d in diffs)
+                        ),
+                        current_revision=crev,
+                        io_mismatches=tuple(diffs),
+                    )
+                )
 
     return issues
 
