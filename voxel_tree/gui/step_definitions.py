@@ -632,6 +632,7 @@ def _train_sparse_octree_run(p: dict[str, Any]) -> None:
         # Explicit num_classes prevents auto-detect from undersizing
         # when rare blocks are absent from the training data.
         num_classes=train.get("num_classes", 1104),
+        pruning_boost=train.get("pruning_boost", 4.0),
         progress_callback=lambda epoch, total, _m: _report_progress(epoch, total),
     )
     print(f"[STEP_RESULT]{json.dumps(result, sort_keys=True)}")
