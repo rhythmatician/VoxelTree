@@ -310,16 +310,22 @@ def export_sparse_octree(
     #
     # Pre-heightmap checkpoints also lack the heightmap columns.  We pad those
     # with zeros too (5*16*16 = 1280 extra columns for heightmap5).
+    #
+    # Phase 4: Pre-prior checkpoints lack the surface_type_embed columns in
+    # mlp.0.weight.  The generic column-padding below handles this automatically
+    # (the new prior_flat floats are at the end of in_dim).  We only need to
+    # inject a default surface_type_embed.weight if it's missing.
     _m: Any = model  # local Any alias — model IS a concrete subclass at runtime
     _mlp_w_key = "noise_enc.mlp.0.weight"
     _biome_key = "noise_enc.biome_embed.weight"
+    _prior_key = "noise_enc.surface_type_embed.weight"
     if _mlp_w_key in state:
         expected_in = int(_m.noise_enc.mlp[0].in_features)
         actual_in = state[_mlp_w_key].shape[1]
         if actual_in < expected_in:
             pad_cols = expected_in - actual_in
             print(
-                f"[export] Pre-biome/heightmap checkpoint detected -- padding {_mlp_w_key} "
+                f"[export] Pre-biome/heightmap/prior checkpoint detected -- padding {_mlp_w_key} "
                 f"({actual_in} -> {expected_in} input cols with zeros)"
             )
             state[_mlp_w_key] = torch.cat(
@@ -330,6 +336,16 @@ def export_sparse_octree(
         state[_biome_key] = torch.zeros(
             int(_m.noise_enc.biome_embed.num_embeddings),
             int(_m.noise_enc.biome_embed.embedding_dim),
+        )
+    if _prior_key not in state:
+        state[_prior_key] = torch.zeros(
+            int(_m.noise_enc.surface_type_embed.num_embeddings),
+            int(_m.noise_enc.surface_type_embed.embedding_dim),
+        )
+        print(
+            f"[export] Pre-prior checkpoint detected -- injecting zero {_prior_key} "
+            f"({_m.noise_enc.surface_type_embed.num_embeddings}×"
+            f"{_m.noise_enc.surface_type_embed.embedding_dim})"
         )
 
     missing, unexpected = model.load_state_dict(state, strict=True)  # now strict is safe

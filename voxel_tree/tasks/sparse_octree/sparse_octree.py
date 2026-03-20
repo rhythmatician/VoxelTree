@@ -1,8 +1,11 @@
 """Noise-conditioned top-down sparse octree generator.
 
-TODO (deferred): Aquifer and ore vein noise channels
-  - Aquifer: flood-fill + atmospheric barometric noise for water table conditioning
-  - Ore veins: vein_toggle, vein_ridged, vein_gap for vein placement (low priority)
+Phase 4 — biome surface-rule priors:
+  Each biome ID is mapped to one of 8 *SurfaceType* categories (grass, sand,
+  red_sand, gravel, stone, snow, podzol, mycelium) via a frozen lookup table.
+  A learnable per-surface-type embedding is concatenated to the conditioning
+  context, giving the model a strong inductive bias about surface materials
+  without requiring new runtime inputs.
 
 Architecture
 ------------
@@ -103,6 +106,7 @@ class _NoiseEncoder(nn.Module):
     biome_vocab_size:   vocabulary size for biome IDs (default 256)
     biome_embed_dim:    embedding dimensionality for biome (default 8)
     spatial_y:          Y-axis quart cells per section (2 for v7 — vanilla cellHeight=8)
+    prior_dim:          per-surface-type embedding dimensionality (Phase 4 biome prior)
     """
 
     def __init__(
@@ -113,18 +117,34 @@ class _NoiseEncoder(nn.Module):
         biome_vocab_size: int = 256,
         biome_embed_dim: int = 8,
         spatial_y: int = 2,
+        prior_dim: int = 8,
     ) -> None:
         super().__init__()
         self.spatial_y = spatial_y
         flat_2d = n2d * 4 * 4
         flat_3d = n3d * 4 * spatial_y * 4
         flat_biome = 4 * spatial_y * 4 * biome_embed_dim
+        flat_prior = 4 * spatial_y * 4 * prior_dim  # Phase 4: surface-rule prior
         flat_heightmaps = (
             5 * 16 * 16
         )  # 5-plane: [surface, ocean_floor, slope_x, slope_z, curvature]
-        in_dim = flat_2d + flat_3d + flat_biome + flat_heightmaps
+        in_dim = flat_2d + flat_3d + flat_biome + flat_prior + flat_heightmaps
 
         self.biome_embed = nn.Embedding(biome_vocab_size, biome_embed_dim)
+
+        # Phase 4 — biome surface-rule prior.
+        # Frozen lookup: biome_id → SurfaceType (0–7).  Non-persistent so it
+        # is always recomputed from code, never saved in checkpoints.
+        from .biome_priors import NUM_SURFACE_TYPES, biome_to_surface_type_table
+
+        self.register_buffer(
+            "_biome_to_surface_type",
+            biome_to_surface_type_table(biome_vocab_size),
+            persistent=False,
+        )
+        # Learnable embedding per surface-type category — biomes sharing a
+        # surface type share gradients, providing strong inductive bias.
+        self.surface_type_embed = nn.Embedding(NUM_SURFACE_TYPES, prior_dim)
 
         self.mlp = nn.Sequential(
             nn.Linear(in_dim, hidden * 2),
@@ -158,11 +178,16 @@ class _NoiseEncoder(nn.Module):
         biome_ids_long = biome_ids.long().clamp(0, self.biome_embed.num_embeddings - 1)
         biome_feat = self.biome_embed(biome_ids_long)  # [B, 4, spatial_y, 4, embed_dim]
 
+        # Phase 4 — surface-rule prior: biome_id → surface_type → embedding
+        surface_types = self._biome_to_surface_type[biome_ids_long]  # [B, 4, spatial_y, 4]
+        prior_feat = self.surface_type_embed(surface_types)  # [B, 4, spatial_y, 4, prior_dim]
+
         flat = torch.cat(
             [
                 noise_2d_flat,
                 noise_3d.reshape(B, -1),
                 biome_feat.reshape(B, -1),
+                prior_feat.reshape(B, -1),
                 heightmap5.reshape(B, -1),
             ],
             dim=1,
