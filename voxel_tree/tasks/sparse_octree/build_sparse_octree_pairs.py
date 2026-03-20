@@ -1,21 +1,25 @@
 """Build v7 training pairs from v7 noise dumps + Voxy L4 sections.
 
 Each output sample is one 16³ voxel subchunk (octant of a Voxy L4 section)
-paired with the 13-channel SparseOctree cave-noise context, biome IDs, and
+paired with the 15-channel v7 RouterField noise context, biome IDs, and
 per-column heightmaps for that section.
 
 V7 noise dumps
 --------------
   Files: section_{cx}_{sy}_{cz}.json  (chunk x, section y, chunk z coordinates)
-  Each file has 13 cave noise channels + biome_ids, each 32 elements (4×2×4),
+  Each file has 15 RouterField channels + biome_ids, each 32 elements (4×2×4),
   indexed [qx*8 + qy*4 + qz].
-  Channels match WorldNoiseAccess.NOISE_3D_PATHS in LODiffusion (in order):
-          offset, factor, jaggedness, depth, sloped_cheese, y,
-          entrances, pillars, spaghetti_2d, spaghetti_roughness,
-          noodle, base_3d_noise, final_density
+  Channels match RouterField.java ordinals 0-14 (in order):
+          temperature, vegetation, continents, erosion, depth, ridges,
+          preliminary_surface_level, final_density,
+          barrier, fluid_level_floodedness, fluid_level_spread, lava,
+          vein_toggle, vein_ridged, vein_gap
   biome_ids: 32 discrete biome indices (int), same layout
   heightmap_surface: 256 ints (16×16, x-major)
   heightmap_ocean_floor: 256 ints (16×16, x-major)
+
+  Legacy (pre-v7) dumps with 13 cave-noise channels are also supported for
+  backward compatibility via auto-detection.
 
 Voxy L4 sections
 ----------------
@@ -27,7 +31,7 @@ Voxy L4 sections
 Output
 ------
   subchunk16           : (N, 16, 16, 16)   int32   — native Voxy voxels (one octant per section)
-  noise_3d             : (N, 13, 4, 2, 4)  float32 — all 13 SparseOctree noise channels
+  noise_3d             : (N, 15, 4, 2, 4)  float32 — all 15 v7 RouterField channels
   biome_ids            : (N, 4, 2, 4)      int32   — biome index per quart cell
   heightmap5           : (N, 5, 16, 16)    float32 — 5-plane heightmap (surface, ocean, slope_x, slope_z, curvature)
 
@@ -54,26 +58,46 @@ import numpy as np
 # Constants
 # ---------------------------------------------------------------------------
 
-# SparseOctree noise channels — must match WorldNoiseAccess.NOISE_3D_PATHS in LODiffusion.
-# These are cave density function values sampled at quart-cell resolution,
-# NOT the climate RouterField values (temperature, vegetation, etc.).
+# v7 RouterField channels — must match RouterField.java ordinals 0-14 and
+# router_field_contract.yaml exactly.  These are the 15 vanilla NoiseRouter
+# output fields sampled at 4×2×4 quart-cell resolution.
 NOISE_FIELDS = [
-    "offset",  # overworld/offset
-    "factor",  # overworld/factor
-    "jaggedness",  # overworld/jaggedness
-    "depth",  # router.depth()
-    "sloped_cheese",  # overworld/sloped_cheese
-    "y",  # cell-centre Y coordinate
-    "entrances",  # overworld/caves/entrances
-    "pillars",  # overworld/caves/pillars (cheese caves)
-    "spaghetti_2d",  # overworld/caves/spaghetti_2d
-    "spaghetti_roughness",  # overworld/caves/spaghetti_roughness_function
-    "noodle",  # overworld/caves/noodle
-    "base_3d_noise",  # overworld/base_3d_noise
-    "final_density",  # router.finalDensity()
+    "temperature",  # 0  climate
+    "vegetation",  # 1  climate
+    "continents",  # 2  climate
+    "erosion",  # 3  climate
+    "depth",  # 4  climate (3D)
+    "ridges",  # 5  climate
+    "preliminary_surface_level",  # 6  density
+    "final_density",  # 7  density
+    "barrier",  # 8  aquifer
+    "fluid_level_floodedness",  # 9  aquifer
+    "fluid_level_spread",  # 10 aquifer
+    "lava",  # 11 aquifer
+    "vein_toggle",  # 12 ore
+    "vein_ridged",  # 13 ore
+    "vein_gap",  # 14 ore
 ]
-N_FIELDS = len(NOISE_FIELDS)  # 13
-assert N_FIELDS == 13, f"Expected 13 SparseOctree noise channels, got {N_FIELDS}"
+N_FIELDS = len(NOISE_FIELDS)  # 15
+assert N_FIELDS == 15, f"Expected 15 v7 RouterField channels, got {N_FIELDS}"
+
+# Legacy 13-channel field names for backward-compat auto-detection.
+# @deprecated: v7 dumps use NOISE_FIELDS (15 channels) above.
+_LEGACY_NOISE_FIELDS = [
+    "offset",  # 0  overworld/offset
+    "factor",  # 1  overworld/factor
+    "jaggedness",  # 2  overworld/jaggedness
+    "depth",  # 3  router.depth()
+    "sloped_cheese",  # 4  overworld/sloped_cheese
+    "y",  # 5  cell-centre Y coordinate
+    "entrances",  # 6  overworld/caves/entrances
+    "pillars",  # 7  overworld/caves/pillars (cheese caves)
+    "spaghetti_2d",  # 8  overworld/caves/spaghetti_2d
+    "spaghetti_roughness",  # 9  overworld/caves/spaghetti_roughness_function
+    "noodle",  # 10 overworld/caves/noodle
+    "base_3d_noise",  # 11 overworld/base_3d_noise
+    "final_density",  # 12 router.finalDensity()
+]
 
 # Each section file covers exactly one (cx, sy, cz) triplet — 4×2×4 = 32 quart cells.
 # Section Y range in Minecraft overworld: -4 to 19 inclusive (24 sections × 16 blocks = 384 blocks)
@@ -205,7 +229,7 @@ def build_pairs(
     section_pattern = re.compile(r"section_(-?\d+)_(-?\d+)_(-?\d+)\.json$")
 
     subchunks: list[np.ndarray] = []  # each (16, 16, 16) int32
-    noise_slices: list[np.ndarray] = []  # each (13, 4, 2, 4) float32
+    noise_slices: list[np.ndarray] = []  # each (15, 4, 2, 4) float32  [v7] or (13, ...) [legacy]
     biome_slices: list[np.ndarray] = []  # each (4, 2, 4) int32
     hm5_slices: list[np.ndarray] = []  # each (5, 16, 16) float32
 
@@ -231,13 +255,17 @@ def build_pairs(
         with open(dump_path) as f:
             raw = json.load(f)
 
-        # Parse 15 noise fields: 32-value flat → (4, 2, 4)
+        # Auto-detect v7 (15-ch) vs legacy (13-ch) based on first field name.
+        is_v7 = NOISE_FIELDS[0] in raw  # v7 has "temperature" key
+        active_fields = NOISE_FIELDS if is_v7 else _LEGACY_NOISE_FIELDS
+
+        # Parse noise fields: 32-value flat → (4, 2, 4)
         field_arrays: list[np.ndarray] = []
-        for field in NOISE_FIELDS:
+        for field in active_fields:
             arr = np.array(raw[field], dtype=np.float32)  # (32,)
             arr = arr.reshape(4, 2, 4)  # (qx, qy, qz)
             field_arrays.append(arr)
-        noise_block = np.stack(field_arrays)  # (13, 4, 2, 4)
+        noise_block = np.stack(field_arrays)  # (15, 4, 2, 4) or (13, 4, 2, 4)
 
         # Parse biome IDs: 32-value flat → (4, 2, 4)
         biome_arr = np.array(raw["biome_ids"], dtype=np.int32).reshape(4, 2, 4)
@@ -285,9 +313,11 @@ def build_pairs(
 
     # Stack and save
     all_subchunks = np.stack(subchunks).astype(np.int32)  # (N, 16, 16, 16)
-    all_noise_3d = np.stack(noise_slices).astype(np.float32)  # (N, 13, 4, 2, 4)
+    all_noise_3d = np.stack(noise_slices).astype(np.float32)  # (N, C, 4, 2, 4) C=15 or 13
     all_biome_ids = np.stack(biome_slices).astype(np.int32)  # (N, 4, 2, 4)
     all_hm5 = np.stack(hm5_slices).astype(np.float32)  # (N, 5, 16, 16)
+    n_ch = all_noise_3d.shape[1]
+    print(f"  Noise channels: {n_ch} ({'v7 RouterField' if n_ch == 15 else 'legacy cave-noise'})")
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     np.savez_compressed(

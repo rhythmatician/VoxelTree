@@ -21,6 +21,25 @@ from voxel_tree.tasks.sparse_octree.sparse_octree import (
     SparseOctreeFastModel,
 )
 
+from voxel_tree.tasks.sparse_octree.build_sparse_octree_pairs import (
+    NOISE_FIELDS,
+    _LEGACY_NOISE_FIELDS,
+)
+
+
+def test_noise_fields_count_is_15() -> None:
+    """NOISE_FIELDS must contain exactly 15 v7 RouterField channel names."""
+    assert len(NOISE_FIELDS) == 15
+    assert NOISE_FIELDS[0] == "temperature"
+    assert NOISE_FIELDS[-1] == "vein_gap"
+
+
+def test_legacy_noise_fields_count_is_13() -> None:
+    """_LEGACY_NOISE_FIELDS must contain exactly 13 legacy cave-noise names."""
+    assert len(_LEGACY_NOISE_FIELDS) == 13
+    assert _LEGACY_NOISE_FIELDS[0] == "offset"
+    assert _LEGACY_NOISE_FIELDS[-1] == "final_density"
+
 
 def test_sparse_octree_loss_masks_material_to_leaf_nodes() -> None:
     # One level, two nodes: first internal (split=1), second leaf (split=0).
@@ -243,3 +262,62 @@ def test_legacy_heightmaps_auto_converted_to_5plane() -> None:
         np.testing.assert_allclose(
             ds.heightmap5[:, 1, :, :], np.minimum(hm_s, 62.0) / 320.0, atol=1e-6
         )
+
+
+def test_legacy_13ch_npz_trains_with_auto_n3d() -> None:
+    """Legacy 13-channel NPZ should auto-detect n3d=13 and build a matching model."""
+    n = 4
+    with tempfile.TemporaryDirectory() as tmpdir:
+        npz_path = Path(tmpdir) / "test.npz"
+        np.savez_compressed(
+            npz_path,
+            subchunk16=np.zeros((n, 16, 16, 16), dtype=np.int32),
+            noise_3d=np.random.randn(n, 13, 4, 2, 4).astype(np.float32),
+            biome_ids=np.zeros((n, 4, 2, 4), dtype=np.int32),
+            heightmap5=np.random.randn(n, 5, 16, 16).astype(np.float32),
+        )
+        ds = SparseOctreeDataset(npz_path, cache_targets=False)
+        assert ds.noise_3d.shape == (n, 13, 4, 2, 4)
+        # Model auto-adapts to 13 channels from dataset
+        sample = ds[0]
+        n3d = sample["noise_3d"].shape[0]
+        assert n3d == 13
+        model = SparseOctreeFastModel(n2d=0, n3d=n3d, hidden=16, num_classes=4, spatial_y=2)
+        B = 2
+        out = model(
+            torch.zeros(B, 0, 4, 4),
+            torch.randn(B, 13, 4, 2, 4),
+            torch.zeros(B, 4, 2, 4, dtype=torch.long),
+            torch.randn(B, 5, 16, 16),
+        )
+        assert isinstance(out, dict)
+        assert set(out.keys()) == {0, 1, 2, 3, 4}
+
+
+def test_v7_15ch_npz_trains_with_auto_n3d() -> None:
+    """v7 15-channel NPZ should auto-detect n3d=15 and build a matching model."""
+    n = 4
+    with tempfile.TemporaryDirectory() as tmpdir:
+        npz_path = Path(tmpdir) / "test.npz"
+        np.savez_compressed(
+            npz_path,
+            subchunk16=np.zeros((n, 16, 16, 16), dtype=np.int32),
+            noise_3d=np.random.randn(n, 15, 4, 2, 4).astype(np.float32),
+            biome_ids=np.zeros((n, 4, 2, 4), dtype=np.int32),
+            heightmap5=np.random.randn(n, 5, 16, 16).astype(np.float32),
+        )
+        ds = SparseOctreeDataset(npz_path, cache_targets=False)
+        assert ds.noise_3d.shape == (n, 15, 4, 2, 4)
+        sample = ds[0]
+        n3d = sample["noise_3d"].shape[0]
+        assert n3d == 15
+        model = SparseOctreeFastModel(n2d=0, n3d=n3d, hidden=16, num_classes=4, spatial_y=2)
+        B = 2
+        out = model(
+            torch.zeros(B, 0, 4, 4),
+            torch.randn(B, 15, 4, 2, 4),
+            torch.zeros(B, 4, 2, 4, dtype=torch.long),
+            torch.randn(B, 5, 16, 16),
+        )
+        assert isinstance(out, dict)
+        assert set(out.keys()) == {0, 1, 2, 3, 4}

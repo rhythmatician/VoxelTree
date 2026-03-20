@@ -328,3 +328,66 @@ _register(
         export_fn="voxel_tree.tasks.sparse_octree.export_sparse_octree:export_sparse_octree",
     )
 )
+
+# ── revision 3 (v7 final: 15 RouterField ch / 4×2×4 spatial) ─────────────
+# Phase 3 migration: build_sparse_octree_pairs now reads all 15 v7 RouterField
+# channels from the data-harvester JSON dumps.  This is the canonical
+# production spec matching RouterField.java ordinals 0-14.
+_register(
+    ModelContract(
+        model_name="sparse_octree",
+        revision=3,
+        contract_id="lodiffusion.v7.sparse_octree_v3",
+        inputs=(
+            TensorSpec(
+                name="noise_3d",
+                shape=(1, 15, 4, 2, 4),
+                dtype="float32",
+                channels=(
+                    "temperature",
+                    "vegetation",
+                    "continents",
+                    "erosion",
+                    "depth",
+                    "ridges",
+                    "preliminary_surface_level",
+                    "final_density",
+                    "barrier",
+                    "fluid_level_floodedness",
+                    "fluid_level_spread",
+                    "lava",
+                    "vein_toggle",
+                    "vein_ridged",
+                    "vein_gap",
+                ),
+                channel_indices=tuple(range(15)),
+                description="15 RouterField channels at 4×2×4 quart resolution",
+            ),
+        ),
+        outputs=tuple(
+            spec
+            for lvl in range(4, -1, -1)
+            for spec in (
+                TensorSpec(
+                    name=f"split_L{lvl}",
+                    shape=(1, 8 ** (4 - lvl)),
+                    dtype="float32",
+                ),
+                TensorSpec(
+                    name=f"label_L{lvl}",
+                    shape=(1, 8 ** (4 - lvl), "num_classes"),
+                    dtype="float32",
+                ),
+            )
+        ),
+        onnx_opset=18,
+        description="Sparse octree v7: 15 RouterField channels / 4×2×4 spatial → 5-level block hierarchy",
+        changelog="Phase 3: build_sparse_octree_pairs now reads v7 RouterField dumps "
+        "(15 channels) instead of legacy cave-noise dumps (13 channels). "
+        "Spatial layout remains 4×2×4 (vanilla cellHeight=8). "
+        "Backward-compat: legacy 13ch dumps auto-detected and still loadable.",
+        build_pairs_fn="voxel_tree.tasks.sparse_octree.build_sparse_octree_pairs:main",
+        train_fn="voxel_tree.tasks.sparse_octree.train:train_sparse_octree",
+        export_fn="voxel_tree.tasks.sparse_octree.export_sparse_octree:export_sparse_octree",
+    )
+)

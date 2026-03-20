@@ -43,7 +43,7 @@
 #
 # ## Track IDs in use (add new tracks to this list when you create them)
 #
-#   "sparse_octree"       — Sparse Octree hierarchy classifier (13ch/4×2×4 cave noise → 5-level octree)
+#   "sparse_octree"       — Sparse Octree hierarchy classifier (15ch/4×2×4 RouterField → 5-level octree)
 #   "density"             — Density predictor (6 climate → 2 density fields)
 #   "biome_classifier"    — v7 Biome classifier (6 climate → 54 biome classes)
 #   "heightmap_predictor" — v7 Heightmap predictor (96 climate → 32 height values)
@@ -652,7 +652,7 @@ def _export_sparse_octree_run(p: dict[str, Any]) -> None:
             if _out
             else Path(__file__).parent.parent / "tasks" / "sparse_octree" / "model"
         ),
-        n3d=13,
+        n3d=15,
         spatial_y=2,
         hidden=train.get("sparse_octree_hidden", 80),
     )
@@ -673,7 +673,7 @@ def _deploy_sparse_octree_run(p: dict[str, Any]) -> None:
             if out_dir
             else Path(__file__).parent.parent / "tasks" / "sparse_octree" / "model"
         ),
-        n3d=13,
+        n3d=15,
         spatial_y=2,
         hidden=train.get("sparse_octree_hidden", 80),
     )
@@ -934,7 +934,7 @@ MODEL_TRACKS: list[ModelTrack] = [
         build_pairs_consumes=frozenset({"voxy_db", "noise_dumps"}),
         checkpoint_filename=_SPARSE_OCTREE_CHECKPOINT,
         contract_name="sparse_octree",
-        contract_revision=2,
+        contract_revision=3,
         extra_steps=[
             StepDef(
                 id="distill_sparse_octree",

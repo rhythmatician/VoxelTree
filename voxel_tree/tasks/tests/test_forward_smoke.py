@@ -56,7 +56,7 @@ B = 2  # batch size for smoke tests
 def _sparse_octree_batch(
     *,
     n2d: int = 0,
-    n3d: int = 13,
+    n3d: int = 15,
     spatial_y: int = 2,
 ) -> Dict[str, torch.Tensor]:
     """Build a batch dict identical to ``sparse_octree_collate`` output."""
@@ -90,7 +90,7 @@ class TestSparseOctreeSmoke:
     """Every call pattern used in train / distill / export must not raise."""
 
     @staticmethod
-    def _make_model(cls: type, n3d: int = 13) -> torch.nn.Module:
+    def _make_model(cls: type, n3d: int = 15) -> torch.nn.Module:
         return cls(n2d=0, n3d=n3d, hidden=16, num_classes=4, spatial_y=2)
 
     def test_train_call_pattern(self, model_cls: type) -> None:
@@ -259,14 +259,14 @@ def test_distill_evaluate_student_call_pattern() -> None:
         np.savez_compressed(
             npz,
             subchunk16=np.zeros((n, 16, 16, 16), dtype=np.int32),
-            noise_3d=np.random.randn(n, 13, 4, 2, 4).astype(np.float32),
+            noise_3d=np.random.randn(n, 15, 4, 2, 4).astype(np.float32),
             biome_ids=np.zeros((n, 4, 2, 4), dtype=np.int32),
             heightmap5=np.random.randn(n, 5, 16, 16).astype(np.float32),
         )
         ds = SparseOctreeDataset(npz, cache_targets=True)
         model = SparseOctreeFastModel(
             n2d=0,
-            n3d=13,
+            n3d=15,
             hidden=16,
             num_classes=4,
             spatial_y=2,

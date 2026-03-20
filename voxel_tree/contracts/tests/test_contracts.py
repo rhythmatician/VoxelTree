@@ -287,6 +287,15 @@ class TestCatalogContracts:
         assert c.inputs[0].channels[0] == "offset"
         assert c.inputs[0].channels[-1] == "final_density"
 
+    def test_sparse_octree_rev3_shapes(self):
+        """Revision 3: v7 RouterField 15ch / 4×2×4 — canonical production spec."""
+        c = get_contract("sparse_octree", revision=3)
+        assert c.inputs[0].shape == (1, 15, 4, 2, 4)
+        assert c.inputs[0].channels is not None
+        assert len(c.inputs[0].channels) == 15
+        assert c.inputs[0].channels[0] == "temperature"
+        assert c.inputs[0].channels[-1] == "vein_gap"
+
     def test_sparse_octree_rev1_has_10_outputs(self):
         c = get_contract("sparse_octree", revision=1)
         assert len(c.outputs) == 10  # 5 levels × 2 (split + label)
@@ -339,7 +348,7 @@ class TestTrackAlignment:
     def test_stale_track_detected(self, _fake_track):
         from voxel_tree.contracts.registry import check_track_alignment
 
-        # sparse_octree has rev 0, 1, 2; pinning to 0 → stale (latest is 2)
+        # sparse_octree has rev 0, 1, 2, 3; pinning to 0 → stale (latest is 3)
         tracks = [_fake_track("old_octree", "sparse_octree", 0)]
         issues = check_track_alignment(tracks)
         assert len(issues) >= 1
@@ -347,9 +356,9 @@ class TestTrackAlignment:
         assert len(stale_issues) == 1
         assert stale_issues[0].track_id == "old_octree"
         assert stale_issues[0].current_revision == 0
-        assert stale_issues[0].latest_revision_ == 2
+        assert stale_issues[0].latest_revision_ == 3
         assert "rev 0" in stale_issues[0].message
-        assert "rev 2" in stale_issues[0].message
+        assert "rev 3" in stale_issues[0].message
 
     def test_missing_contract_is_error(self, _fake_track):
         from voxel_tree.contracts.registry import check_track_alignment
