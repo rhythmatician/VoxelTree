@@ -221,7 +221,9 @@ def test_fast_model_forward_with_heightmaps() -> None:
 
     assert isinstance(out, dict)
     assert set(out.keys()) == {0, 1, 2, 3, 4}
+    assert out[4]["occ"].shape == (B, 1, 8)
     assert out[4]["split"].shape == (B, 1)
     assert out[4]["label"].shape == (B, 1, 10)
+    assert out[0]["occ"].shape == (B, 4096, 8)
     assert out[0]["split"].shape == (B, 4096)
     assert out[0]["label"].shape == (B, 4096, 10)

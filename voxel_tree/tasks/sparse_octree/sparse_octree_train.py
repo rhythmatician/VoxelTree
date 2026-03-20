@@ -13,11 +13,11 @@ Targets are built on-the-fly by ``build_sparse_octree_targets`` and stored as
 flat 1-D tensors per level so they can be directly compared against the model's
 flat [B, N] output tensors.
 
-  level 4 (side 1): N=1    split [B,1],     label [B,1]
-  level 3 (side 2): N=8    split [B,8],     label [B,8]
-  level 2 (side 4): N=64   split [B,64],    label [B,64]
-  level 1 (side 8): N=512  split [B,512],   label [B,512]
-  level 0 (side16): N=4096 split [B,4096],  label [B,4096]
+  level 4 (side 1): N=1    occ [B,1,8],    split [B,1],     label [B,1]
+  level 3 (side 2): N=8    occ [B,8,8],    split [B,8],     label [B,8]
+  level 2 (side 4): N=64   occ [B,64,8],   split [B,64],    label [B,64]
+  level 1 (side 8): N=512  occ [B,512,8],  split [B,512],   label [B,512]
+  level 0 (side16): N=4096 occ [B,4096,8], split [B,4096],  label [B,4096]
 """
 
 from __future__ import annotations
@@ -103,7 +103,14 @@ class SparseOctreeDataset(Dataset):  # type: ignore[type-arg]
             split = (~lvl_data.is_leaf).astype(np.float32).reshape(-1)
             label = lvl_data.labels.astype(np.int64).reshape(-1)
             is_leaf = lvl_data.is_leaf.astype(np.bool_).reshape(-1)
+            # Decode child_mask uint8 → [N, 8] float occupancy bits
+            # bit0=x, bit1=z, bit2=y matching Java octant convention
+            cm = lvl_data.child_mask.reshape(-1).astype(np.uint8)
+            occ = np.unpackbits(cm[:, np.newaxis], axis=1, bitorder="little")[:, :8].astype(
+                np.float32
+            )
             targets[lvl] = {
+                "occ": torch.from_numpy(occ),
                 "split": torch.from_numpy(split),
                 "label": torch.from_numpy(label),
                 "is_leaf": torch.from_numpy(is_leaf),
@@ -143,10 +150,11 @@ def sparse_octree_collate(batch: List[Dict[str, Any]]) -> Dict[str, Any]:
     levels = sorted(batch[0]["targets"].keys(), reverse=True)
     targets: Dict[int, Dict[str, torch.Tensor]] = {}
     for lvl in levels:
+        occ = torch.stack([b["targets"][lvl]["occ"] for b in batch], dim=0)  # [B,N,8]
         split = torch.stack([b["targets"][lvl]["split"] for b in batch], dim=0)  # [B,N]
         label = torch.stack([b["targets"][lvl]["label"] for b in batch], dim=0)  # [B,N]
         is_leaf = torch.stack([b["targets"][lvl]["is_leaf"] for b in batch], dim=0)  # [B,N]
-        targets[lvl] = {"split": split, "label": label, "is_leaf": is_leaf}
+        targets[lvl] = {"occ": occ, "split": split, "label": label, "is_leaf": is_leaf}
 
     return {
         "noise_2d": noise_2d,
@@ -187,19 +195,25 @@ def _sparse_octree_loss(
     level_label_weights = level_label_weights or {}
 
     for lvl, out in preds.items():
-        split_pred = out["split"]  # [B, N]
         label_pred = out["label"]  # [B, N, C]
 
         tgt = targets[lvl]
-        split_tgt = tgt["split"].to(device)  # [B, N] float
         label_tgt = tgt["label"].to(device)  # [B, N] int64
 
+        # Occupancy / split BCE loss
         split_scale = split_weight * level_split_weights.get(lvl, 1.0)
         if split_scale > 0:
+            # Use per-child occupancy when available, else legacy scalar split
+            if "occ" in out and "occ" in tgt:
+                bce_pred = out["occ"]  # [B, N, 8]
+                bce_tgt = tgt["occ"].to(device)  # [B, N, 8]
+            else:
+                bce_pred = out["split"]  # [B, N]
+                bce_tgt = tgt["split"].to(device)  # [B, N]
             bce: nn.Module
             if dynamic_split_pos_weight:
-                pos = float(split_tgt.sum().item())
-                neg = float(split_tgt.numel() - pos)
+                pos = float(bce_tgt.sum().item())
+                neg = float(bce_tgt.numel() - pos)
                 if pos > 0.0 and neg > 0.0:
                     # Clamp to [0.5, 10] — at coarse levels the tiny per-batch
                     # sample count makes the raw ratio extremely noisy.
@@ -210,7 +224,7 @@ def _sparse_octree_loss(
                     bce = nn.BCEWithLogitsLoss()
             else:
                 bce = nn.BCEWithLogitsLoss()
-            loss = loss + split_scale * bce(split_pred, split_tgt)
+            loss = loss + split_scale * bce(bce_pred, bce_tgt)
 
         # Explicit leaf-only mask keeps material supervision restricted to
         # split_target == 0. This remains robust even if future target writers
@@ -218,8 +232,10 @@ def _sparse_octree_loss(
         B, N, C = label_pred.shape
         if "is_leaf" in tgt:
             leaf_mask = tgt["is_leaf"].to(device=device, dtype=torch.bool)
+        elif "occ" in tgt:
+            leaf_mask = tgt["occ"].to(device).sum(dim=-1) == 0
         else:
-            leaf_mask = split_tgt < 0.5
+            leaf_mask = tgt["split"].to(device) < 0.5
         if leaf_mask.any():
             label_scale = label_weight * level_label_weights.get(lvl, 1.0)
             loss = loss + label_scale * ce(label_pred[leaf_mask], label_tgt[leaf_mask])
@@ -252,7 +268,11 @@ def _update_batch_metrics(
     calibration without a separate evaluation pass.
     """
     for lvl, out in preds.items():
-        split_pred = out["split"] > 0
+        # Derive split from occ: any child logit > 0 ↔ sigmoid > 0.5
+        if "occ" in out:
+            split_pred = out["occ"].max(dim=-1).values > 0
+        else:
+            split_pred = out["split"] > 0
         split_tgt = targets[lvl]["split"].to(split_pred.device) > 0.5
 
         tp = (split_pred & split_tgt).sum().item()

@@ -15,8 +15,8 @@ Architecture
    features ready for the next level.
 
    Training: all nodes at every level are always expanded (teacher forcing).
-    Inference: expand nodes by applying a sigmoid to ``split_logit`` and
-    comparing against the runtime split threshold (commonly 0.43).
+    Inference: expand nodes whose per-child occupancy logits exceed the
+    runtime threshold (commonly 0.5).  split = any(sigmoid(occ) > thresh).
     L4 is an ordinary learned split decision: homogeneous subchunks such as
     all-air can and should stay leaves at the root. L0 nodes are always leaves
     (1×1×1 voxels).
@@ -34,7 +34,8 @@ v7 pipeline (default):
   heightmap_ocean_floor : [B, 16, 16]          OCEAN_FLOOR_WG heightmap in block Y
   ctx       : [B, D]
   node_feat : [B * N_nodes, D]      N_nodes = 1 / 8 / 64 / 512 / 4096 at L4..L0
-  split     : [B, N_nodes]          binary logits
+  occ       : [B, N_nodes, 8]       per-child occupancy logits
+  split     : [B, N_nodes]          derived max(occ, dim=-1) for compat
   label     : [B, N_nodes, C]       class logits
 
 Vanilla uses cellWidth=4 (4-block quart spacing on X/Z) and cellHeight=8
@@ -252,7 +253,7 @@ class SparseOctreeModel(nn.Module):
         self.root_proj = nn.Linear(hidden, hidden)
 
         # Per-node heads
-        self.split_head = nn.Linear(hidden, 1)
+        self.occ_head = nn.Linear(hidden, 8)
         self.label_head = nn.Linear(hidden, num_classes)
 
         # Expand one node feature → 8 child features
@@ -304,10 +305,11 @@ class SparseOctreeModel(nn.Module):
 
             # Per-node predictions
             flat = feat.reshape(B * N, self.hidden)
-            split_logits = self.split_head(flat).reshape(B, N)  # [B, N]
+            occ_logits = self.occ_head(flat).reshape(B, N, 8)  # [B, N, 8]
+            split_logits = occ_logits.max(dim=-1).values  # [B, N] derived
             label_logits = self.label_head(flat).reshape(B, N, self.num_classes)  # [B, N, C]
 
-            outputs[lvl] = {"split": split_logits, "label": label_logits}
+            outputs[lvl] = {"occ": occ_logits, "split": split_logits, "label": label_logits}
 
             if lvl == 0:
                 break
@@ -344,7 +346,7 @@ class SparseOctreeFastModel(nn.Module):
         biome_embed_dim: int = 8,
         label_rank: int | None = None,
         child_rank: int | None = None,
-        split_rank: int | None = None,
+        occ_rank: int | None = None,
         spatial_y: int = 2,
     ) -> None:
         super().__init__()
@@ -355,7 +357,7 @@ class SparseOctreeFastModel(nn.Module):
 
         label_rank = label_rank or max(48, min(hidden, (hidden * 2) // 3))
         child_rank = child_rank or max(32, hidden // 2)
-        split_rank = split_rank or max(24, hidden // 3)
+        occ_rank = occ_rank or max(24, hidden // 3)
 
         self.noise_enc = _NoiseEncoder(
             n2d,
@@ -373,9 +375,7 @@ class SparseOctreeFastModel(nn.Module):
         )
         self.level_mod = nn.ModuleList(_LevelFiLM(hidden) for _ in range(levels))
 
-        self.split_heads = nn.ModuleList(
-            _FactorizedHead(hidden, 1, split_rank) for _ in range(levels)
-        )
+        self.occ_heads = nn.ModuleList(_FactorizedHead(hidden, 8, occ_rank) for _ in range(levels))
         self.label_head = _FactorizedHead(hidden, num_classes, label_rank)
         self.child_proj = _FactorizedHead(hidden, hidden * 8, child_rank)
 
@@ -406,9 +406,10 @@ class SparseOctreeFastModel(nn.Module):
             feat = feat * scale.unsqueeze(1) + shift.unsqueeze(1)
 
             flat = feat.reshape(B * N, self.hidden)
-            split_logits = self.split_heads[level_idx](flat).reshape(B, N)
+            occ_logits = self.occ_heads[level_idx](flat).reshape(B, N, 8)
+            split_logits = occ_logits.max(dim=-1).values  # derived
             label_logits = self.label_head(flat).reshape(B, N, self.num_classes)
-            outputs[lvl] = {"split": split_logits, "label": label_logits}
+            outputs[lvl] = {"occ": occ_logits, "split": split_logits, "label": label_logits}
 
             if lvl == 0:
                 break

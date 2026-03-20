@@ -20,15 +20,15 @@ Inputs:
   heightmap_ocean_floor float32[1, 16, 16]                  OCEAN_FLOOR_WG block Y
 
 Outputs (10 tensors, levels 4 down to 0):
-  split_L4   float32[1,    1]     split logit at L4 root
+  occ_L4     float32[1,    1, 8]  per-child occupancy logits at L4 root
   label_L4   float32[1,    1, C]  block-class logits
-  split_L3   float32[1,    8]
+  occ_L3     float32[1,    8, 8]
   label_L3   float32[1,    8, C]
-  split_L2   float32[1,   64]
+  occ_L2     float32[1,   64, 8]
   label_L2   float32[1,   64, C]
-  split_L1   float32[1,  512]
+  occ_L1     float32[1,  512, 8]
   label_L1   float32[1,  512, C]
-  split_L0   float32[1, 4096]
+  occ_L0     float32[1, 4096, 8]
   label_L0   float32[1, 4096, C]
 
 The Java decoder (SparseOctreeModelRunner) identifies tensors by shape, so
@@ -113,14 +113,14 @@ def _flatten_outputs(
 ) -> tuple[torch.Tensor, ...]:
     """Flatten model outputs in the expected deterministic order.
 
-    The sparse root model produces a dict mapping level → {'split', 'label'}.
+    The sparse root model produces a dict mapping level → {'occ', 'label'}.
     ONNX export expects a flat tuple of tensors in the order:
-    split_L4, label_L4, ..., split_L0, label_L0.
+    occ_L4, label_L4, ..., occ_L0, label_L0.
     """
 
     result: list[torch.Tensor] = []
     for lvl in range(4, -1, -1):  # L4 → L0
-        result.append(out[lvl]["split"])
+        result.append(out[lvl]["occ"])
         result.append(out[lvl]["label"])
     return tuple(result)
 
@@ -194,6 +194,8 @@ def _infer_num_classes(state_dict: dict[str, Any]) -> int:
 def _infer_model_variant(state_dict: dict[str, Any]) -> str:
     """Infer baseline vs fast sparse-root checkpoint layout."""
     if any(k.startswith("level_mod.") for k in state_dict):
+        return "fast"
+    if any(k.startswith("occ_heads.") for k in state_dict):
         return "fast"
     if "label_head.out_proj.weight" in state_dict or "child_proj.out_proj.weight" in state_dict:
         return "fast"
@@ -279,9 +281,7 @@ def export_sparse_octree(
 
     inferred_hidden = _infer_hidden(state)
     if inferred_hidden > 0 and inferred_hidden != hidden:
-        print(
-            f"[export] Overriding hidden={hidden} → {inferred_hidden} (inferred from checkpoint)"
-        )
+        print(f"[export] Overriding hidden={hidden} → {inferred_hidden} (inferred from checkpoint)")
         hidden = inferred_hidden
 
     print(
@@ -353,15 +353,15 @@ def export_sparse_octree(
         dummy_2d = torch.zeros(1, n2d, 4, 4)
 
     output_names = [
-        "split_L4",
+        "occ_L4",
         "label_L4",
-        "split_L3",
+        "occ_L3",
         "label_L3",
-        "split_L2",
+        "occ_L2",
         "label_L2",
-        "split_L1",
+        "occ_L1",
         "label_L1",
-        "split_L0",
+        "occ_L0",
         "label_L0",
     ]
 
@@ -469,15 +469,15 @@ def export_sparse_octree(
             "heightmap_ocean_floor": [1, 16, 16],
         },
         "outputs": {
-            "split_L4": [1, 1],
+            "occ_L4": [1, 1, 8],
             "label_L4": [1, 1, num_classes],
-            "split_L3": [1, 8],
+            "occ_L3": [1, 8, 8],
             "label_L3": [1, 8, num_classes],
-            "split_L2": [1, 64],
+            "occ_L2": [1, 64, 8],
             "label_L2": [1, 64, num_classes],
-            "split_L1": [1, 512],
+            "occ_L1": [1, 512, 8],
             "label_L1": [1, 512, num_classes],
-            "split_L0": [1, 4096],
+            "occ_L0": [1, 4096, 8],
             "label_L0": [1, 4096, num_classes],
         },
     }
