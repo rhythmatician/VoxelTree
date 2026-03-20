@@ -108,6 +108,12 @@ def main(argv=None):
         default=4.0,
         help="Extra loss multiplier for geometrically-prunable nodes (Phase 5). 0 to disable.",
     )
+    parser.add_argument(
+        "--resume",
+        type=Path,
+        default=None,
+        help="Path to a checkpoint to resume training from. Epochs is the total target.",
+    )
     args = parser.parse_args(argv)
 
     def _progress(epoch, total, metrics):
@@ -137,6 +143,7 @@ def main(argv=None):
         num_classes=args.num_classes,
         model_variant=args.model_variant,
         pruning_boost=args.pruning_boost,
+        resume_from=args.resume,
         progress_callback=_progress,
     )
 

@@ -27,12 +27,13 @@ train:
   output_dir: models/phase5
   batch_size: 8
   device: auto
-  epochs: 800
+  epochs: 1600
   lr: 0.0001
   sparse_octree_hidden: 80
   sparse_octree_variant: fast
   num_classes: 1104
   pruning_boost: 4.0
+  resume_from: models/phase5/sparse_octree_model.pt
 
 export:
   output_dir: production/phase5

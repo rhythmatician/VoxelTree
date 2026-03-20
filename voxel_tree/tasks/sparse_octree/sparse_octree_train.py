@@ -528,9 +528,19 @@ def train_sparse_octree(
     label_weight: float = 0.35,
     label_smoothing: float = 0.03,
     pruning_boost: float = 4.0,
+    resume_from: Optional[Path] = None,
     progress_callback: Optional[Callable[[int, int, Dict[str, float]], None]] = None,
 ) -> Dict[str, Any]:
-    """Train the SparseOctreeModel on noise-conditioned sparse-root pairs."""
+    """Train the SparseOctreeModel on noise-conditioned sparse-root pairs.
+
+    Parameters
+    ----------
+    resume_from : Path, optional
+        Path to a checkpoint saved by a previous training run.  When provided
+        the model weights, optimizer state, and starting epoch are restored so
+        training continues where it left off.  The ``epochs`` parameter is
+        interpreted as the *total* target epoch count (not additional epochs).
+    """
 
     data_path = Path(data_path)
     out_path = Path(out_path)
@@ -540,7 +550,7 @@ def train_sparse_octree(
     # Auto-detect num_classes from the actual max block ID in the dataset.
     # Validate against the canonical Voxy vocab to prevent silent under-sizing
     # (blocks beyond num_classes become permanently unreachable).
-    _VOCAB_PATH = Path(__file__).resolve().parents[2] / "config" / "voxy_vocab.json"
+    _VOCAB_PATH = Path(__file__).resolve().parents[3] / "config" / "voxy_vocab.json"
     _vocab_size: Optional[int] = None
     if _VOCAB_PATH.exists():
         try:
@@ -592,8 +602,49 @@ def train_sparse_octree(
     history: List[Dict[str, float]] = []
     best_loss = float("inf")
     best_state: Optional[Dict[str, Any]] = None
+    start_epoch = 1
 
-    for epoch in range(1, epochs + 1):
+    # ── Resume from checkpoint ─────────────────────────────────────────
+    if resume_from is not None:
+        resume_from = Path(resume_from)
+        if resume_from.exists():
+            ckpt = torch.load(resume_from, map_location=_device, weights_only=False)
+            if isinstance(ckpt, dict) and "model_state_dict" in ckpt:
+                model.load_state_dict(ckpt["model_state_dict"])
+                if "optimizer_state_dict" in ckpt:
+                    optimizer.load_state_dict(ckpt["optimizer_state_dict"])
+                start_epoch = ckpt.get("epoch", 0) + 1
+                best_loss = ckpt.get("best_loss", float("inf"))
+                if "best_state" in ckpt:
+                    best_state = ckpt["best_state"]
+                print(
+                    f"[resume] Loaded checkpoint from {resume_from} "
+                    f"(epoch {start_epoch - 1}, best_loss={best_loss:.4f})"
+                )
+            else:
+                # Legacy checkpoint: bare state_dict
+                model.load_state_dict(ckpt if isinstance(ckpt, dict) else ckpt)
+                print(
+                    f"[resume] Loaded legacy state_dict from {resume_from} "
+                    f"(starting from epoch 1, no optimizer state)"
+                )
+        else:
+            print(f"[resume] Checkpoint not found at {resume_from} — training from scratch")
+
+    if start_epoch > epochs:
+        print(
+            f"[resume] Already trained to epoch {start_epoch - 1} "
+            f"(requested {epochs}) — nothing to do"
+        )
+        return {
+            "checkpoint": str(out_path),
+            "best_loss": best_loss,
+            "history": history,
+            "model_variant": model_variant,
+            "hidden": hidden,
+        }
+
+    for epoch in range(start_epoch, epochs + 1):
         model.train()
         total_loss = 0.0
         total_batches = 0
@@ -645,7 +696,20 @@ def train_sparse_octree(
             progress_callback(epoch, epochs, row)
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    torch.save(best_state or model.state_dict(), out_path)
+    # Save full checkpoint with optimizer state for resume support.
+    # Also save backward-compatible bare state_dict for export.
+    full_ckpt = {
+        "model_state_dict": best_state
+        or {k: v.cpu().clone() for k, v in model.state_dict().items()},
+        "optimizer_state_dict": optimizer.state_dict(),
+        "epoch": epochs,
+        "best_loss": best_loss,
+        "model_variant": model_variant,
+        "hidden": hidden,
+        "num_classes": num_classes,
+    }
+    torch.save(full_ckpt, out_path)
+    print(f"[train] Saved checkpoint to {out_path} (epoch {epochs}, best_loss={best_loss:.4f})")
 
     return {
         "checkpoint": str(out_path),

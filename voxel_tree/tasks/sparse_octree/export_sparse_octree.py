@@ -259,10 +259,13 @@ def export_sparse_octree(
     config_path = out_dir / "sparse_octree_config.json"
 
     # ── Load checkpoint ────────────────────────────────────────────────
-    state = torch.load(checkpoint, map_location="cpu", weights_only=True)
+    state = torch.load(checkpoint, map_location="cpu", weights_only=False)
 
+    # Unwrap full checkpoint format (model_state_dict + optimizer + epoch)
+    if isinstance(state, dict) and "model_state_dict" in state:
+        state = state["model_state_dict"]
     # Unwrap if saved as {"model": state_dict, ...}
-    if isinstance(state, dict) and "model" in state and isinstance(state["model"], dict):
+    elif isinstance(state, dict) and "model" in state and isinstance(state["model"], dict):
         state = state["model"]
 
     # Auto-detect num_classes from the saved weights

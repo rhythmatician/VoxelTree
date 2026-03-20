@@ -620,6 +620,7 @@ def _train_sparse_octree_run(p: dict[str, Any]) -> None:
     train = p.get("train", {})
     npz_path = Path(data.get("v7_pairs_npz", "sparse_octree_pairs_v7.npz"))
     out_path = Path(train.get("output_dir", ".")) / _SPARSE_OCTREE_CHECKPOINT
+    resume_path = Path(train.get("resume_from")) if train.get("resume_from") else None
     result = train_sparse_octree(
         data_path=npz_path,
         out_path=out_path,
@@ -633,6 +634,7 @@ def _train_sparse_octree_run(p: dict[str, Any]) -> None:
         # when rare blocks are absent from the training data.
         num_classes=train.get("num_classes", 1104),
         pruning_boost=train.get("pruning_boost", 4.0),
+        resume_from=resume_path,
         progress_callback=lambda epoch, total, _m: _report_progress(epoch, total),
     )
     print(f"[STEP_RESULT]{json.dumps(result, sort_keys=True)}")
