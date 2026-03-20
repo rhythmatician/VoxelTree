@@ -232,6 +232,7 @@ def build_pairs(
     noise_slices: list[np.ndarray] = []  # each (15, 4, 2, 4) float32  [v7] or (13, ...) [legacy]
     biome_slices: list[np.ndarray] = []  # each (4, 2, 4) int32
     hm5_slices: list[np.ndarray] = []  # each (5, 16, 16) float32
+    block_y_min_list: list[int] = []  # absolute block Y of each octant's bottom
 
     # Build a set of all (cx, sy, cz) keys parseable from dump files so we can
     # detect Voxy sections that have no corresponding noise dump.
@@ -295,6 +296,10 @@ def build_pairs(
             noise_slices.append(noise_block)
             biome_slices.append(biome_arr)
             hm5_slices.append(hm5)
+            # Absolute block-Y of this octant's bottom edge.
+            # Voxy sections are 16 blocks each; labels32 covers 32 blocks.
+            dy = (octant >> 2) & 1
+            block_y_min_list.append(sy * 16 + dy * 16)
 
     if not subchunks:
         print("ERROR: No pairs generated — check that dumps_dir and voxy_dir overlap.")
@@ -316,6 +321,7 @@ def build_pairs(
     all_noise_3d = np.stack(noise_slices).astype(np.float32)  # (N, C, 4, 2, 4) C=15 or 13
     all_biome_ids = np.stack(biome_slices).astype(np.int32)  # (N, 4, 2, 4)
     all_hm5 = np.stack(hm5_slices).astype(np.float32)  # (N, 5, 16, 16)
+    all_block_y_min = np.array(block_y_min_list, dtype=np.int32)  # (N,)
     n_ch = all_noise_3d.shape[1]
     print(f"  Noise channels: {n_ch} ({'v7 RouterField' if n_ch == 15 else 'legacy cave-noise'})")
 
@@ -326,6 +332,7 @@ def build_pairs(
         noise_3d=all_noise_3d,
         biome_ids=all_biome_ids,
         heightmap5=all_hm5,
+        block_y_min=all_block_y_min,
     )
 
     size_mb = output_path.stat().st_size / (1024 * 1024)

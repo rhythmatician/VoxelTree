@@ -37,6 +37,73 @@ from .sparse_octree import SparseOctreeFastModel, SparseOctreeModel
 from .sparse_octree_targets import build_sparse_octree_targets
 
 # ---------------------------------------------------------------------------
+# Geometric pruning helpers (Phase 5)
+# ---------------------------------------------------------------------------
+
+# Height-range constant matching LodGenerationService / build_sparse_octree_pairs.
+_HEIGHT_RANGE = 320.0
+
+
+def compute_prunable_flags(
+    heightmap5: np.ndarray,
+    block_y_min: int,
+    max_level: int = 4,
+    cube_side: int = 16,
+) -> Dict[int, np.ndarray]:
+    """Compute per-node ``is_prunable`` flags for geometric pruning.
+
+    A node is *prunable* when its block-Y range does not intersect the
+    heightmap surface range within its XZ footprint — exactly matching
+    the zero-margin pruning logic in ``OctreeQueue.spawnChildren()``.
+
+    Prunable above surface: ``node_y_min >= local_surf_max``
+    Prunable below surface: ``node_y_max <= local_surf_min``
+
+    Parameters
+    ----------
+    heightmap5 : ndarray (5, 16, 16)
+        5-plane heightmap.  Channel 0 is ``surface_norm = raw_surface / 320``.
+    block_y_min : int
+        Absolute world block-Y of this subchunk's bottom edge.
+    max_level : int
+        Coarsest octree level (default 4).
+    cube_side : int
+        Voxel cube edge length (default 16).
+
+    Returns
+    -------
+    Dict[level → bool ndarray (side, side, side)] where ``True`` ⇒ prunable.
+    """
+    # Recover raw surface heights in block coordinates.
+    raw_surface = heightmap5[0] * _HEIGHT_RANGE  # (16, 16)
+
+    result: Dict[int, np.ndarray] = {}
+    for lvl in range(max_level, -1, -1):
+        side = 2 ** (max_level - lvl)  # nodes per axis at this level
+        cell = cube_side // side  # blocks per node per axis
+        prunable = np.zeros((side, side, side), dtype=np.bool_)
+
+        for y_idx in range(side):
+            node_y_min = block_y_min + y_idx * cell
+            node_y_max = block_y_min + (y_idx + 1) * cell
+            for z_idx in range(side):
+                for x_idx in range(side):
+                    # Surface heights in this node's XZ footprint (16×16 hm)
+                    hm_slice = raw_surface[
+                        z_idx * cell : (z_idx + 1) * cell,
+                        x_idx * cell : (x_idx + 1) * cell,
+                    ]
+                    surf_min = float(hm_slice.min())
+                    surf_max = float(hm_slice.max())
+                    # Zero-margin: prune if entirely above OR entirely below
+                    if node_y_min >= surf_max or node_y_max <= surf_min:
+                        prunable[y_idx, z_idx, x_idx] = True
+
+        result[lvl] = prunable
+    return result
+
+
+# ---------------------------------------------------------------------------
 # Dataset
 # ---------------------------------------------------------------------------
 
@@ -81,6 +148,16 @@ class SparseOctreeDataset(Dataset):  # type: ignore[type-arg]
             n = len(self.subchunks)
             self.heightmap5 = np.zeros((n, 5, 16, 16), dtype=np.float32)
 
+        # Phase 5: absolute block-Y of each subchunk's bottom edge.
+        if "block_y_min" in data:
+            self.block_y_min = data["block_y_min"].astype(np.int32)  # (N,)
+        else:
+            # Legacy NPZ without block_y_min — assume surface-level (Y=64)
+            # so heightmap comparisons are roughly centered. Pruning flags
+            # won't be accurate but training can still proceed.
+            n = len(self.subchunks)
+            self.block_y_min = np.full(n, 64, dtype=np.int32)
+
         self.air_id = air_id
         self._cache_targets = cache_targets
         self._target_cache: Optional[List[Dict[int, Dict[str, torch.Tensor]]]] = None
@@ -104,6 +181,9 @@ class SparseOctreeDataset(Dataset):  # type: ignore[type-arg]
     def _build_targets(self, idx: int) -> Dict[int, Dict[str, torch.Tensor]]:
         raw = build_sparse_octree_targets(self.subchunks[idx], air_id=self.air_id, split_label=-1)
 
+        # Phase 5: compute geometric pruning flags from heightmap + block_y_min.
+        prunable_flags = compute_prunable_flags(self.heightmap5[idx], int(self.block_y_min[idx]))
+
         targets: Dict[int, Dict[str, torch.Tensor]] = {}
         for lvl, lvl_data in raw.items():
             split = (~lvl_data.is_leaf).astype(np.float32).reshape(-1)
@@ -115,11 +195,13 @@ class SparseOctreeDataset(Dataset):  # type: ignore[type-arg]
             occ = np.unpackbits(cm[:, np.newaxis], axis=1, bitorder="little")[:, :8].astype(
                 np.float32
             )
+            prunable = prunable_flags[lvl].reshape(-1).astype(np.float32)
             targets[lvl] = {
                 "occ": torch.from_numpy(occ),
                 "split": torch.from_numpy(split),
                 "label": torch.from_numpy(label),
                 "is_leaf": torch.from_numpy(is_leaf),
+                "is_prunable": torch.from_numpy(prunable),
             }
         return targets
 
@@ -156,7 +238,17 @@ def sparse_octree_collate(batch: List[Dict[str, Any]]) -> Dict[str, Any]:
         split = torch.stack([b["targets"][lvl]["split"] for b in batch], dim=0)  # [B,N]
         label = torch.stack([b["targets"][lvl]["label"] for b in batch], dim=0)  # [B,N]
         is_leaf = torch.stack([b["targets"][lvl]["is_leaf"] for b in batch], dim=0)  # [B,N]
-        targets[lvl] = {"occ": occ, "split": split, "label": label, "is_leaf": is_leaf}
+        lvl_dict: Dict[str, torch.Tensor] = {
+            "occ": occ,
+            "split": split,
+            "label": label,
+            "is_leaf": is_leaf,
+        }
+        if "is_prunable" in batch[0]["targets"][lvl]:
+            lvl_dict["is_prunable"] = torch.stack(
+                [b["targets"][lvl]["is_prunable"] for b in batch], dim=0
+            )  # [B,N]
+        targets[lvl] = lvl_dict
 
     return {
         "noise_2d": noise_2d,
@@ -181,12 +273,18 @@ def _sparse_octree_loss(
     level_label_weights: Optional[Dict[int, float]] = None,
     label_smoothing: float = 0.0,
     dynamic_split_pos_weight: bool = False,
+    pruning_boost: float = 4.0,
 ) -> torch.Tensor:
-    """Per-level split (BCE) + leaf-label (CE) loss.
+    """Per-level split (BCE) + leaf-label (CE) loss with geometric pruning.
 
     Material/label CE is *explicitly* leaf-masked so only nodes with
     ``split_target == 0`` contribute. This keeps optimization focused on
     octree sparsity decisions first, then material labels at true leaves.
+
+    Phase 5 — geometric pruning: when ``is_prunable`` flags are present in
+    targets, the occ BCE loss for prunable nodes is amplified by
+    ``pruning_boost`` to strongly push occ→0, teaching the model to agree
+    with the runtime's heightmap-based geometric pruning.
     """
     ce = nn.CrossEntropyLoss(ignore_index=-1, label_smoothing=label_smoothing)
 
@@ -211,6 +309,19 @@ def _sparse_octree_loss(
             else:
                 bce_pred = out["split"]  # [B, N]
                 bce_tgt = tgt["split"].to(device)  # [B, N]
+
+            # Phase 5: per-element weight for geometric pruning.
+            # Prunable nodes get an amplified occ loss (push all bits → 0).
+            prunable_weight: Optional[torch.Tensor] = None
+            if "is_prunable" in tgt and pruning_boost > 0:
+                prunable = tgt["is_prunable"].to(device)  # [B, N]
+                # Expand to match occ shape ([B, N, 8] or [B, N])
+                if bce_pred.ndim == 3:
+                    pw = 1.0 + pruning_boost * prunable.unsqueeze(-1)  # [B, N, 1] → broadcast
+                else:
+                    pw = 1.0 + pruning_boost * prunable
+                prunable_weight = pw
+
             bce: nn.Module
             if dynamic_split_pos_weight:
                 pos = float(bce_tgt.sum().item())
@@ -218,14 +329,18 @@ def _sparse_octree_loss(
                 if pos > 0.0 and neg > 0.0:
                     # Clamp to [0.5, 10] — at coarse levels the tiny per-batch
                     # sample count makes the raw ratio extremely noisy.
-                    pw = max(0.5, min(neg / pos, 10.0))
-                    pos_weight = torch.tensor([pw], device=device)
-                    bce = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
+                    pw_val = max(0.5, min(neg / pos, 10.0))
+                    pos_weight = torch.tensor([pw_val], device=device)
+                    bce = nn.BCEWithLogitsLoss(pos_weight=pos_weight, reduction="none")
                 else:
-                    bce = nn.BCEWithLogitsLoss()
+                    bce = nn.BCEWithLogitsLoss(reduction="none")
             else:
-                bce = nn.BCEWithLogitsLoss()
-            loss = loss + split_scale * bce(bce_pred, bce_tgt)
+                bce = nn.BCEWithLogitsLoss(reduction="none")
+
+            bce_unreduced = bce(bce_pred, bce_tgt)  # same shape as bce_pred
+            if prunable_weight is not None:
+                bce_unreduced = bce_unreduced * prunable_weight
+            loss = loss + split_scale * bce_unreduced.mean()
 
         # Explicit leaf-only mask keeps material supervision restricted to
         # split_target == 0. This remains robust even if future target writers
@@ -309,6 +424,17 @@ def _update_batch_metrics(
                 (label_pred[leaf_mask] == label_tgt[leaf_mask]).sum().item()
             )
 
+        # Phase 5: pruning agreement — does the model predict occ=0 for
+        # geometrically prunable nodes?
+        if "is_prunable" in targets[lvl]:
+            prunable = targets[lvl]["is_prunable"].to(split_pred.device).bool()
+            if prunable.any():
+                # For prunable nodes, the model should NOT split (occ=0).
+                prune_agree = (~split_pred & prunable).sum().item()
+                prune_total = prunable.sum().item()
+                accum["prune_agree"] = accum.get("prune_agree", 0.0) + float(prune_agree)
+                accum["prune_total"] = accum.get("prune_total", 0.0) + float(prune_total)
+
 
 def _finalize_metrics(accum: Dict[str, float]) -> Dict[str, float]:
     tp = accum["split_tp"]
@@ -342,6 +468,12 @@ def _finalize_metrics(accum: Dict[str, float]) -> Dict[str, float]:
         lprec = ltp / max(ltp + lfp, 1.0)
         lrec = ltp / max(ltp + lfn, 1.0)
         result[f"split_f1_L{lvl}"] = 2.0 * lprec * lrec / max(lprec + lrec, 1e-12)
+
+    # Phase 5: pruning agreement rate — fraction of geometrically-prunable
+    # nodes where the model correctly predicts occ=0 (no split).
+    prune_total = accum.get("prune_total", 0.0)
+    if prune_total > 0:
+        result["prune_agree_rate"] = accum.get("prune_agree", 0.0) / prune_total
 
     return result
 
@@ -395,6 +527,7 @@ def train_sparse_octree(
     split_weight: float = 1.0,
     label_weight: float = 0.35,
     label_smoothing: float = 0.03,
+    pruning_boost: float = 4.0,
     progress_callback: Optional[Callable[[int, int, Dict[str, float]], None]] = None,
 ) -> Dict[str, Any]:
     """Train the SparseOctreeModel on noise-conditioned sparse-root pairs."""
@@ -491,6 +624,7 @@ def train_sparse_octree(
                 level_label_weights=level_label_weights,
                 label_smoothing=label_smoothing,
                 dynamic_split_pos_weight=True,
+                pruning_boost=pruning_boost,
             )
             loss.backward()
             optimizer.step()

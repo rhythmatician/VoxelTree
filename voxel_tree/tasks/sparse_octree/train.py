@@ -102,16 +102,26 @@ def main(argv=None):
         choices=("fast", "baseline"),
         help="Sparse-root model variant to train.",
     )
+    parser.add_argument(
+        "--pruning-boost",
+        type=float,
+        default=4.0,
+        help="Extra loss multiplier for geometrically-prunable nodes (Phase 5). 0 to disable.",
+    )
     args = parser.parse_args(argv)
 
     def _progress(epoch, total, metrics):
         _report_progress(epoch, total)
+        prune_str = ""
+        if "prune_agree_rate" in metrics:
+            prune_str = f" prune_agree={metrics['prune_agree_rate']:.4f}"
         print(
             f"[{epoch}/{total}] "
             f"loss={metrics['loss']:.6f} "
             f"split_f1={metrics['split_f1']:.4f} "
             f"leaf_acc={metrics['leaf_acc']:.4f} "
             f"leaf_ratio={metrics['leaf_node_ratio']:.3f}"
+            f"{prune_str}"
         )
 
     result = train_sparse_octree(
@@ -126,6 +136,7 @@ def main(argv=None):
         device=args.device,
         num_classes=args.num_classes,
         model_variant=args.model_variant,
+        pruning_boost=args.pruning_boost,
         progress_callback=_progress,
     )
 
