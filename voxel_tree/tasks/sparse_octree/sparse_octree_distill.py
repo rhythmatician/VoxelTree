@@ -189,14 +189,12 @@ def _evaluate_student(
         noise_2d = batch["noise_2d"].to(device)
         noise_3d = batch["noise_3d"].to(device)
         biome_ids = batch["biome_ids"].to(device)
-        heightmap_surface = batch["heightmap_surface"].to(device)
-        heightmap_ocean_floor = batch["heightmap_ocean_floor"].to(device)
+        heightmap5 = batch["heightmap5"].to(device)
         preds = model(
             noise_2d,
             noise_3d,
             biome_ids,
-            heightmap_surface,
-            heightmap_ocean_floor,
+            heightmap5,
         )
         for lvl, out in preds.items():
             split_pred = (out["split"] > 0).to(torch.int64)
@@ -295,23 +293,20 @@ def distill_sparse_octree(
             noise_2d = batch["noise_2d"].to(_device)
             noise_3d = batch["noise_3d"].to(_device)
             biome_ids = batch["biome_ids"].to(_device)
-            heightmap_surface = batch["heightmap_surface"].to(_device)
-            heightmap_ocean_floor = batch["heightmap_ocean_floor"].to(_device)
+            heightmap5 = batch["heightmap5"].to(_device)
 
             with torch.no_grad():
                 teacher_preds = teacher(
                     noise_2d,
                     noise_3d,
                     biome_ids,
-                    heightmap_surface,
-                    heightmap_ocean_floor,
+                    heightmap5,
                 )
             student_preds = student(
                 noise_2d,
                 noise_3d,
                 biome_ids,
-                heightmap_surface,
-                heightmap_ocean_floor,
+                heightmap5,
             )
 
             losses = _distill_loss(

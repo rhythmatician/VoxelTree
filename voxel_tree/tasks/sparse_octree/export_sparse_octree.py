@@ -16,8 +16,7 @@ ONNX contract: ``lodiffusion.v7.sparse_octree``
 Inputs:
   noise_3d              float32[1, n3d, 4, spatial_y, 4]   (n2d=0 → no noise_2d input)
   biome_ids             int64[1, 4, spatial_y, 4]           discrete biome IDs
-  heightmap_surface     float32[1, 16, 16]                  WORLD_SURFACE_WG block Y
-  heightmap_ocean_floor float32[1, 16, 16]                  OCEAN_FLOOR_WG block Y
+  heightmap5            float32[1, 5, 16, 16]               5-plane heightmap (surface, ocean, slope_x, slope_z, curvature)
 
 Outputs (10 tensors, levels 4 down to 0):
   occ_L4     float32[1,    1, 8]  per-child occupancy logits at L4 root
@@ -138,10 +137,9 @@ class _OnnxWrapperWith2d(nn.Module):
         noise_2d: torch.Tensor,
         noise_3d: torch.Tensor,
         biome_ids: torch.Tensor,
-        heightmap_surface: torch.Tensor,
-        heightmap_ocean_floor: torch.Tensor,
+        heightmap5: torch.Tensor,
     ) -> tuple[torch.Tensor, ...]:
-        out = self.model(noise_2d, noise_3d, biome_ids, heightmap_surface, heightmap_ocean_floor)
+        out = self.model(noise_2d, noise_3d, biome_ids, heightmap5)
         return _flatten_outputs(out)
 
 
@@ -157,14 +155,13 @@ class _OnnxWrapperNo2d(nn.Module):
         self,
         noise_3d: torch.Tensor,
         biome_ids: torch.Tensor,
-        heightmap_surface: torch.Tensor,
-        heightmap_ocean_floor: torch.Tensor,
+        heightmap5: torch.Tensor,
     ) -> tuple[torch.Tensor, ...]:
         # Create an empty noise_2d tensor to satisfy the underlying model signature.
         # The model treats zero-element noise_2d as a no-op.
         B = noise_3d.shape[0]
         noise_2d = torch.zeros((B, 0, 4, 4), dtype=noise_3d.dtype, device=noise_3d.device)
-        out = self.model(noise_2d, noise_3d, biome_ids, heightmap_surface, heightmap_ocean_floor)
+        out = self.model(noise_2d, noise_3d, biome_ids, heightmap5)
         return _flatten_outputs(out)
 
 
@@ -312,7 +309,7 @@ def export_sparse_octree(
     # until a fresh retrain populates the weights properly.
     #
     # Pre-heightmap checkpoints also lack the heightmap columns.  We pad those
-    # with zeros too (16*16*2 = 512 extra columns).
+    # with zeros too (5*16*16 = 1280 extra columns for heightmap5).
     _m: Any = model  # local Any alias — model IS a concrete subclass at runtime
     _mlp_w_key = "noise_enc.mlp.0.weight"
     _biome_key = "noise_enc.biome_embed.weight"
@@ -347,8 +344,7 @@ def export_sparse_octree(
     # ── Dummy inputs ───────────────────────────────────────────────────────
     dummy_3d = torch.zeros(1, n3d, 4, spatial_y, 4)
     dummy_biome = torch.zeros(1, 4, spatial_y, 4, dtype=torch.long)
-    dummy_hm_surface = torch.zeros(1, 16, 16)
-    dummy_hm_ocean = torch.zeros(1, 16, 16)
+    dummy_hm5 = torch.zeros(1, 5, 16, 16)
     if n2d > 0:
         dummy_2d = torch.zeros(1, n2d, 4, 4)
 
@@ -370,18 +366,16 @@ def export_sparse_octree(
             "noise_2d",
             "noise_3d",
             "biome_ids",
-            "heightmap_surface",
-            "heightmap_ocean_floor",
+            "heightmap5",
         ]
     else:
-        input_names = ["noise_3d", "biome_ids", "heightmap_surface", "heightmap_ocean_floor"]
+        input_names = ["noise_3d", "biome_ids", "heightmap5"]
 
     # Dynamic shapes: batch dimension is dynamic on inputs.
     dynamic_shapes: dict[str, dict[int, str]] = {
         "noise_3d": {0: "batch"},
         "biome_ids": {0: "batch"},
-        "heightmap_surface": {0: "batch"},
-        "heightmap_ocean_floor": {0: "batch"},
+        "heightmap5": {0: "batch"},
     }
     if n2d > 0:
         dynamic_shapes["noise_2d"] = {0: "batch"}
@@ -393,9 +387,9 @@ def export_sparse_octree(
         torch.onnx.export(
             wrapper,
             (
-                (dummy_2d, dummy_3d, dummy_biome, dummy_hm_surface, dummy_hm_ocean)
+                (dummy_2d, dummy_3d, dummy_biome, dummy_hm5)
                 if n2d > 0
-                else (dummy_3d, dummy_biome, dummy_hm_surface, dummy_hm_ocean)
+                else (dummy_3d, dummy_biome, dummy_hm5)
             ),
             str(onnx_path),
             opset_version=18,
@@ -465,8 +459,7 @@ def export_sparse_octree(
             **({"noise_2d": [1, n2d, 4, 4]} if n2d > 0 else {}),
             "noise_3d": [1, n3d, 4, spatial_y, 4],
             "biome_ids": [1, 4, spatial_y, 4],
-            "heightmap_surface": [1, 16, 16],
-            "heightmap_ocean_floor": [1, 16, 16],
+            "heightmap5": [1, 5, 16, 16],
         },
         "outputs": {
             "occ_L4": [1, 1, 8],

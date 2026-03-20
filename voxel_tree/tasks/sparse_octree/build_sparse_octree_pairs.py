@@ -29,8 +29,7 @@ Output
   subchunk16           : (N, 16, 16, 16)   int32   — native Voxy voxels (one octant per section)
   noise_3d             : (N, 13, 4, 2, 4)  float32 — all 13 SparseOctree noise channels
   biome_ids            : (N, 4, 2, 4)      int32   — biome index per quart cell
-  heightmap_surface    : (N, 16, 16)       int32   — WORLD_SURFACE_WG heights (x-major)
-  heightmap_ocean_floor: (N, 16, 16)       int32   — OCEAN_FLOOR_WG heights (x-major)
+  heightmap5           : (N, 5, 16, 16)    float32 — 5-plane heightmap (surface, ocean, slope_x, slope_z, curvature)
 
 Usage
 -----
@@ -83,6 +82,61 @@ assert N_FIELDS == 13, f"Expected 13 SparseOctree noise channels, got {N_FIELDS}
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def compute_height_planes(hm_surface: np.ndarray, hm_ocean: np.ndarray) -> np.ndarray:
+    """Compute 5-plane heightmap from raw surface + ocean-floor heightmaps.
+
+    This mirrors ``LodGenerationService.computeOctreeHeightPlanes()`` in Java.
+    Works on any (H, W) grid (16×16 training, 32×32 runtime).
+
+    Returns
+    -------
+    planes : ndarray, float32, shape (5, H, W)
+        [0] surface_norm       = surface / 320
+        [1] ocean_floor_approx = min(surface, 62) / 320
+        [2] slope_x            = central-difference of surface_norm along x (cols)
+        [3] slope_z            = central-difference of surface_norm along z (rows)
+        [4] curvature          = Laplacian (d²surface/dx² + d²surface/dz²)
+    """
+    HEIGHT_RANGE = 320.0
+    SEA_LEVEL_PLANE = 62.0
+
+    hm_surface = hm_surface.astype(np.float32)
+    hm_ocean = hm_ocean.astype(np.float32)
+    H, W = hm_surface.shape
+
+    surf_norm = hm_surface / HEIGHT_RANGE
+    ocean_approx = np.minimum(hm_surface, SEA_LEVEL_PLANE) / HEIGHT_RANGE
+
+    # slope_x: central difference along columns (axis=1)
+    slope_x = np.empty_like(surf_norm)
+    slope_x[:, 0] = surf_norm[:, 1] - surf_norm[:, 0]
+    slope_x[:, -1] = surf_norm[:, -1] - surf_norm[:, -2]
+    slope_x[:, 1:-1] = (surf_norm[:, 2:] - surf_norm[:, :-2]) / 2.0
+
+    # slope_z: central difference along rows (axis=0)
+    slope_z = np.empty_like(surf_norm)
+    slope_z[0, :] = surf_norm[1, :] - surf_norm[0, :]
+    slope_z[-1, :] = surf_norm[-1, :] - surf_norm[-2, :]
+    slope_z[1:-1, :] = (surf_norm[2:, :] - surf_norm[:-2, :]) / 2.0
+
+    # curvature: second-order central difference (Laplacian)
+    dsx = np.empty_like(slope_x)
+    dsx[:, 0] = slope_x[:, 1] - slope_x[:, 0]
+    dsx[:, -1] = slope_x[:, -1] - slope_x[:, -2]
+    dsx[:, 1:-1] = (slope_x[:, 2:] - slope_x[:, :-2]) / 2.0
+
+    dsz = np.empty_like(slope_z)
+    dsz[0, :] = slope_z[1, :] - slope_z[0, :]
+    dsz[-1, :] = slope_z[-1, :] - slope_z[-2, :]
+    dsz[1:-1, :] = (slope_z[2:, :] - slope_z[:-2, :]) / 2.0
+
+    curvature = dsx + dsz
+
+    return np.stack([surf_norm, ocean_approx, slope_x, slope_z, curvature], axis=0).astype(
+        np.float32
+    )
 
 
 def extract_octant(labels32: np.ndarray, octant: int) -> np.ndarray:
@@ -153,8 +207,7 @@ def build_pairs(
     subchunks: list[np.ndarray] = []  # each (16, 16, 16) int32
     noise_slices: list[np.ndarray] = []  # each (13, 4, 2, 4) float32
     biome_slices: list[np.ndarray] = []  # each (4, 2, 4) int32
-    hm_surface_slices: list[np.ndarray] = []  # each (16, 16) int32
-    hm_ocean_slices: list[np.ndarray] = []  # each (16, 16) int32
+    hm5_slices: list[np.ndarray] = []  # each (5, 16, 16) float32
 
     # Build a set of all (cx, sy, cz) keys parseable from dump files so we can
     # detect Voxy sections that have no corresponding noise dump.
@@ -192,11 +245,14 @@ def build_pairs(
         # Parse heightmaps: 256-value flat → (16, 16)
         # Fall back to zeros if the dump was collected before heightmap support was added.
         if "heightmap_surface" in raw:
-            hm_surface = np.array(raw["heightmap_surface"], dtype=np.int32).reshape(16, 16)
-            hm_ocean = np.array(raw["heightmap_ocean_floor"], dtype=np.int32).reshape(16, 16)
+            hm_surface = np.array(raw["heightmap_surface"], dtype=np.float32).reshape(16, 16)
+            hm_ocean = np.array(raw["heightmap_ocean_floor"], dtype=np.float32).reshape(16, 16)
         else:
-            hm_surface = np.zeros((16, 16), dtype=np.int32)
-            hm_ocean = np.zeros((16, 16), dtype=np.int32)
+            hm_surface = np.zeros((16, 16), dtype=np.float32)
+            hm_ocean = np.zeros((16, 16), dtype=np.float32)
+
+        # Derive 5-plane heightmap: [surface_norm, ocean_approx, slope_x, slope_z, curvature]
+        hm5 = compute_height_planes(hm_surface, hm_ocean)  # (5, 16, 16)
 
         # Load Voxy L4 section
         with np.load(voxy_index[voxy_key]) as vf:
@@ -210,8 +266,7 @@ def build_pairs(
             subchunks.append(sub)
             noise_slices.append(noise_block)
             biome_slices.append(biome_arr)
-            hm_surface_slices.append(hm_surface)
-            hm_ocean_slices.append(hm_ocean)
+            hm5_slices.append(hm5)
 
     if not subchunks:
         print("ERROR: No pairs generated — check that dumps_dir and voxy_dir overlap.")
@@ -232,8 +287,7 @@ def build_pairs(
     all_subchunks = np.stack(subchunks).astype(np.int32)  # (N, 16, 16, 16)
     all_noise_3d = np.stack(noise_slices).astype(np.float32)  # (N, 13, 4, 2, 4)
     all_biome_ids = np.stack(biome_slices).astype(np.int32)  # (N, 4, 2, 4)
-    all_hm_surface = np.stack(hm_surface_slices).astype(np.int32)  # (N, 16, 16)
-    all_hm_ocean = np.stack(hm_ocean_slices).astype(np.int32)  # (N, 16, 16)
+    all_hm5 = np.stack(hm5_slices).astype(np.float32)  # (N, 5, 16, 16)
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     np.savez_compressed(
@@ -241,8 +295,7 @@ def build_pairs(
         subchunk16=all_subchunks,
         noise_3d=all_noise_3d,
         biome_ids=all_biome_ids,
-        heightmap_surface=all_hm_surface,
-        heightmap_ocean_floor=all_hm_ocean,
+        heightmap5=all_hm5,
     )
 
     size_mb = output_path.stat().st_size / (1024 * 1024)

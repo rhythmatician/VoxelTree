@@ -6,8 +6,10 @@ subchunk16          : int32   [N, 16, 16, 16]   dense voxel labels
 noise_2d            : float32 [N, C2, 4, 4]     vanilla 2-D climate fields per subchunk
 noise_3d            : float32 [N, C3, 4, Y, 4]  vanilla 3-D volumetric fields (Y=2 for v7, matching vanilla cellHeight=8)
 biome_ids           : int32   [N, 4, Y, 4]      discrete biome IDs at spatial resolution
-heightmap_surface   : float32 [N, 16, 16]       WORLD_SURFACE_WG heightmap in block Y
-heightmap_ocean_floor : float32 [N, 16, 16]     OCEAN_FLOOR_WG heightmap in block Y
+heightmap5          : float32 [N, 5, 16, 16]    5-plane heightmap (surface_norm, ocean_approx, slope_x, slope_z, curvature)
+
+Legacy NPZs with separate ``heightmap_surface`` / ``heightmap_ocean_floor``
+arrays are auto-converted to the 5-plane format on load.
 
 Targets are built on-the-fly by ``build_sparse_octree_targets`` and stored as
 flat 1-D tensors per level so they can be directly compared against the model's
@@ -60,18 +62,24 @@ class SparseOctreeDataset(Dataset):  # type: ignore[type-arg]
             # Zero-fill until training data is regenerated with biome IDs.
             n = len(self.subchunks)
             self.biome_ids = np.zeros((n, 4, self.spatial_y, 4), dtype=np.int32)
-        if "heightmap_surface" in data:
-            self.heightmap_surface = data["heightmap_surface"].astype(np.float32)  # (N,16,16)
+        if "heightmap5" in data:
+            self.heightmap5 = data["heightmap5"].astype(np.float32)  # (N,5,16,16)
+        elif "heightmap_surface" in data:
+            # Backward compat: derive 5-plane from legacy 2-channel heightmaps.
+            from voxel_tree.tasks.sparse_octree.build_sparse_octree_pairs import (
+                compute_height_planes,
+            )
+
+            hm_s = data["heightmap_surface"].astype(np.float32)  # (N,16,16)
+            hm_o = data["heightmap_ocean_floor"].astype(np.float32)  # (N,16,16)
+            n = len(self.subchunks)
+            planes = np.stack(
+                [compute_height_planes(hm_s[i], hm_o[i]) for i in range(n)]
+            )  # (N,5,16,16)
+            self.heightmap5 = planes
         else:
             n = len(self.subchunks)
-            self.heightmap_surface = np.zeros((n, 16, 16), dtype=np.float32)
-        if "heightmap_ocean_floor" in data:
-            self.heightmap_ocean_floor = data["heightmap_ocean_floor"].astype(
-                np.float32
-            )  # (N,16,16)
-        else:
-            n = len(self.subchunks)
-            self.heightmap_ocean_floor = np.zeros((n, 16, 16), dtype=np.float32)
+            self.heightmap5 = np.zeros((n, 5, 16, 16), dtype=np.float32)
 
         self.air_id = air_id
         self._cache_targets = cache_targets
@@ -83,10 +91,8 @@ class SparseOctreeDataset(Dataset):  # type: ignore[type-arg]
             f"noise_2d={len(self.noise_2d)}, noise_3d={len(self.noise_3d)}, "
             f"biome_ids={len(self.biome_ids)}"
         )
-        assert len(self.heightmap_surface) == n and len(self.heightmap_ocean_floor) == n, (
-            f"Heightmap length mismatch: subchunks={n}, "
-            f"heightmap_surface={len(self.heightmap_surface)}, "
-            f"heightmap_ocean_floor={len(self.heightmap_ocean_floor)}"
+        assert len(self.heightmap5) == n, (
+            f"Heightmap5 length mismatch: subchunks={n}, " f"heightmap5={len(self.heightmap5)}"
         )
 
         if self._cache_targets:
@@ -126,8 +132,7 @@ class SparseOctreeDataset(Dataset):  # type: ignore[type-arg]
             "noise_2d": torch.from_numpy(self.noise_2d[idx]),  # [C2,4,4]
             "noise_3d": torch.from_numpy(self.noise_3d[idx]),  # [C3,4,Y,4]
             "biome_ids": torch.from_numpy(self.biome_ids[idx]),  # [4,Y,4]
-            "heightmap_surface": torch.from_numpy(self.heightmap_surface[idx]),  # [16,16]
-            "heightmap_ocean_floor": torch.from_numpy(self.heightmap_ocean_floor[idx]),  # [16,16]
+            "heightmap5": torch.from_numpy(self.heightmap5[idx]),  # [5,16,16]
             "targets": targets,
         }
 
@@ -142,10 +147,7 @@ def sparse_octree_collate(batch: List[Dict[str, Any]]) -> Dict[str, Any]:
     noise_2d = torch.stack([b["noise_2d"] for b in batch], dim=0)  # [B,C2,4,4]
     noise_3d = torch.stack([b["noise_3d"] for b in batch], dim=0)  # [B,C3,4,Y,4]
     biome_ids = torch.stack([b["biome_ids"] for b in batch], dim=0)  # [B,4,Y,4]
-    heightmap_surface = torch.stack([b["heightmap_surface"] for b in batch], dim=0)  # [B,16,16]
-    heightmap_ocean_floor = torch.stack(
-        [b["heightmap_ocean_floor"] for b in batch], dim=0
-    )  # [B,16,16]
+    heightmap5 = torch.stack([b["heightmap5"] for b in batch], dim=0)  # [B,5,16,16]
 
     levels = sorted(batch[0]["targets"].keys(), reverse=True)
     targets: Dict[int, Dict[str, torch.Tensor]] = {}
@@ -160,8 +162,7 @@ def sparse_octree_collate(batch: List[Dict[str, Any]]) -> Dict[str, Any]:
         "noise_2d": noise_2d,
         "noise_3d": noise_3d,
         "biome_ids": biome_ids,
-        "heightmap_surface": heightmap_surface,
-        "heightmap_ocean_floor": heightmap_ocean_floor,
+        "heightmap5": heightmap5,
         "targets": targets,
     }
 
@@ -478,10 +479,9 @@ def train_sparse_octree(
             noise_2d = batch["noise_2d"].to(_device)
             noise_3d = batch["noise_3d"].to(_device)
             biome_ids = batch["biome_ids"].to(_device)
-            heightmap_surface = batch["heightmap_surface"].to(_device)
-            heightmap_ocean_floor = batch["heightmap_ocean_floor"].to(_device)
+            heightmap5 = batch["heightmap5"].to(_device)
             optimizer.zero_grad()
-            preds = model(noise_2d, noise_3d, biome_ids, heightmap_surface, heightmap_ocean_floor)
+            preds = model(noise_2d, noise_3d, biome_ids, heightmap5)
             loss = _sparse_octree_loss(
                 preds,
                 batch["targets"],

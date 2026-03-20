@@ -149,7 +149,7 @@ def test_sparse_octree_dataset_loads_noise_2d_when_present() -> None:
 
 
 def test_sparse_octree_dataset_handles_missing_heightmaps() -> None:
-    """NPZs without heightmap keys should zero-fill with shape (N, 16, 16)."""
+    """NPZs without heightmap keys should zero-fill with shape (N, 5, 16, 16)."""
     n = 4
     with tempfile.TemporaryDirectory() as tmpdir:
         npz_path = Path(tmpdir) / "test.npz"
@@ -160,36 +160,30 @@ def test_sparse_octree_dataset_handles_missing_heightmaps() -> None:
             biome_ids=np.zeros((n, 4, 2, 4), dtype=np.int32),
         )
         ds = SparseOctreeDataset(npz_path, cache_targets=False)
-        assert ds.heightmap_surface.shape == (n, 16, 16)
-        assert ds.heightmap_ocean_floor.shape == (n, 16, 16)
-        assert ds.heightmap_surface.sum() == 0.0
-        assert ds.heightmap_ocean_floor.sum() == 0.0
+        assert ds.heightmap5.shape == (n, 5, 16, 16)
+        assert ds.heightmap5.sum() == 0.0
 
 
 def test_sparse_octree_dataset_loads_heightmaps_when_present() -> None:
-    """NPZs that include heightmaps should load them as float32."""
+    """NPZs that include heightmap5 should load them as float32."""
     n = 3
     with tempfile.TemporaryDirectory() as tmpdir:
         npz_path = Path(tmpdir) / "test.npz"
-        hm_s = np.random.randn(n, 16, 16).astype(np.float32) * 64 + 64
-        hm_o = np.random.randn(n, 16, 16).astype(np.float32) * 32 + 32
+        hm5 = np.random.randn(n, 5, 16, 16).astype(np.float32)
         np.savez_compressed(
             npz_path,
             subchunk16=np.zeros((n, 16, 16, 16), dtype=np.int32),
             noise_3d=np.random.randn(n, 15, 4, 2, 4).astype(np.float32),
             biome_ids=np.zeros((n, 4, 2, 4), dtype=np.int32),
-            heightmap_surface=hm_s,
-            heightmap_ocean_floor=hm_o,
+            heightmap5=hm5,
         )
         ds = SparseOctreeDataset(npz_path, cache_targets=False)
-        assert ds.heightmap_surface.shape == (n, 16, 16)
-        assert ds.heightmap_ocean_floor.shape == (n, 16, 16)
-        np.testing.assert_allclose(ds.heightmap_surface, hm_s)
-        np.testing.assert_allclose(ds.heightmap_ocean_floor, hm_o)
+        assert ds.heightmap5.shape == (n, 5, 16, 16)
+        np.testing.assert_allclose(ds.heightmap5, hm5)
 
 
 def test_collate_includes_heightmaps() -> None:
-    """Collation must stack heightmap tensors into batched tensors."""
+    """Collation must stack heightmap5 tensors into batched tensors."""
     n = 3
     with tempfile.TemporaryDirectory() as tmpdir:
         npz_path = Path(tmpdir) / "test.npz"
@@ -198,26 +192,23 @@ def test_collate_includes_heightmaps() -> None:
             subchunk16=np.zeros((n, 16, 16, 16), dtype=np.int32),
             noise_3d=np.random.randn(n, 15, 4, 2, 4).astype(np.float32),
             biome_ids=np.zeros((n, 4, 2, 4), dtype=np.int32),
-            heightmap_surface=np.random.randn(n, 16, 16).astype(np.float32),
-            heightmap_ocean_floor=np.random.randn(n, 16, 16).astype(np.float32),
+            heightmap5=np.random.randn(n, 5, 16, 16).astype(np.float32),
         )
         ds = SparseOctreeDataset(npz_path, cache_targets=True)
         batch = sparse_octree_collate([ds[i] for i in range(n)])
-        assert batch["heightmap_surface"].shape == (n, 16, 16)
-        assert batch["heightmap_ocean_floor"].shape == (n, 16, 16)
+        assert batch["heightmap5"].shape == (n, 5, 16, 16)
 
 
 def test_fast_model_forward_with_heightmaps() -> None:
-    """SparseOctreeFastModel forward pass must accept heightmap inputs."""
+    """SparseOctreeFastModel forward pass must accept heightmap5 input."""
     B = 2
     model = SparseOctreeFastModel(n2d=0, n3d=15, hidden=32, num_classes=10, spatial_y=2)
     noise_2d = torch.zeros(B, 0, 4, 4)
     noise_3d = torch.randn(B, 15, 4, 2, 4)
     biome_ids = torch.zeros(B, 4, 2, 4, dtype=torch.long)
-    hm_surface = torch.randn(B, 16, 16)
-    hm_ocean = torch.randn(B, 16, 16)
+    hm5 = torch.randn(B, 5, 16, 16)
 
-    out = model(noise_2d, noise_3d, biome_ids, hm_surface, hm_ocean)
+    out = model(noise_2d, noise_3d, biome_ids, hm5)
 
     assert isinstance(out, dict)
     assert set(out.keys()) == {0, 1, 2, 3, 4}
@@ -227,3 +218,28 @@ def test_fast_model_forward_with_heightmaps() -> None:
     assert out[0]["occ"].shape == (B, 4096, 8)
     assert out[0]["split"].shape == (B, 4096)
     assert out[0]["label"].shape == (B, 4096, 10)
+
+
+def test_legacy_heightmaps_auto_converted_to_5plane() -> None:
+    """NPZs with legacy heightmap_surface/ocean_floor should auto-derive heightmap5."""
+    n = 3
+    with tempfile.TemporaryDirectory() as tmpdir:
+        npz_path = Path(tmpdir) / "test.npz"
+        hm_s = (np.random.randn(n, 16, 16).astype(np.float32) * 64 + 128).clip(0, 320)
+        hm_o = (np.random.randn(n, 16, 16).astype(np.float32) * 32 + 32).clip(0, 320)
+        np.savez_compressed(
+            npz_path,
+            subchunk16=np.zeros((n, 16, 16, 16), dtype=np.int32),
+            noise_3d=np.random.randn(n, 15, 4, 2, 4).astype(np.float32),
+            biome_ids=np.zeros((n, 4, 2, 4), dtype=np.int32),
+            heightmap_surface=hm_s,
+            heightmap_ocean_floor=hm_o,
+        )
+        ds = SparseOctreeDataset(npz_path, cache_targets=False)
+        assert ds.heightmap5.shape == (n, 5, 16, 16)
+        # Plane 0 should be surface / 320
+        np.testing.assert_allclose(ds.heightmap5[:, 0, :, :], hm_s / 320.0, atol=1e-6)
+        # Plane 1 should be min(surface, 62) / 320
+        np.testing.assert_allclose(
+            ds.heightmap5[:, 1, :, :], np.minimum(hm_s, 62.0) / 320.0, atol=1e-6
+        )

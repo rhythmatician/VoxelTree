@@ -64,8 +64,7 @@ def _sparse_octree_batch(
         "noise_2d": torch.zeros(B, n2d, 4, 4),
         "noise_3d": torch.randn(B, n3d, 4, spatial_y, 4),
         "biome_ids": torch.zeros(B, 4, spatial_y, 4, dtype=torch.long),
-        "heightmap_surface": torch.randn(B, 16, 16),
-        "heightmap_ocean_floor": torch.randn(B, 16, 16),
+        "heightmap5": torch.randn(B, 5, 16, 16),
     }
 
 
@@ -73,8 +72,7 @@ _SPARSE_BATCH_KEYS_FOR_FORWARD = (
     "noise_2d",
     "noise_3d",
     "biome_ids",
-    "heightmap_surface",
-    "heightmap_ocean_floor",
+    "heightmap5",
 )
 
 
@@ -103,8 +101,7 @@ class TestSparseOctreeSmoke:
             batch["noise_2d"],
             batch["noise_3d"],
             batch["biome_ids"],
-            batch["heightmap_surface"],
-            batch["heightmap_ocean_floor"],
+            batch["heightmap5"],
         )
         assert isinstance(preds, dict) and len(preds) > 0
 
@@ -120,15 +117,13 @@ class TestSparseOctreeSmoke:
         noise_2d = batch["noise_2d"]
         noise_3d = batch["noise_3d"]
         biome_ids = batch["biome_ids"]
-        heightmap_surface = batch["heightmap_surface"]
-        heightmap_ocean_floor = batch["heightmap_ocean_floor"]
+        heightmap5 = batch["heightmap5"]
 
         preds = model(
             noise_2d,
             noise_3d,
             biome_ids,
-            heightmap_surface,
-            heightmap_ocean_floor,
+            heightmap5,
         )
         assert isinstance(preds, dict) and len(preds) > 0
 
@@ -140,8 +135,7 @@ class TestSparseOctreeSmoke:
             batch["noise_2d"],
             batch["noise_3d"],
             batch["biome_ids"],
-            batch["heightmap_surface"],
-            batch["heightmap_ocean_floor"],
+            batch["heightmap5"],
         )
         assert isinstance(preds, dict) and len(preds) > 0
 
@@ -188,8 +182,7 @@ _SPARSE_BATCH_KEYS = frozenset(
         "noise_2d",
         "noise_3d",
         "biome_ids",
-        "heightmap_surface",
-        "heightmap_ocean_floor",
+        "heightmap5",
     }
 )
 
@@ -268,8 +261,7 @@ def test_distill_evaluate_student_call_pattern() -> None:
             subchunk16=np.zeros((n, 16, 16, 16), dtype=np.int32),
             noise_3d=np.random.randn(n, 13, 4, 2, 4).astype(np.float32),
             biome_ids=np.zeros((n, 4, 2, 4), dtype=np.int32),
-            heightmap_surface=np.random.randn(n, 16, 16).astype(np.float32),
-            heightmap_ocean_floor=np.random.randn(n, 16, 16).astype(np.float32),
+            heightmap5=np.random.randn(n, 5, 16, 16).astype(np.float32),
         )
         ds = SparseOctreeDataset(npz, cache_targets=True)
         model = SparseOctreeFastModel(
