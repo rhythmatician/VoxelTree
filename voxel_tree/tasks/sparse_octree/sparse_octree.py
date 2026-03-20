@@ -15,8 +15,11 @@ Architecture
    features ready for the next level.
 
    Training: all nodes at every level are always expanded (teacher forcing).
-   Inference: expand nodes by applying a sigmoid to ``split_logit`` and
-   comparing against the runtime split threshold (commonly 0.43).
+    Inference: expand nodes by applying a sigmoid to ``split_logit`` and
+    comparing against the runtime split threshold (commonly 0.43).
+    L4 is an ordinary learned split decision: homogeneous subchunks such as
+    all-air can and should stay leaves at the root. L0 nodes are always leaves
+    (1×1×1 voxels).
 
 Output keys are **integers** (4, 3, 2, 1, 0) matching
 ``build_sparse_octree_targets``.
@@ -192,7 +195,9 @@ class _LevelFiLM(nn.Module):
 
     def forward(self, ctx: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         scale, shift = self.proj(ctx).chunk(2, dim=-1)
-        scale = 1.0 + 0.1 * torch.tanh(scale)
+        # Wider range [0.7, 1.3] lets the shared heads produce more
+        # level-differentiated logits (was ±0.1, too narrow for calibration).
+        scale = 1.0 + 0.3 * torch.tanh(scale)
         return scale, shift
 
 
@@ -322,7 +327,10 @@ class SparseOctreeFastModel(nn.Module):
     ------------
     - reduce the dominant `label_head` and `child_proj` parameter blocks;
     - preserve the same external forward contract as `SparseOctreeModel`;
-    - add cheap per-level conditioning to improve fine-level accuracy.
+        - add cheap per-level conditioning to improve fine-level accuracy.
+        - use per-level split heads because split calibration differs sharply by
+            octree depth and a single shared split head collapses under class
+            imbalance at fine levels.
     """
 
     def __init__(
@@ -365,7 +373,9 @@ class SparseOctreeFastModel(nn.Module):
         )
         self.level_mod = nn.ModuleList(_LevelFiLM(hidden) for _ in range(levels))
 
-        self.split_head = _FactorizedHead(hidden, 1, split_rank)
+        self.split_heads = nn.ModuleList(
+            _FactorizedHead(hidden, 1, split_rank) for _ in range(levels)
+        )
         self.label_head = _FactorizedHead(hidden, num_classes, label_rank)
         self.child_proj = _FactorizedHead(hidden, hidden * 8, child_rank)
 
@@ -389,13 +399,14 @@ class SparseOctreeFastModel(nn.Module):
 
         for lvl in range(self.max_level, -1, -1):
             N = cur_feat.shape[1]
+            level_idx = self.max_level - lvl
             pe = self.pos_emb(lvl, device)
-            scale, shift = self.level_mod[self.max_level - lvl](ctx)
+            scale, shift = self.level_mod[level_idx](ctx)
             feat = cur_feat + pe.unsqueeze(0)
             feat = feat * scale.unsqueeze(1) + shift.unsqueeze(1)
 
             flat = feat.reshape(B * N, self.hidden)
-            split_logits = self.split_head(flat).reshape(B, N)
+            split_logits = self.split_heads[level_idx](flat).reshape(B, N)
             label_logits = self.label_head(flat).reshape(B, N, self.num_classes)
             outputs[lvl] = {"split": split_logits, "label": label_logits}
 

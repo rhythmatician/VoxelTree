@@ -201,7 +201,10 @@ def _sparse_octree_loss(
                 pos = float(split_tgt.sum().item())
                 neg = float(split_tgt.numel() - pos)
                 if pos > 0.0 and neg > 0.0:
-                    pos_weight = torch.tensor([neg / pos], device=device)
+                    # Clamp to [0.5, 10] — at coarse levels the tiny per-batch
+                    # sample count makes the raw ratio extremely noisy.
+                    pw = max(0.5, min(neg / pos, 10.0))
+                    pos_weight = torch.tensor([pw], device=device)
                     bce = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
                 else:
                     bce = nn.BCEWithLogitsLoss()
@@ -242,7 +245,12 @@ def _update_batch_metrics(
     targets: Dict[int, Dict[str, torch.Tensor]],
     accum: Dict[str, float],
 ) -> None:
-    """Accumulate split-first metrics from one batch."""
+    """Accumulate split-first metrics from one batch.
+
+    In addition to the aggregate accumulators, per-level split metrics are
+    tracked under ``split_tp_L{lvl}`` etc. so callers can diagnose per-level
+    calibration without a separate evaluation pass.
+    """
     for lvl, out in preds.items():
         split_pred = out["split"] > 0
         split_tgt = targets[lvl]["split"].to(split_pred.device) > 0.5
@@ -255,6 +263,11 @@ def _update_batch_metrics(
         accum["split_tn"] += float(tn)
         accum["split_fp"] += float(fp)
         accum["split_fn"] += float(fn)
+
+        # Per-level split accumulators (keys created lazily)
+        for key, val in (("split_tp", tp), ("split_tn", tn), ("split_fp", fp), ("split_fn", fn)):
+            lk = f"{key}_L{lvl}"
+            accum[lk] = accum.get(lk, 0.0) + float(val)
 
         # Predicted/ground-truth node counts proxy complexity. A node is active
         # when it is internal (split=1) or a leaf with material supervision.
@@ -285,7 +298,7 @@ def _finalize_metrics(accum: Dict[str, float]) -> Dict[str, float]:
     precision = tp / max(tp + fp, 1.0)
     recall = tp / max(tp + fn, 1.0)
     f1 = 2.0 * precision * recall / max(precision + recall, 1e-12)
-    return {
+    result: Dict[str, float] = {
         "split_acc": (tp + tn) / max(split_total, 1.0),
         "split_precision": precision,
         "split_recall": recall,
@@ -295,6 +308,21 @@ def _finalize_metrics(accum: Dict[str, float]) -> Dict[str, float]:
         "leaf_acc": accum["leaf_correct"] / max(accum["leaf_total"], 1.0),
         "leaf_node_ratio": accum["pred_leaf_nodes"] / max(accum["gt_leaf_nodes"], 1.0),
     }
+
+    # Per-level split F1 — only emitted for levels that have data.
+    seen_levels: set[int] = set()
+    for k in accum:
+        if k.startswith("split_tp_L"):
+            seen_levels.add(int(k.rsplit("L", 1)[1]))
+    for lvl in sorted(seen_levels, reverse=True):
+        ltp = accum.get(f"split_tp_L{lvl}", 0.0)
+        lfp = accum.get(f"split_fp_L{lvl}", 0.0)
+        lfn = accum.get(f"split_fn_L{lvl}", 0.0)
+        lprec = ltp / max(ltp + lfp, 1.0)
+        lrec = ltp / max(ltp + lfn, 1.0)
+        result[f"split_f1_L{lvl}"] = 2.0 * lprec * lrec / max(lprec + lrec, 1e-12)
+
+    return result
 
 
 def _build_model(
