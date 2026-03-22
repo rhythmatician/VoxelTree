@@ -80,3 +80,4 @@ tools/fabric-server/runtime/validate/
 profile_order.json
 tools/fabric-server/runtime/crash-reports/
 tools/fabric-server/runtime/v7_dumps/*.json
+noise_training_data/sparse_octree_pairs_v7.npz.bak
