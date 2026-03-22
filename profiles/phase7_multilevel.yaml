@@ -1,0 +1,51 @@
+name: phase7_multilevel
+description: >-
+  Phase 7 — multi-level sparse octree (L0–L4) with 256-chunk noise dump radius.
+  First run to use all 5 Voxy LOD levels instead of L4-only.
+  Seed 8675309 ("train" world), 15-channel v7 noise + heightmaps.
+
+dag:
+  steps:
+    - id: dumpnoise
+    - id: build_v7_pairs
+    - id: train_sparse_octree
+    - id: export_sparse_octree
+    - id: deploy_sparse_octree
+
+world:
+  seed: 8675309
+  name: train
+  type: minecraft:normal
+  noise_dump_radius: 256 # chunks — ~4096 blocks from origin
+
+data:
+  data_dir: data/voxy_octree
+  v7_dumps_dir: tools/fabric-server/runtime/v7_dumps
+  v7_pairs_npz: noise_training_data/sparse_octree_pairs_v7.npz
+  val_split: 0.1
+  max_sections: null
+  min_solid: 0.02
+
+train:
+  output_dir: models/phase7_multilevel
+  batch_size: 64
+  device: auto
+  epochs: 50
+  lr: 0.001
+  sparse_octree_hidden: 72
+  sparse_octree_variant: fast
+  num_classes: 1104
+  pruning_boost: 4.0
+  resume_from: null
+
+export:
+  output_dir: production/phase7_multilevel
+
+deploy:
+  target_dir: ../LODiffusion/run/config/lodiffusion
+
+rcon:
+  host: localhost
+  port: 25575
+  password: voxeltree
+  timeout: 3600
