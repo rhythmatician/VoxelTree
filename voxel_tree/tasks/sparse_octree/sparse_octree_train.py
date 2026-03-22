@@ -111,52 +111,53 @@ def compute_prunable_flags(
 class SparseOctreeDataset(Dataset):  # type: ignore[type-arg]
     """Dataset for noise-conditioned sparse-root supervision."""
 
-    def __init__(self, npz_path: Path, air_id: int = 0, cache_targets: bool = True) -> None:
+    def __init__(self, npz_path: Path, air_id: int = 0, cache_targets: bool = True, max_samples: Optional[int] = None) -> None:
         data = np.load(npz_path)
         self.subchunks = data["subchunk16"].astype(np.int32)  # (N,16,16,16)
+        if max_samples is not None and max_samples < len(self.subchunks):
+            self.subchunks = self.subchunks[:max_samples]
         self.noise_3d = data["noise_3d"].astype(np.float32)  # (N,C3,4,Y,4)
+        if max_samples is not None and max_samples < len(self.noise_3d):
+            self.noise_3d = self.noise_3d[:max_samples]
         # Detect spatial_y from noise_3d shape (index 2 = X=4, index 3 = Y)
         self.spatial_y = self.noise_3d.shape[3]  # 4 for v7, 2 for legacy
+        _n_limit = len(self.subchunks)
         if "noise_2d" in data:
-            self.noise_2d = data["noise_2d"].astype(np.float32)  # (N,C2,4,4)
+            self.noise_2d = data["noise_2d"].astype(np.float32)[:_n_limit]  # (N,C2,4,4)
         else:
             # v7 pipeline has no 2D noise channels — zero-length placeholder.
-            n = len(self.subchunks)
-            self.noise_2d = np.zeros((n, 0, 4, 4), dtype=np.float32)
+            self.noise_2d = np.zeros((_n_limit, 0, 4, 4), dtype=np.float32)
         if "biome_ids" in data:
-            self.biome_ids = data["biome_ids"].astype(np.int32)  # (N,4,Y,4)
+            self.biome_ids = data["biome_ids"].astype(np.int32)[:_n_limit]  # (N,4,Y,4)
         else:
             # Zero-fill until training data is regenerated with biome IDs.
-            n = len(self.subchunks)
-            self.biome_ids = np.zeros((n, 4, self.spatial_y, 4), dtype=np.int32)
+            self.biome_ids = np.zeros((_n_limit, 4, self.spatial_y, 4), dtype=np.int32)
         if "heightmap5" in data:
-            self.heightmap5 = data["heightmap5"].astype(np.float32)  # (N,5,16,16)
+            self.heightmap5 = data["heightmap5"].astype(np.float32)[:_n_limit]  # (N,5,16,16)
         elif "heightmap_surface" in data:
             # Backward compat: derive 5-plane from legacy 2-channel heightmaps.
             from voxel_tree.tasks.sparse_octree.build_sparse_octree_pairs import (
                 compute_height_planes,
             )
 
-            hm_s = data["heightmap_surface"].astype(np.float32)  # (N,16,16)
-            hm_o = data["heightmap_ocean_floor"].astype(np.float32)  # (N,16,16)
-            n = len(self.subchunks)
+            hm_s = data["heightmap_surface"].astype(np.float32)[:_n_limit]  # (N,16,16)
+            hm_o = data["heightmap_ocean_floor"].astype(np.float32)[:_n_limit]  # (N,16,16)
+            n = _n_limit
             planes = np.stack(
                 [compute_height_planes(hm_s[i], hm_o[i]) for i in range(n)]
             )  # (N,5,16,16)
             self.heightmap5 = planes
         else:
-            n = len(self.subchunks)
-            self.heightmap5 = np.zeros((n, 5, 16, 16), dtype=np.float32)
+            self.heightmap5 = np.zeros((_n_limit, 5, 16, 16), dtype=np.float32)
 
         # Phase 5: absolute block-Y of each subchunk's bottom edge.
         if "block_y_min" in data:
-            self.block_y_min = data["block_y_min"].astype(np.int32)  # (N,)
+            self.block_y_min = data["block_y_min"].astype(np.int32)[:_n_limit]  # (N,)
         else:
             # Legacy NPZ without block_y_min — assume surface-level (Y=64)
             # so heightmap comparisons are roughly centered. Pruning flags
             # won't be accurate but training can still proceed.
-            n = len(self.subchunks)
-            self.block_y_min = np.full(n, 64, dtype=np.int32)
+            self.block_y_min = np.full(_n_limit, 64, dtype=np.int32)
 
         self.air_id = air_id
         self._cache_targets = cache_targets
@@ -524,6 +525,7 @@ def train_sparse_octree(
     device: str = "cpu",
     model_variant: str = "fast",
     cache_targets: bool = True,
+    max_samples: Optional[int] = None,
     split_weight: float = 1.0,
     label_weight: float = 0.35,
     label_smoothing: float = 0.03,
@@ -545,7 +547,8 @@ def train_sparse_octree(
     data_path = Path(data_path)
     out_path = Path(out_path)
     _device = torch.device(device)
-    ds = SparseOctreeDataset(data_path, cache_targets=cache_targets)
+    ds = SparseOctreeDataset(data_path, cache_targets=cache_targets, max_samples=max_samples)
+    print(f"  Dataset: {len(ds)} samples" + (" (limited from full set)" if max_samples else ""))
 
     # Auto-detect num_classes from the actual max block ID in the dataset.
     # Validate against the canonical Voxy vocab to prevent silent under-sizing

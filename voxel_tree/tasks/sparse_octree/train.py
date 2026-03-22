@@ -114,6 +114,18 @@ def main(argv=None):
         default=None,
         help="Path to a checkpoint to resume training from. Epochs is the total target.",
     )
+    parser.add_argument(
+        "--no-cache-targets",
+        action="store_true",
+        default=False,
+        help="Disable target caching to reduce memory usage for large datasets.",
+    )
+    parser.add_argument(
+        "--max-samples",
+        type=int,
+        default=None,
+        help="Limit training to first N samples (for quick e2e validation).",
+    )
     args = parser.parse_args(argv)
 
     def _progress(epoch, total, metrics):
@@ -144,6 +156,8 @@ def main(argv=None):
         model_variant=args.model_variant,
         pruning_boost=args.pruning_boost,
         resume_from=args.resume,
+        cache_targets=not args.no_cache_targets,
+        max_samples=args.max_samples,
         progress_callback=_progress,
     )
 
