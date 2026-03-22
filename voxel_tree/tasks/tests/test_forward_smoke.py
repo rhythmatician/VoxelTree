@@ -254,15 +254,20 @@ def test_distill_evaluate_student_call_pattern() -> None:
     from pathlib import Path
 
     n = 4
+    rng = np.random.default_rng(42)
     with tempfile.TemporaryDirectory() as tmpdir:
         npz = Path(tmpdir) / "test.npz"
-        np.savez_compressed(
-            npz,
-            subchunk16=np.zeros((n, 16, 16, 16), dtype=np.int32),
-            noise_3d=np.random.randn(n, 15, 4, 2, 4).astype(np.float32),
-            biome_ids=np.zeros((n, 4, 2, 4), dtype=np.int32),
-            heightmap5=np.random.randn(n, 5, 16, 16).astype(np.float32),
-        )
+        save_kw: dict[str, np.ndarray] = {
+            "noise_3d": rng.standard_normal((n, 15, 4, 2, 4)).astype(np.float32),
+            "biome_ids": np.zeros((n, 4, 2, 4), dtype=np.int32),
+            "heightmap5": rng.standard_normal((n, 5, 16, 16)).astype(np.float32),
+            "finest_level": np.zeros(n, dtype=np.int32),
+            "block_y_min": np.zeros(n, dtype=np.int32),
+        }
+        for lv in range(5):
+            side = 16 >> lv
+            save_kw[f"labels_L{lv}"] = np.zeros((n, side, side, side), dtype=np.int32)
+        np.savez_compressed(npz, **save_kw)
         ds = SparseOctreeDataset(npz, cache_targets=True)
         model = SparseOctreeFastModel(
             n2d=0,

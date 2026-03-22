@@ -1,17 +1,19 @@
 """Training utilities for the noise-conditioned sparse-root octree model.
 
-Dataset layout expected in the .npz file
------------------------------------------
-subchunk16          : int32   [N, 16, 16, 16]   dense voxel labels
-noise_2d            : float32 [N, C2, 4, 4]     vanilla 2-D climate fields per subchunk
-noise_3d            : float32 [N, C3, 4, Y, 4]  vanilla 3-D volumetric fields (Y=2 for v7, matching vanilla cellHeight=8)
+Dataset layout expected in the .npz file (multi-level format)
+--------------------------------------------------------------
+labels_L0           : int32   [N, 16, 16, 16]  Voxy L0 ground truth
+labels_L1           : int32   [N, 8, 8, 8]     Voxy L1 ground truth
+labels_L2           : int32   [N, 4, 4, 4]     Voxy L2 ground truth
+labels_L3           : int32   [N, 2, 2, 2]     Voxy L3 ground truth
+labels_L4           : int32   [N, 1, 1, 1]     Voxy L4 ground truth
+finest_level        : int32   [N]              finest Voxy level per sample
+noise_3d            : float32 [N, C3, 4, Y, 4]  vanilla 3-D volumetric fields
 biome_ids           : int32   [N, 4, Y, 4]      discrete biome IDs at spatial resolution
 heightmap5          : float32 [N, 5, 16, 16]    5-plane heightmap (surface_norm, ocean_approx, slope_x, slope_z, curvature)
+block_y_min         : int32   [N]              absolute block-Y of subchunk bottom
 
-Legacy NPZs with separate ``heightmap_surface`` / ``heightmap_ocean_floor``
-arrays are auto-converted to the 5-plane format on load.
-
-Targets are built on-the-fly by ``build_sparse_octree_targets`` and stored as
+Targets are built on-the-fly by ``build_multilevel_voxy_targets`` and stored as
 flat 1-D tensors per level so they can be directly compared against the model's
 flat [B, N] output tensors.
 
@@ -34,7 +36,6 @@ import torch.optim as optim
 from torch.utils.data import DataLoader, Dataset
 
 from .sparse_octree import SparseOctreeFastModel, SparseOctreeModel
-from .sparse_octree_targets import build_sparse_octree_targets
 
 # ---------------------------------------------------------------------------
 # Geometric pruning helpers (Phase 5)
@@ -109,78 +110,89 @@ def compute_prunable_flags(
 
 
 class SparseOctreeDataset(Dataset):  # type: ignore[type-arg]
-    """Dataset for noise-conditioned sparse-root supervision."""
+    """Dataset for noise-conditioned sparse-root supervision.
+
+    Requires multi-level NPZ format with ``labels_L0`` through ``labels_L4``
+    where each sample has per-level Voxy ground truth at native resolution.
+    ``finest_level`` indicates the finest available LOD per sample.
+    """
 
     def __init__(self, npz_path: Path, air_id: int = 0, cache_targets: bool = True, max_samples: Optional[int] = None) -> None:
         data = np.load(npz_path)
-        self.subchunks = data["subchunk16"].astype(np.int32)  # (N,16,16,16)
-        if max_samples is not None and max_samples < len(self.subchunks):
-            self.subchunks = self.subchunks[:max_samples]
-        self.noise_3d = data["noise_3d"].astype(np.float32)  # (N,C3,4,Y,4)
+
+        # ── Require multi-level format ───────────────────────────────────
+        if "labels_L0" not in data:
+            raise ValueError(
+                f"NPZ file {npz_path} does not contain multi-level labels "
+                "(labels_L0). Legacy subchunk16 format is no longer supported."
+            )
+
+        self.level_grids: dict[int, np.ndarray] = {}
+        for level in range(5):
+            key = f"labels_L{level}"
+            if key in data:
+                arr = data[key].astype(np.int32)
+                if max_samples is not None and max_samples < len(arr):
+                    arr = arr[:max_samples]
+                self.level_grids[level] = arr
+        self.finest_level = data["finest_level"].astype(np.int32)
+        if max_samples is not None and max_samples < len(self.finest_level):
+            self.finest_level = self.finest_level[:max_samples]
+        _first_lv = min(self.level_grids.keys())
+        _n_limit = len(self.level_grids[_first_lv])
+
+        self.noise_3d = data["noise_3d"].astype(np.float32)[:_n_limit]  # (N,C3,4,Y,4)
         if max_samples is not None and max_samples < len(self.noise_3d):
             self.noise_3d = self.noise_3d[:max_samples]
-        # Detect spatial_y from noise_3d shape (index 2 = X=4, index 3 = Y)
-        self.spatial_y = self.noise_3d.shape[3]  # 4 for v7, 2 for legacy
-        _n_limit = len(self.subchunks)
+        self.spatial_y = self.noise_3d.shape[3]
         if "noise_2d" in data:
             self.noise_2d = data["noise_2d"].astype(np.float32)[:_n_limit]  # (N,C2,4,4)
         else:
-            # v7 pipeline has no 2D noise channels — zero-length placeholder.
             self.noise_2d = np.zeros((_n_limit, 0, 4, 4), dtype=np.float32)
         if "biome_ids" in data:
             self.biome_ids = data["biome_ids"].astype(np.int32)[:_n_limit]  # (N,4,Y,4)
         else:
-            # Zero-fill until training data is regenerated with biome IDs.
             self.biome_ids = np.zeros((_n_limit, 4, self.spatial_y, 4), dtype=np.int32)
         if "heightmap5" in data:
             self.heightmap5 = data["heightmap5"].astype(np.float32)[:_n_limit]  # (N,5,16,16)
-        elif "heightmap_surface" in data:
-            # Backward compat: derive 5-plane from legacy 2-channel heightmaps.
-            from voxel_tree.tasks.sparse_octree.build_sparse_octree_pairs import (
-                compute_height_planes,
-            )
-
-            hm_s = data["heightmap_surface"].astype(np.float32)[:_n_limit]  # (N,16,16)
-            hm_o = data["heightmap_ocean_floor"].astype(np.float32)[:_n_limit]  # (N,16,16)
-            n = _n_limit
-            planes = np.stack(
-                [compute_height_planes(hm_s[i], hm_o[i]) for i in range(n)]
-            )  # (N,5,16,16)
-            self.heightmap5 = planes
         else:
             self.heightmap5 = np.zeros((_n_limit, 5, 16, 16), dtype=np.float32)
-
-        # Phase 5: absolute block-Y of each subchunk's bottom edge.
         if "block_y_min" in data:
             self.block_y_min = data["block_y_min"].astype(np.int32)[:_n_limit]  # (N,)
         else:
-            # Legacy NPZ without block_y_min — assume surface-level (Y=64)
-            # so heightmap comparisons are roughly centered. Pruning flags
-            # won't be accurate but training can still proceed.
-            self.block_y_min = np.full(_n_limit, 64, dtype=np.int32)
+            self.block_y_min = np.zeros(_n_limit, dtype=np.int32)
 
         self.air_id = air_id
         self._cache_targets = cache_targets
         self._target_cache: Optional[List[Dict[int, Dict[str, torch.Tensor]]]] = None
+        self._n_samples = _n_limit
 
-        n = len(self.subchunks)
+        n = _n_limit
         assert len(self.noise_2d) == n and len(self.noise_3d) == n and len(self.biome_ids) == n, (
-            f"Length mismatch: subchunks={n}, "
+            f"Length mismatch: samples={n}, "
             f"noise_2d={len(self.noise_2d)}, noise_3d={len(self.noise_3d)}, "
             f"biome_ids={len(self.biome_ids)}"
         )
         assert len(self.heightmap5) == n, (
-            f"Heightmap5 length mismatch: subchunks={n}, " f"heightmap5={len(self.heightmap5)}"
+            f"Heightmap5 length mismatch: samples={n}, heightmap5={len(self.heightmap5)}"
         )
 
         if self._cache_targets:
             self._target_cache = [self._build_targets(i) for i in range(n)]
 
     def __len__(self) -> int:
-        return len(self.subchunks)
+        return self._n_samples
 
     def _build_targets(self, idx: int) -> Dict[int, Dict[str, torch.Tensor]]:
-        raw = build_sparse_octree_targets(self.subchunks[idx], air_id=self.air_id, split_label=-1)
+        from voxel_tree.tasks.sparse_octree.sparse_octree_targets import (
+            build_multilevel_voxy_targets,
+        )
+        finest = int(self.finest_level[idx])
+        grids: Dict[int, np.ndarray] = {}
+        for level in range(finest, 5):
+            if level in self.level_grids:
+                grids[level] = self.level_grids[level][idx]
+        raw = build_multilevel_voxy_targets(grids, air_id=self.air_id, split_label=-1)
 
         # Phase 5: compute geometric pruning flags from heightmap + block_y_min.
         prunable_flags = compute_prunable_flags(self.heightmap5[idx], int(self.block_y_min[idx]))
@@ -568,7 +580,15 @@ def train_sparse_octree(
 
     if num_classes <= 0:
         raw = np.load(data_path)
-        num_classes = int(raw["subchunk16"].max()) + 1
+        max_id = 0
+        for level in range(5):
+            key = f"labels_L{level}"
+            if key in raw:
+                arr = raw[key]
+                valid = arr[arr >= 0]  # exclude -1 sentinel
+                if len(valid) > 0:
+                    max_id = max(max_id, int(valid.max()))
+        num_classes = max_id + 1
         raw.close()
         if _vocab_size is not None and num_classes < _vocab_size:
             print(
@@ -627,11 +647,10 @@ def train_sparse_octree(
                     f"(epoch {start_epoch - 1}, best_loss={best_loss:.4f})"
                 )
             else:
-                # Legacy checkpoint: bare state_dict
-                model.load_state_dict(ckpt if isinstance(ckpt, dict) else ckpt)
-                print(
-                    f"[resume] Loaded legacy state_dict from {resume_from} "
-                    f"(starting from epoch 1, no optimizer state)"
+                raise ValueError(
+                    f"Checkpoint at {resume_from} is not a valid checkpoint "
+                    "(missing 'model_state_dict'). Legacy bare state_dict "
+                    "checkpoints are no longer supported."
                 )
         else:
             print(f"[resume] Checkpoint not found at {resume_from} — training from scratch")

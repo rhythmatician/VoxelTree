@@ -1,8 +1,33 @@
-"""Build v7 training pairs from v7 noise dumps + Voxy L4 sections.
+"""Build multi-level training pairs from v7 noise dumps + all Voxy LOD levels.
 
-Each output sample is one 16³ voxel subchunk (octant of a Voxy L4 section)
-paired with the 15-channel v7 RouterField noise context, biome IDs, and
-per-column heightmaps for that section.
+Each output sample is one 16-block noise section paired with ground-truth
+labels at all 5 Voxy LOD levels (L0-L4), plus the 15-channel v7 RouterField
+noise context, biome IDs, and per-column heightmaps.
+
+Multi-level Voxy ground truth
+-----------------------------
+Voxy stores block data at 5 LOD levels (L0-L4), each as 32³ WorldSections:
+
+  - L0: 1 block/voxel  (finest),  32-block WorldSections
+  - L1: 2 blocks/voxel,           64-block WorldSections
+  - L2: 4 blocks/voxel,           128-block WorldSections
+  - L3: 8 blocks/voxel,           256-block WorldSections
+  - L4: 16 blocks/voxel (coarsest), 512-block WorldSections
+
+For a 16-block noise section, the ground truth at each level is:
+
+  - L4: 1×1×1  = 1 voxel      (root of the sparse octree)
+  - L3: 2×2×2  = 8 voxels
+  - L2: 4×4×4  = 64 voxels
+  - L1: 8×8×8  = 512 voxels
+  - L0: 16×16×16 = 4096 voxels (block-level leaves)
+
+Coordinate mapping (noise section → Voxy WorldSection at level L)::
+
+    ws           = section_coord >> (L + 1)
+    local_section = section_coord - (ws << (L + 1))   # 0..2^(L+1)-1
+    n_voxels      = 16 >> L                             # per axis
+    voxel_start   = local_section * n_voxels            # in 32³ grid
 
 V7 noise dumps
 --------------
@@ -18,27 +43,18 @@ V7 noise dumps
   heightmap_surface: 256 ints (16×16, x-major)
   heightmap_ocean_floor: 256 ints (16×16, x-major)
 
-Voxy L4 sections
-----------------
-  Files: {voxy_dir}/level_4/voxy_L4_x{X}_y{Y}_z{Z}.npz
-  (X, Y, Z) are **WorldSection coordinates at level 4** — NOT chunk / section
-  coordinates!  Each L4 WorldSection covers 32 × 2^4 = 512 blocks per axis.
-  labels32: (32, 32, 32) int32 in (y, z, x) order  [Voxy's native ordering]
-
-  Coordinate mapping (noise → Voxy L4)::
-
-      voxy_x = cx >> 5        # playerSection >> (level + 1)
-      voxy_y = sy >> 5
-      voxy_z = cz >> 5
-
-  See ``voxel_tree.utils.coords`` (Python port of ``WorldSectionCoord.java``).
-
 Output
 ------
-  subchunk16           : (N, 16, 16, 16)   int32   — native Voxy voxels (one octant per section)
-  noise_3d             : (N, 15, 4, 2, 4)  float32 — all 15 v7 RouterField channels
-  biome_ids            : (N, 4, 2, 4)      int32   — biome index per quart cell
-  heightmap5           : (N, 5, 16, 16)    float32 — 5-plane heightmap (surface, ocean, slope_x, slope_z, curvature)
+  noise_3d       : (N, 15, 4, 2, 4)  float32 — all 15 v7 RouterField channels
+  biome_ids      : (N, 4, 2, 4)      int32   — biome index per quart cell
+  heightmap5     : (N, 5, 16, 16)    float32 — 5-plane heightmap
+  block_y_min    : (N,)              int32   — sy * 16 (actual section block Y)
+  labels_L0      : (N, 16, 16, 16)   int32   — Voxy L0 ground truth
+  labels_L1      : (N, 8, 8, 8)      int32   — Voxy L1 ground truth
+  labels_L2      : (N, 4, 4, 4)      int32   — Voxy L2 ground truth
+  labels_L3      : (N, 2, 2, 2)      int32   — Voxy L3 ground truth
+  labels_L4      : (N, 1, 1, 1)      int32   — Voxy L4 ground truth
+  finest_level   : (N,)              int32   — finest Voxy level available (0-4)
 
 Usage
 -----
@@ -59,11 +75,7 @@ from pathlib import Path
 
 import numpy as np
 
-from voxel_tree.utils.coords import (
-    section_to_world_section,
-    world_section_to_block_min,
-    world_section_width,
-)
+from voxel_tree.utils.coords import section_to_world_section
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -156,38 +168,84 @@ def compute_height_planes(hm_surface: np.ndarray, hm_ocean: np.ndarray) -> np.nd
     )
 
 
-def extract_octant(labels32: np.ndarray, octant: int) -> np.ndarray:
-    """Extract 16³ octant from a 32³ (y,z,x) labels array.
+def extract_section_subcube(
+    labels32: np.ndarray,
+    sx: int,
+    sy: int,
+    sz: int,
+    level: int,
+) -> np.ndarray:
+    """Extract the per-level sub-cube for a player-section from a 32³ Voxy grid.
 
-    Octant bit layout: bit0=x, bit1=z, bit2=y
-    Returns (16, 16, 16) int32.
+    For section coords (sx, sy, sz) at Voxy level L::
+
+        WorldSection:   ws = s >> (L + 1)
+        Local section:  ls = s - (ws << (L + 1))     # 0..2^(L+1)-1
+        Voxels/axis:    n  = 16 >> L
+        Voxel start:    vs = ls * n                    # in 32³ grid
+
+    Args:
+        labels32: (32, 32, 32) Voxy grid in (y, z, x) order.
+        sx, sy, sz: Player-section coordinates (chunk x, section y, chunk z).
+        level: Voxy level (0-4).
+
+    Returns:
+        ndarray of shape (n, n, n) in (y, z, x) order, where n = 16 >> level.
     """
-    dx = octant & 1
-    dz = (octant >> 1) & 1
-    dy = (octant >> 2) & 1
-    return labels32[
-        dy * 16 : (dy + 1) * 16,
-        dz * 16 : (dz + 1) * 16,
-        dx * 16 : (dx + 1) * 16,
-    ].astype(np.int32)
+    n = 16 >> level  # voxels per axis at this level
+
+    def _voxel_range(s: int) -> tuple[int, int]:
+        ws = s >> (level + 1)
+        ls = s - (ws << (level + 1))
+        vs = ls * n
+        return vs, vs + n
+
+    vy0, vy1 = _voxel_range(sy)
+    vz0, vz1 = _voxel_range(sz)
+    vx0, vx1 = _voxel_range(sx)
+
+    return labels32[vy0:vy1, vz0:vz1, vx0:vx1].astype(np.int32)
 
 
-def build_voxy_index(voxy_dir: Path) -> dict[tuple[int, int, int], Path]:
-    """Build (x, y, z) -> Path index for all Voxy L4 npz files."""
-    level4_dir = voxy_dir / "level_4"
-    if not level4_dir.is_dir():
-        raise FileNotFoundError(f"Voxy level_4 directory not found: {level4_dir}")
+def build_voxy_indices(
+    voxy_dir: Path,
+    levels: list[int] | None = None,
+) -> dict[int, dict[tuple[int, int, int], Path]]:
+    """Build (x, y, z) → Path index for Voxy sections at each LOD level.
 
-    pattern = re.compile(r"voxy_L4_x(-?\d+)_y(-?\d+)_z(-?\d+)\.npz$")
-    index: dict[tuple[int, int, int], Path] = {}
-    for f in level4_dir.iterdir():
-        m = pattern.search(f.name)
-        if m:
-            x, y, z = int(m.group(1)), int(m.group(2)), int(m.group(3))
-            index[(x, y, z)] = f
+    Args:
+        voxy_dir: Root Voxy data directory containing level_0/ through level_4/.
+        levels: Which levels to index (default: all five).
 
-    print(f"  Indexed {len(index):,} Voxy L4 sections from {level4_dir}")
-    return index
+    Returns:
+        Dict mapping level → {(ws_x, ws_y, ws_z): Path}.
+    """
+    if levels is None:
+        levels = [0, 1, 2, 3, 4]
+
+    indices: dict[int, dict[tuple[int, int, int], Path]] = {}
+    for level in levels:
+        level_dir = voxy_dir / f"level_{level}"
+        if not level_dir.is_dir():
+            print(f"  Warning: Voxy level_{level} directory not found: {level_dir}")
+            indices[level] = {}
+            continue
+
+        # Match both old (voxy_L4_...) and new (w0_voxy_L4_...) naming.
+        pat = re.compile(
+            rf"(?:w\d+_)?voxy_L{level}_x(-?\d+)_y(-?\d+)_z(-?\d+)\.npz$"
+        )
+        index: dict[tuple[int, int, int], Path] = {}
+        for f in level_dir.iterdir():
+            m = pat.search(f.name)
+            if m:
+                x, y, z = int(m.group(1)), int(m.group(2)), int(m.group(3))
+                index[(x, y, z)] = f
+
+        indices[level] = index
+        print(f"  Indexed {len(index):,} Voxy L{level} sections from {level_dir}")
+
+    return indices
 
 
 # ---------------------------------------------------------------------------
@@ -199,17 +257,22 @@ def build_pairs(
     dumps_dir: Path,
     voxy_dir: Path,
     output_path: Path,
+    *,
+    require_all_levels: bool = True,
 ) -> tuple[int, dict[str, int]]:
-    """Build and save sparse-root training pairs.
+    """Build and save multi-level sparse-octree training pairs.
 
-    Returns (pairs_saved, failure_stats) where failure_stats contains:
-      - pairs_saved: total training samples written
-      - matched_sections: sections with both a dump and a Voxy NPZ
-      - total_dump_files: dump files discovered in dumps_dir
-      - total_voxy_sections: Voxy L4 sections discovered in voxy_dir/level_4
-      - skipped_no_voxy: dump files with no matching Voxy section
-      - skipped_no_dump: Voxy sections with no matching dump file
-      - total_skipped: skipped_no_voxy + skipped_no_dump
+    For each noise dump at section (cx, sy, cz), extracts the corresponding
+    sub-cube from Voxy at every available LOD level (L0-L4).  One training
+    sample per dump — no octant fan-out.
+
+    Args:
+        require_all_levels: When True (default), only include samples where
+            all 5 Voxy levels are available.  When False, include partial
+            samples and mark missing levels with -1 sentinel.
+
+    Returns:
+        (pairs_saved, stats_dict).
     """
     dump_files = sorted(dumps_dir.glob("section_*.json"))
     if not dump_files:
@@ -217,156 +280,148 @@ def build_pairs(
         sys.exit(1)
     print(f"  Found {len(dump_files):,} sparse_octree section dump files")
 
-    voxy_index = build_voxy_index(voxy_dir)
+    # ── Index all 5 Voxy LOD levels ──────────────────────────────────────
+    voxy_indices = build_voxy_indices(voxy_dir)
 
     section_pattern = re.compile(r"section_(-?\d+)_(-?\d+)_(-?\d+)\.json$")
 
-    subchunks: list[np.ndarray] = []  # each (16, 16, 16) int32
-    noise_slices: list[np.ndarray] = []  # each (15, 4, 2, 4) float32
-    biome_slices: list[np.ndarray] = []  # each (4, 2, 4) int32
-    hm5_slices: list[np.ndarray] = []  # each (5, 16, 16) float32
-    block_y_min_list: list[int] = []  # absolute block Y of each octant's bottom
+    # ── Per-level label accumulators ─────────────────────────────────────
+    # {level: list of ndarrays}, shapes: L4=(1,1,1), L3=(2,2,2), ..., L0=(16,16,16)
+    label_lists: dict[int, list[np.ndarray]] = {lv: [] for lv in range(5)}
+    noise_slices: list[np.ndarray] = []   # (15, 4, 2, 4) float32
+    biome_slices: list[np.ndarray] = []   # (4, 2, 4) int32
+    hm5_slices: list[np.ndarray] = []     # (5, 16, 16) float32
+    block_y_min_list: list[int] = []      # sy * 16
+    finest_level_list: list[int] = []     # finest available Voxy level
 
-    # ── Coordinate conversion level ──────────────────────────────────────
-    # Noise dumps use *player-section* coordinates (16-block, = Minecraft
-    # chunk / section Y).  Voxy L4 uses *WorldSection* coordinates where
-    # each unit = 32 × 2^4 = 512 blocks.  The mapping is:
-    #     voxy_coord = section_to_world_section(player_section, level=4)
-    #                = player_section >> 5
-    VOXY_LEVEL = 4
+    # Voxy grid cache: (level, ws_tuple) → labels32 (32,32,32)
+    voxy_cache: dict[tuple[int, tuple[int, int, int]], np.ndarray] = {}
 
-    # Build a set of all (cx, sy, cz) keys parseable from dump files so we can
-    # detect Voxy sections that have no corresponding noise dump.
-    dump_keys: set[tuple[int, int, int]] = set()
-    # Track which Voxy L4 sections we've already loaded (many noise dumps
-    # map to the same L4 section — dedup the expensive NPZ loads).
-    voxy_cache: dict[tuple[int, int, int], np.ndarray] = {}
-    matched_sections: set[tuple[int, int, int]] = set()
-    skipped_no_voxy = 0  # dump exists, but no matching Voxy section
+    skipped_no_voxy = 0
+    skipped_partial = 0
 
     for dump_path in dump_files:
         m = section_pattern.search(dump_path.name)
         if not m:
             continue
         cx, sy, cz = int(m.group(1)), int(m.group(2)), int(m.group(3))
-        dump_keys.add((cx, sy, cz))
 
-        # ── Convert player-section coords → Voxy L4 WorldSection coords ──
-        vx = section_to_world_section(cx, VOXY_LEVEL)
-        vy = section_to_world_section(sy, VOXY_LEVEL)
-        vz = section_to_world_section(cz, VOXY_LEVEL)
-        voxy_key = (vx, vy, vz)
+        # ── Check Voxy availability at each level ────────────────────────
+        available_ws: dict[int, tuple[int, int, int]] = {}
+        for level in range(5):
+            ws = (
+                section_to_world_section(cx, level),
+                section_to_world_section(sy, level),
+                section_to_world_section(cz, level),
+            )
+            if ws in voxy_indices.get(level, {}):
+                available_ws[level] = ws
 
-        if voxy_key not in voxy_index:
+        if not available_ws:
             skipped_no_voxy += 1
             continue
 
-        # Load JSON — noise fields are flat 32-value arrays indexed [qx*8 + qy*4 + qz]
+        if require_all_levels and len(available_ws) < 5:
+            skipped_partial += 1
+            continue
+
+        finest = min(available_ws.keys())
+
+        # ── Parse noise dump ─────────────────────────────────────────────
         with open(dump_path) as f:
             raw = json.load(f)
 
-        # Parse v7 noise fields: 32-value flat → (4, 2, 4)
+        # v7 noise fields: 32-value flat → (4, 2, 4)
         field_arrays: list[np.ndarray] = []
         for field in NOISE_FIELDS:
-            arr = np.array(raw[field], dtype=np.float32)  # (32,)
-            arr = arr.reshape(4, 2, 4)  # (qx, qy, qz)
+            arr = np.array(raw[field], dtype=np.float32).reshape(4, 2, 4)
             field_arrays.append(arr)
         noise_block = np.stack(field_arrays)  # (15, 4, 2, 4)
 
-        # Parse biome IDs: 32-value flat → (4, 2, 4)
+        # Biome IDs
         biome_arr = np.array(raw["biome_ids"], dtype=np.int32).reshape(4, 2, 4)
 
-        # Parse heightmaps: 256-value flat → (16, 16)
+        # Heightmaps → 5-plane
         hm_surface = np.array(raw["heightmap_surface"], dtype=np.float32).reshape(16, 16)
         hm_ocean = np.array(raw["heightmap_ocean_floor"], dtype=np.float32).reshape(16, 16)
-
-        # Derive 5-plane heightmap: [surface_norm, ocean_approx, slope_x, slope_z, curvature]
         hm5 = compute_height_planes(hm_surface, hm_ocean)  # (5, 16, 16)
 
-        # Load Voxy L4 section (cached — many noise dumps share one L4 section)
-        if voxy_key not in voxy_cache:
-            with np.load(voxy_index[voxy_key]) as vf:
-                voxy_cache[voxy_key] = vf["labels32"]  # (32, 32, 32) int32
-        labels32 = voxy_cache[voxy_key]
+        # ── Extract per-level sub-cubes from Voxy ────────────────────────
+        level_grids: dict[int, np.ndarray] = {}
+        for level, ws in available_ws.items():
+            cache_key = (level, ws)
+            if cache_key not in voxy_cache:
+                with np.load(voxy_indices[level][ws]) as vf:
+                    voxy_cache[cache_key] = vf["labels32"]  # (32, 32, 32)
+            labels32 = voxy_cache[cache_key]
+            level_grids[level] = extract_section_subcube(labels32, cx, sy, cz, level)
 
-        matched_sections.add(voxy_key)
+        # ── Accumulate sample ────────────────────────────────────────────
+        noise_slices.append(noise_block)
+        biome_slices.append(biome_arr)
+        hm5_slices.append(hm5)
+        block_y_min_list.append(sy * 16)  # actual section block Y
+        finest_level_list.append(finest)
 
-        # Extract all 8 octants as independent training samples.
-        # The same noise context is paired with each octant; block_y_min
-        # disambiguates which vertical slice the model should predict.
-        ws_width = world_section_width(VOXY_LEVEL)  # 512 blocks
-        ws_block_y_base = world_section_to_block_min(vy, VOXY_LEVEL)
-        for octant in range(8):
-            sub = extract_octant(labels32, octant)  # (16, 16, 16) int32
-            subchunks.append(sub)
-            noise_slices.append(noise_block)
-            biome_slices.append(biome_arr)
-            hm5_slices.append(hm5)
-            # Absolute block-Y of this octant's bottom edge.
-            # Each octant covers half the WorldSection height (ws_width // 2).
-            dy = (octant >> 2) & 1
-            block_y_min_list.append(ws_block_y_base + dy * (ws_width // 2))
+        for lv in range(5):
+            if lv in level_grids:
+                label_lists[lv].append(level_grids[lv])
+            else:
+                # Sentinel for missing levels.
+                n = 16 >> lv
+                label_lists[lv].append(np.full((n, n, n), -1, dtype=np.int32))
 
-    if not subchunks:
+    if not noise_slices:
         print("ERROR: No pairs generated — check that dumps_dir and voxy_dir overlap.")
-        print("  Hint: noise dumps use player-section coordinates (16-block),")
-        print("        Voxy L4 uses WorldSection coordinates (512-block).")
-        print("        Ensure section_to_world_section() maps them correctly.")
+        print("  Hint: ensure Voxy data exists at all 5 levels (level_0/ .. level_4/)")
+        print("        for the spatial region covered by the noise dumps.")
         sys.exit(1)
 
-    # Voxy sections for which no dump file was found.
-    # Convert dump keys → L4 WorldSection keys for comparison.
-    dump_ws_keys = {
-        (
-            section_to_world_section(cx, VOXY_LEVEL),
-            section_to_world_section(sy, VOXY_LEVEL),
-            section_to_world_section(cz, VOXY_LEVEL),
-        )
-        for (cx, sy, cz) in dump_keys
-    }
-    skipped_no_dump = sum(1 for key in voxy_index if key not in dump_ws_keys)
-    total_skipped = skipped_no_voxy + skipped_no_dump
-
-    n_matched = len(matched_sections)
-    n = len(subchunks)
-    print(
-        f"  Total pairs: {n:,} ({n_matched:,} L4 sections × 8 octants × ~{n // max(n_matched * 8, 1)} noise samples)"
-    )
+    n = len(noise_slices)
+    print(f"  Total samples: {n:,} (1 per noise dump)")
     if skipped_no_voxy:
-        print(f"  Skipped (no Voxy section):  {skipped_no_voxy:,}")
-    if skipped_no_dump:
-        print(f"  Skipped (no noise dump):    {skipped_no_dump:,}")
+        print(f"  Skipped (no Voxy at any level):   {skipped_no_voxy:,}")
+    if skipped_partial:
+        print(f"  Skipped (missing some levels):     {skipped_partial:,}")
+    level_counts = {lv: sum(1 for a in label_lists[lv] if a.min() >= 0) for lv in range(5)}
+    for lv in range(5):
+        side = 16 >> lv
+        print(f"  L{lv} coverage: {level_counts[lv]:,}/{n:,} samples ({side}³ per sample)")
 
-    # Stack and save
-    all_subchunks = np.stack(subchunks).astype(np.int32)  # (N, 16, 16, 16)
-    all_noise_3d = np.stack(noise_slices).astype(np.float32)  # (N, 15, 4, 2, 4)
-    all_biome_ids = np.stack(biome_slices).astype(np.int32)  # (N, 4, 2, 4)
-    all_hm5 = np.stack(hm5_slices).astype(np.float32)  # (N, 5, 16, 16)
-    all_block_y_min = np.array(block_y_min_list, dtype=np.int32)  # (N,)
+    # ── Stack and save ───────────────────────────────────────────────────
+    all_noise_3d = np.stack(noise_slices).astype(np.float32)        # (N, 15, 4, 2, 4)
+    all_biome_ids = np.stack(biome_slices).astype(np.int32)         # (N, 4, 2, 4)
+    all_hm5 = np.stack(hm5_slices).astype(np.float32)              # (N, 5, 16, 16)
+    all_block_y_min = np.array(block_y_min_list, dtype=np.int32)    # (N,)
+    all_finest = np.array(finest_level_list, dtype=np.int32)        # (N,)
+
+    save_dict: dict[str, np.ndarray] = {
+        "noise_3d": all_noise_3d,
+        "biome_ids": all_biome_ids,
+        "heightmap5": all_hm5,
+        "block_y_min": all_block_y_min,
+        "finest_level": all_finest,
+    }
+    for lv in range(5):
+        save_dict[f"labels_L{lv}"] = np.stack(label_lists[lv]).astype(np.int32)
+
     print(f"  Noise channels: {all_noise_3d.shape[1]} (v7 RouterField)")
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    np.savez_compressed(
-        output_path,
-        subchunk16=all_subchunks,
-        noise_3d=all_noise_3d,
-        biome_ids=all_biome_ids,
-        heightmap5=all_hm5,
-        block_y_min=all_block_y_min,
-    )
+    np.savez_compressed(output_path, **save_dict)
 
     size_mb = output_path.stat().st_size / (1024 * 1024)
     print(f"  Saved -> {output_path}  ({size_mb:.1f} MB)")
 
     failure_stats: dict[str, int] = {
         "pairs_saved": n,
-        "matched_sections": n_matched,
         "total_dump_files": len(dump_files),
-        "total_voxy_sections": len(voxy_index),
         "skipped_no_voxy": skipped_no_voxy,
-        "skipped_no_dump": skipped_no_dump,
-        "total_skipped": total_skipped,
+        "skipped_partial": skipped_partial,
+        "all_5_levels": level_counts.get(0, 0),
     }
+    for lv in range(5):
+        failure_stats[f"L{lv}_coverage"] = level_counts[lv]
     return n, failure_stats
 
 
@@ -392,7 +447,7 @@ def main(argv: list[str] | None = None) -> None:
         type=Path,
         default=Path("VoxelTree/data/voxy_octree"),
         metavar="DIR",
-        help="Voxy data directory containing level_4/ subdirectory",
+        help="Voxy data directory containing level_0/ through level_4/",
     )
     parser.add_argument(
         "--output",
@@ -401,21 +456,33 @@ def main(argv: list[str] | None = None) -> None:
         metavar="FILE",
         help="Output npz file path",
     )
+    parser.add_argument(
+        "--allow-partial-levels",
+        action="store_true",
+        default=False,
+        help="Include samples even if not all 5 Voxy levels are available",
+    )
     args = parser.parse_args(argv)
 
     print("=" * 62)
-    print("  Building v7 training pairs (15ch 4×2×4)")
+    print("  Building multi-level training pairs (15ch 4×2×4, L0-L4)")
     print("=" * 62)
     print(f"  Dumps dir : {args.dumps}")
     print(f"  Voxy dir  : {args.voxy}")
     print(f"  Output    : {args.output}")
+    print(f"  Require all levels: {not args.allow_partial_levels}")
     print()
 
-    n, failure_stats = build_pairs(args.dumps, args.voxy, args.output)
+    n, failure_stats = build_pairs(
+        args.dumps,
+        args.voxy,
+        args.output,
+        require_all_levels=not args.allow_partial_levels,
+    )
 
     print()
     print("=" * 62)
-    print(f"  DONE — {n:,} pairs saved")
+    print(f"  DONE — {n:,} samples saved")
     print("=" * 62)
     print(f"[STEP_RESULT]{json.dumps(failure_stats, sort_keys=True)}", flush=True)
 

@@ -125,6 +125,13 @@ def build_sparse_octree_targets(
 ) -> Dict[int, SparseOctreeLevel]:
     """Build sparse-octree supervision from a dense voxel cube.
 
+    .. note::
+
+        This function derives coarser levels by recursively subdividing a
+        single 16³ block-level grid.  For multi-level Voxy ground truth
+        (where each LOD level has its own labels), prefer
+        :func:`build_multilevel_voxy_targets`.
+
     Args:
         blocks: Dense cubic voxel grid.  For the Voxy subchunk case this is
             typically ``int32[16, 16, 16]`` in ``(y, z, x)`` order.
@@ -181,6 +188,92 @@ def build_sparse_octree_targets(
                     recurse(cube[ys, zs, xs], level - 1, y * 2 + dy, z * 2 + dz, x * 2 + dx)
 
     recurse(blocks.astype(np.int32, copy=False), max_level, 0, 0, 0)
+    return result
+
+
+def build_multilevel_voxy_targets(
+    level_grids: Dict[int, npt.NDArray[np.int32]],
+    *,
+    air_id: int = 0,
+    split_label: int = -1,
+) -> Dict[int, SparseOctreeLevel]:
+    """Build sparse-octree targets using multi-level Voxy ground truth.
+
+    Unlike :func:`build_sparse_octree_targets` which recursively subdivides a
+    single 16³ grid to derive coarser levels, this function uses Voxy's actual
+    labels at each LOD level as ground truth.  ``is_leaf`` and ``child_mask``
+    are computed by comparing adjacent Voxy levels.
+
+    A node at level *L* is a **leaf** when all 8 children at level *L-1* share
+    the same block ID (or when *L* is the finest available level).  Otherwise
+    the node is a **split** and ``child_mask`` encodes which children at
+    level *L-1* are non-air.
+
+    Args:
+        level_grids: Dict mapping Voxy level (0-4) to label grids.
+            Expected shapes: L4=(1,1,1), L3=(2,2,2), L2=(4,4,4),
+            L1=(8,8,8), L0=(16,16,16).  Missing levels are skipped.
+        air_id: Block ID for empty space (used for child_mask).
+        split_label: Sentinel stored in ``labels`` for internal split nodes.
+
+    Returns:
+        Dict mapping level → :class:`SparseOctreeLevel`.
+        Only levels present in *level_grids* are included.
+    """
+    result: Dict[int, SparseOctreeLevel] = {}
+    available = sorted(level_grids.keys(), reverse=True)  # e.g. [4, 3, 2, 1, 0]
+    if not available:
+        return result
+
+    finest = min(available)
+
+    for level in available:
+        grid = level_grids[level].astype(np.int32, copy=False)
+        S = grid.shape[0]  # 1, 2, 4, 8, or 16
+
+        # Defaults: every node is a leaf with its own Voxy label.
+        labels = grid.copy()
+        is_leaf = np.ones((S, S, S), dtype=np.bool_)
+        child_mask = np.zeros((S, S, S), dtype=np.uint8)
+
+        # If there's a finer level available, compare to determine splits.
+        if level > finest and (level - 1) in level_grids:
+            finer = level_grids[level - 1].astype(np.int32, copy=False)  # (2S, 2S, 2S)
+
+            # Reshape finer into 2×2×2 blocks aligned with this level's voxels.
+            # After reshape + transpose:
+            #   blocks[y, z, x, dy, dz, dx] = finer[2y+dy, 2z+dz, 2x+dx]
+            blocks_6d = finer.reshape(S, 2, S, 2, S, 2)
+            blocks = blocks_6d.transpose(0, 2, 4, 1, 3, 5)  # (S, S, S, 2, 2, 2)
+
+            # Flatten (dy, dz, dx) → 8 children per node.
+            blocks_flat = blocks.reshape(S, S, S, 8)
+            bmin = blocks_flat.min(axis=-1)
+            bmax = blocks_flat.max(axis=-1)
+            homogeneous = bmin == bmax  # all 8 children identical?
+
+            is_leaf = homogeneous
+            labels = np.where(homogeneous, bmin, np.int32(split_label))
+
+            # Child occupancy mask for split nodes.
+            # Bit layout: bit = dx | (dz<<1) | (dy<<2).
+            # The natural C-order reshape of (2,2,2)→(8,) gives index
+            # dy*4 + dz*2 + dx which IS the same as dx|(dz<<1)|(dy<<2).
+            non_air = (blocks_flat != air_id).astype(np.uint8)  # (S, S, S, 8)
+            bit_weights = np.array(
+                [1 << i for i in range(8)], dtype=np.uint8
+            )  # [1, 2, 4, 8, 16, 32, 64, 128]
+            mask = (
+                non_air * bit_weights[np.newaxis, np.newaxis, np.newaxis, :]
+            ).sum(axis=-1).astype(np.uint8)
+            child_mask = np.where(homogeneous, np.uint8(0), mask)
+
+        result[level] = SparseOctreeLevel(
+            labels=labels,
+            is_leaf=is_leaf,
+            child_mask=child_mask,
+        )
+
     return result
 
 

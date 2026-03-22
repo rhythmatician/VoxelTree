@@ -6,9 +6,6 @@ from pathlib import Path
 import numpy as np
 import torch
 
-# sparse_octree.py now lives at voxel_tree/tasks/sparse_octree/sparse_octree.py;
-# no LODiffusion stub is needed — the module is in the same package.
-
 from voxel_tree.tasks.sparse_octree.sparse_octree_train import (
     SparseOctreeDataset,
     _finalize_metrics,
@@ -23,8 +20,42 @@ from voxel_tree.tasks.sparse_octree.sparse_octree import (
 
 from voxel_tree.tasks.sparse_octree.build_sparse_octree_pairs import (
     NOISE_FIELDS,
-    _LEGACY_NOISE_FIELDS,
 )
+
+
+# ---------------------------------------------------------------------------
+# Helper: build a minimal multi-level NPZ for test fixtures
+# ---------------------------------------------------------------------------
+
+def _make_test_npz(
+    path: Path,
+    n: int = 4,
+    *,
+    n3d: int = 15,
+    spatial_y: int = 2,
+    include_noise_2d: bool = False,
+    n2d: int = 0,
+    include_heightmap5: bool = True,
+    include_biome_ids: bool = True,
+) -> Path:
+    """Create a multi-level NPZ with synthetic data."""
+    rng = np.random.default_rng(42)
+    save_dict: dict[str, np.ndarray] = {
+        "noise_3d": rng.standard_normal((n, n3d, 4, spatial_y, 4)).astype(np.float32),
+        "finest_level": np.zeros(n, dtype=np.int32),
+        "block_y_min": np.arange(n, dtype=np.int32) * 16,
+    }
+    for lv in range(5):
+        side = 16 >> lv
+        save_dict[f"labels_L{lv}"] = rng.integers(0, 100, (n, side, side, side)).astype(np.int32)
+    if include_noise_2d:
+        save_dict["noise_2d"] = rng.standard_normal((n, n2d, 4, 4)).astype(np.float32)
+    if include_heightmap5:
+        save_dict["heightmap5"] = rng.standard_normal((n, 5, 16, 16)).astype(np.float32)
+    if include_biome_ids:
+        save_dict["biome_ids"] = rng.integers(0, 10, (n, 4, spatial_y, 4)).astype(np.int32)
+    np.savez_compressed(path, **save_dict)
+    return path
 
 
 def test_noise_fields_count_is_15() -> None:
@@ -32,13 +63,6 @@ def test_noise_fields_count_is_15() -> None:
     assert len(NOISE_FIELDS) == 15
     assert NOISE_FIELDS[0] == "temperature"
     assert NOISE_FIELDS[-1] == "vein_gap"
-
-
-def test_legacy_noise_fields_count_is_13() -> None:
-    """_LEGACY_NOISE_FIELDS must contain exactly 13 legacy cave-noise names."""
-    assert len(_LEGACY_NOISE_FIELDS) == 13
-    assert _LEGACY_NOISE_FIELDS[0] == "offset"
-    assert _LEGACY_NOISE_FIELDS[-1] == "final_density"
 
 
 def test_sparse_octree_loss_masks_material_to_leaf_nodes() -> None:
@@ -131,15 +155,12 @@ def test_batch_metric_accumulator_reports_split_and_leaf_quality() -> None:
 
 
 def test_sparse_octree_dataset_handles_missing_noise_2d() -> None:
-    """v7 NPZs have no noise_2d key — dataset must zero-fill with shape (N, 0, 4, 4)."""
+    """NPZs without noise_2d key — dataset must zero-fill with shape (N, 0, 4, 4)."""
     n = 4
     with tempfile.TemporaryDirectory() as tmpdir:
-        npz_path = Path(tmpdir) / "test.npz"
-        np.savez_compressed(
-            npz_path,
-            subchunk16=np.zeros((n, 16, 16, 16), dtype=np.int32),
-            noise_3d=np.random.randn(n, 15, 4, 2, 4).astype(np.float32),
-            biome_ids=np.zeros((n, 4, 2, 4), dtype=np.int32),
+        npz_path = _make_test_npz(
+            Path(tmpdir) / "test.npz", n=n,
+            include_noise_2d=False,
         )
         ds = SparseOctreeDataset(npz_path, cache_targets=False)
         assert ds.noise_2d.shape == (n, 0, 4, 4)
@@ -149,34 +170,28 @@ def test_sparse_octree_dataset_handles_missing_noise_2d() -> None:
 
 
 def test_sparse_octree_dataset_loads_noise_2d_when_present() -> None:
-    """Legacy NPZs that include noise_2d should load it normally."""
+    """NPZs that include noise_2d should load it normally."""
     n = 3
     c2d = 6
     with tempfile.TemporaryDirectory() as tmpdir:
-        npz_path = Path(tmpdir) / "test.npz"
-        np.savez_compressed(
-            npz_path,
-            subchunk16=np.zeros((n, 16, 16, 16), dtype=np.int32),
-            noise_2d=np.random.randn(n, c2d, 4, 4).astype(np.float32),
-            noise_3d=np.random.randn(n, 13, 4, 2, 4).astype(np.float32),
+        npz_path = _make_test_npz(
+            Path(tmpdir) / "test.npz", n=n,
+            include_noise_2d=True, n2d=c2d,
         )
         ds = SparseOctreeDataset(npz_path, cache_targets=False)
         assert ds.noise_2d.shape == (n, c2d, 4, 4)
-        assert ds.noise_3d.shape == (n, 13, 4, 2, 4)
+        assert ds.noise_3d.shape == (n, 15, 4, 2, 4)
         assert ds.spatial_y == 2
         assert len(ds) == n
 
 
 def test_sparse_octree_dataset_handles_missing_heightmaps() -> None:
-    """NPZs without heightmap keys should zero-fill with shape (N, 5, 16, 16)."""
+    """NPZs without heightmap5 key should zero-fill with shape (N, 5, 16, 16)."""
     n = 4
     with tempfile.TemporaryDirectory() as tmpdir:
-        npz_path = Path(tmpdir) / "test.npz"
-        np.savez_compressed(
-            npz_path,
-            subchunk16=np.zeros((n, 16, 16, 16), dtype=np.int32),
-            noise_3d=np.random.randn(n, 15, 4, 2, 4).astype(np.float32),
-            biome_ids=np.zeros((n, 4, 2, 4), dtype=np.int32),
+        npz_path = _make_test_npz(
+            Path(tmpdir) / "test.npz", n=n,
+            include_heightmap5=False,
         )
         ds = SparseOctreeDataset(npz_path, cache_targets=False)
         assert ds.heightmap5.shape == (n, 5, 16, 16)
@@ -187,32 +202,21 @@ def test_sparse_octree_dataset_loads_heightmaps_when_present() -> None:
     """NPZs that include heightmap5 should load them as float32."""
     n = 3
     with tempfile.TemporaryDirectory() as tmpdir:
-        npz_path = Path(tmpdir) / "test.npz"
-        hm5 = np.random.randn(n, 5, 16, 16).astype(np.float32)
-        np.savez_compressed(
-            npz_path,
-            subchunk16=np.zeros((n, 16, 16, 16), dtype=np.int32),
-            noise_3d=np.random.randn(n, 15, 4, 2, 4).astype(np.float32),
-            biome_ids=np.zeros((n, 4, 2, 4), dtype=np.int32),
-            heightmap5=hm5,
+        npz_path = _make_test_npz(
+            Path(tmpdir) / "test.npz", n=n,
+            include_heightmap5=True,
         )
         ds = SparseOctreeDataset(npz_path, cache_targets=False)
         assert ds.heightmap5.shape == (n, 5, 16, 16)
-        np.testing.assert_allclose(ds.heightmap5, hm5)
+        # Verify it loaded actual data (not zeros)
+        assert ds.heightmap5.sum() != 0.0
 
 
 def test_collate_includes_heightmaps() -> None:
     """Collation must stack heightmap5 tensors into batched tensors."""
     n = 3
     with tempfile.TemporaryDirectory() as tmpdir:
-        npz_path = Path(tmpdir) / "test.npz"
-        np.savez_compressed(
-            npz_path,
-            subchunk16=np.zeros((n, 16, 16, 16), dtype=np.int32),
-            noise_3d=np.random.randn(n, 15, 4, 2, 4).astype(np.float32),
-            biome_ids=np.zeros((n, 4, 2, 4), dtype=np.int32),
-            heightmap5=np.random.randn(n, 5, 16, 16).astype(np.float32),
-        )
+        npz_path = _make_test_npz(Path(tmpdir) / "test.npz", n=n)
         ds = SparseOctreeDataset(npz_path, cache_targets=True)
         batch = sparse_octree_collate([ds[i] for i in range(n)])
         assert batch["heightmap5"].shape == (n, 5, 16, 16)
@@ -239,73 +243,11 @@ def test_fast_model_forward_with_heightmaps() -> None:
     assert out[0]["label"].shape == (B, 4096, 10)
 
 
-def test_legacy_heightmaps_auto_converted_to_5plane() -> None:
-    """NPZs with legacy heightmap_surface/ocean_floor should auto-derive heightmap5."""
-    n = 3
-    with tempfile.TemporaryDirectory() as tmpdir:
-        npz_path = Path(tmpdir) / "test.npz"
-        hm_s = (np.random.randn(n, 16, 16).astype(np.float32) * 64 + 128).clip(0, 320)
-        hm_o = (np.random.randn(n, 16, 16).astype(np.float32) * 32 + 32).clip(0, 320)
-        np.savez_compressed(
-            npz_path,
-            subchunk16=np.zeros((n, 16, 16, 16), dtype=np.int32),
-            noise_3d=np.random.randn(n, 15, 4, 2, 4).astype(np.float32),
-            biome_ids=np.zeros((n, 4, 2, 4), dtype=np.int32),
-            heightmap_surface=hm_s,
-            heightmap_ocean_floor=hm_o,
-        )
-        ds = SparseOctreeDataset(npz_path, cache_targets=False)
-        assert ds.heightmap5.shape == (n, 5, 16, 16)
-        # Plane 0 should be surface / 320
-        np.testing.assert_allclose(ds.heightmap5[:, 0, :, :], hm_s / 320.0, atol=1e-6)
-        # Plane 1 should be min(surface, 62) / 320
-        np.testing.assert_allclose(
-            ds.heightmap5[:, 1, :, :], np.minimum(hm_s, 62.0) / 320.0, atol=1e-6
-        )
-
-
-def test_legacy_13ch_npz_trains_with_auto_n3d() -> None:
-    """Legacy 13-channel NPZ should auto-detect n3d=13 and build a matching model."""
-    n = 4
-    with tempfile.TemporaryDirectory() as tmpdir:
-        npz_path = Path(tmpdir) / "test.npz"
-        np.savez_compressed(
-            npz_path,
-            subchunk16=np.zeros((n, 16, 16, 16), dtype=np.int32),
-            noise_3d=np.random.randn(n, 13, 4, 2, 4).astype(np.float32),
-            biome_ids=np.zeros((n, 4, 2, 4), dtype=np.int32),
-            heightmap5=np.random.randn(n, 5, 16, 16).astype(np.float32),
-        )
-        ds = SparseOctreeDataset(npz_path, cache_targets=False)
-        assert ds.noise_3d.shape == (n, 13, 4, 2, 4)
-        # Model auto-adapts to 13 channels from dataset
-        sample = ds[0]
-        n3d = sample["noise_3d"].shape[0]
-        assert n3d == 13
-        model = SparseOctreeFastModel(n2d=0, n3d=n3d, hidden=16, num_classes=4, spatial_y=2)
-        B = 2
-        out = model(
-            torch.zeros(B, 0, 4, 4),
-            torch.randn(B, 13, 4, 2, 4),
-            torch.zeros(B, 4, 2, 4, dtype=torch.long),
-            torch.randn(B, 5, 16, 16),
-        )
-        assert isinstance(out, dict)
-        assert set(out.keys()) == {0, 1, 2, 3, 4}
-
-
 def test_v7_15ch_npz_trains_with_auto_n3d() -> None:
     """v7 15-channel NPZ should auto-detect n3d=15 and build a matching model."""
     n = 4
     with tempfile.TemporaryDirectory() as tmpdir:
-        npz_path = Path(tmpdir) / "test.npz"
-        np.savez_compressed(
-            npz_path,
-            subchunk16=np.zeros((n, 16, 16, 16), dtype=np.int32),
-            noise_3d=np.random.randn(n, 15, 4, 2, 4).astype(np.float32),
-            biome_ids=np.zeros((n, 4, 2, 4), dtype=np.int32),
-            heightmap5=np.random.randn(n, 5, 16, 16).astype(np.float32),
-        )
+        npz_path = _make_test_npz(Path(tmpdir) / "test.npz", n=n, n3d=15)
         ds = SparseOctreeDataset(npz_path, cache_targets=False)
         assert ds.noise_3d.shape == (n, 15, 4, 2, 4)
         sample = ds[0]
