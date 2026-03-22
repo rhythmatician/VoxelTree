@@ -55,11 +55,11 @@ import time
 from pathlib import Path
 
 # ------------------------------------------------------------------
-# Path anchors — pipeline.py lives at VoxelTree/VoxelTree/preprocessing/
+# Path anchors — pipeline.py lives at voxel_tree/tasks/preprocessing/
 # ------------------------------------------------------------------
 
-_PKG_DIR = Path(__file__).resolve().parent.parent  # VoxelTree/VoxelTree/ (the package)
-_REPO_ROOT = _PKG_DIR.parent  # VoxelTree/ (repo root)
+_PKG_DIR = Path(__file__).resolve().parent.parent.parent  # .../voxel_tree/ (package root)
+_REPO_ROOT = _PKG_DIR.parent  # .../VoxelTree/ (repo root)
 
 # ------------------------------------------------------------------
 # Defaults

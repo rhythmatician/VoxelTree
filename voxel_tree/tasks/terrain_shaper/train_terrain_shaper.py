@@ -592,7 +592,9 @@ def _weight_l2_norm(model: nn.Module) -> float:
     return total**0.5
 
 
-CHECKPOINT_PATH = Path(__file__).parent.parent / "runs" / "terrain_shaper_checkpoint.pt"
+CHECKPOINT_PATH = (
+    Path(__file__).resolve().parents[3] / "runs" / "terrain_shaper_checkpoint.pt"
+)  # VoxelTree/runs/
 
 
 def save_checkpoint(
@@ -831,7 +833,7 @@ class _Tee:
 
 
 def main():
-    log_dir = Path(__file__).parent.parent / "logs"
+    log_dir = Path(__file__).resolve().parents[3] / "logs"  # VoxelTree/logs/
     log_dir.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     log_path = log_dir / f"train_terrain_shaper_{timestamp}.log"

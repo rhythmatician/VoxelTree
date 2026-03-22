@@ -18,15 +18,20 @@ V7 noise dumps
   heightmap_surface: 256 ints (16×16, x-major)
   heightmap_ocean_floor: 256 ints (16×16, x-major)
 
-  Legacy (pre-v7) dumps with 13 cave-noise channels are also supported for
-  backward compatibility via auto-detection.
-
 Voxy L4 sections
 ----------------
   Files: {voxy_dir}/level_4/voxy_L4_x{X}_y{Y}_z{Z}.npz
-  X = chunk_x, Z = chunk_z, Y = section_y  (range -4..19)
+  (X, Y, Z) are **WorldSection coordinates at level 4** — NOT chunk / section
+  coordinates!  Each L4 WorldSection covers 32 × 2^4 = 512 blocks per axis.
   labels32: (32, 32, 32) int32 in (y, z, x) order  [Voxy's native ordering]
-  Each section spans 16 blocks in each axis (16 sections × 16 blocks = 384 blocks)
+
+  Coordinate mapping (noise → Voxy L4)::
+
+      voxy_x = cx >> 5        # playerSection >> (level + 1)
+      voxy_y = sy >> 5
+      voxy_z = cz >> 5
+
+  See ``voxel_tree.utils.coords`` (Python port of ``WorldSectionCoord.java``).
 
 Output
 ------
@@ -54,6 +59,12 @@ from pathlib import Path
 
 import numpy as np
 
+from voxel_tree.utils.coords import (
+    section_to_world_section,
+    world_section_to_block_min,
+    world_section_width,
+)
+
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
@@ -80,24 +91,6 @@ NOISE_FIELDS = [
 ]
 N_FIELDS = len(NOISE_FIELDS)  # 15
 assert N_FIELDS == 15, f"Expected 15 v7 RouterField channels, got {N_FIELDS}"
-
-# Legacy 13-channel field names for backward-compat auto-detection.
-# @deprecated: v7 dumps use NOISE_FIELDS (15 channels) above.
-_LEGACY_NOISE_FIELDS = [
-    "offset",  # 0  overworld/offset
-    "factor",  # 1  overworld/factor
-    "jaggedness",  # 2  overworld/jaggedness
-    "depth",  # 3  router.depth()
-    "sloped_cheese",  # 4  overworld/sloped_cheese
-    "y",  # 5  cell-centre Y coordinate
-    "entrances",  # 6  overworld/caves/entrances
-    "pillars",  # 7  overworld/caves/pillars (cheese caves)
-    "spaghetti_2d",  # 8  overworld/caves/spaghetti_2d
-    "spaghetti_roughness",  # 9  overworld/caves/spaghetti_roughness_function
-    "noodle",  # 10 overworld/caves/noodle
-    "base_3d_noise",  # 11 overworld/base_3d_noise
-    "final_density",  # 12 router.finalDensity()
-]
 
 # Each section file covers exactly one (cx, sy, cz) triplet — 4×2×4 = 32 quart cells.
 # Section Y range in Minecraft overworld: -4 to 19 inclusive (24 sections × 16 blocks = 384 blocks)
@@ -229,15 +222,26 @@ def build_pairs(
     section_pattern = re.compile(r"section_(-?\d+)_(-?\d+)_(-?\d+)\.json$")
 
     subchunks: list[np.ndarray] = []  # each (16, 16, 16) int32
-    noise_slices: list[np.ndarray] = []  # each (15, 4, 2, 4) float32  [v7] or (13, ...) [legacy]
+    noise_slices: list[np.ndarray] = []  # each (15, 4, 2, 4) float32
     biome_slices: list[np.ndarray] = []  # each (4, 2, 4) int32
     hm5_slices: list[np.ndarray] = []  # each (5, 16, 16) float32
     block_y_min_list: list[int] = []  # absolute block Y of each octant's bottom
 
+    # ── Coordinate conversion level ──────────────────────────────────────
+    # Noise dumps use *player-section* coordinates (16-block, = Minecraft
+    # chunk / section Y).  Voxy L4 uses *WorldSection* coordinates where
+    # each unit = 32 × 2^4 = 512 blocks.  The mapping is:
+    #     voxy_coord = section_to_world_section(player_section, level=4)
+    #                = player_section >> 5
+    VOXY_LEVEL = 4
+
     # Build a set of all (cx, sy, cz) keys parseable from dump files so we can
     # detect Voxy sections that have no corresponding noise dump.
     dump_keys: set[tuple[int, int, int]] = set()
-    matched_sections = 0
+    # Track which Voxy L4 sections we've already loaded (many noise dumps
+    # map to the same L4 section — dedup the expensive NPZ loads).
+    voxy_cache: dict[tuple[int, int, int], np.ndarray] = {}
+    matched_sections: set[tuple[int, int, int]] = set()
     skipped_no_voxy = 0  # dump exists, but no matching Voxy section
 
     for dump_path in dump_files:
@@ -247,7 +251,12 @@ def build_pairs(
         cx, sy, cz = int(m.group(1)), int(m.group(2)), int(m.group(3))
         dump_keys.add((cx, sy, cz))
 
-        voxy_key = (cx, sy, cz)
+        # ── Convert player-section coords → Voxy L4 WorldSection coords ──
+        vx = section_to_world_section(cx, VOXY_LEVEL)
+        vy = section_to_world_section(sy, VOXY_LEVEL)
+        vz = section_to_world_section(cz, VOXY_LEVEL)
+        voxy_key = (vx, vy, vz)
+
         if voxy_key not in voxy_index:
             skipped_no_voxy += 1
             continue
@@ -256,40 +265,37 @@ def build_pairs(
         with open(dump_path) as f:
             raw = json.load(f)
 
-        # Auto-detect v7 (15-ch) vs legacy (13-ch) based on first field name.
-        is_v7 = NOISE_FIELDS[0] in raw  # v7 has "temperature" key
-        active_fields = NOISE_FIELDS if is_v7 else _LEGACY_NOISE_FIELDS
-
-        # Parse noise fields: 32-value flat → (4, 2, 4)
+        # Parse v7 noise fields: 32-value flat → (4, 2, 4)
         field_arrays: list[np.ndarray] = []
-        for field in active_fields:
+        for field in NOISE_FIELDS:
             arr = np.array(raw[field], dtype=np.float32)  # (32,)
             arr = arr.reshape(4, 2, 4)  # (qx, qy, qz)
             field_arrays.append(arr)
-        noise_block = np.stack(field_arrays)  # (15, 4, 2, 4) or (13, 4, 2, 4)
+        noise_block = np.stack(field_arrays)  # (15, 4, 2, 4)
 
         # Parse biome IDs: 32-value flat → (4, 2, 4)
         biome_arr = np.array(raw["biome_ids"], dtype=np.int32).reshape(4, 2, 4)
 
         # Parse heightmaps: 256-value flat → (16, 16)
-        # Fall back to zeros if the dump was collected before heightmap support was added.
-        if "heightmap_surface" in raw:
-            hm_surface = np.array(raw["heightmap_surface"], dtype=np.float32).reshape(16, 16)
-            hm_ocean = np.array(raw["heightmap_ocean_floor"], dtype=np.float32).reshape(16, 16)
-        else:
-            hm_surface = np.zeros((16, 16), dtype=np.float32)
-            hm_ocean = np.zeros((16, 16), dtype=np.float32)
+        hm_surface = np.array(raw["heightmap_surface"], dtype=np.float32).reshape(16, 16)
+        hm_ocean = np.array(raw["heightmap_ocean_floor"], dtype=np.float32).reshape(16, 16)
 
         # Derive 5-plane heightmap: [surface_norm, ocean_approx, slope_x, slope_z, curvature]
         hm5 = compute_height_planes(hm_surface, hm_ocean)  # (5, 16, 16)
 
-        # Load Voxy L4 section
-        with np.load(voxy_index[voxy_key]) as vf:
-            labels32 = vf["labels32"]  # (32, 32, 32) int32, order (y, z, x)
+        # Load Voxy L4 section (cached — many noise dumps share one L4 section)
+        if voxy_key not in voxy_cache:
+            with np.load(voxy_index[voxy_key]) as vf:
+                voxy_cache[voxy_key] = vf["labels32"]  # (32, 32, 32) int32
+        labels32 = voxy_cache[voxy_key]
 
-        matched_sections += 1
+        matched_sections.add(voxy_key)
 
-        # Extract all 8 octants as independent training samples
+        # Extract all 8 octants as independent training samples.
+        # The same noise context is paired with each octant; block_y_min
+        # disambiguates which vertical slice the model should predict.
+        ws_width = world_section_width(VOXY_LEVEL)  # 512 blocks
+        ws_block_y_base = world_section_to_block_min(vy, VOXY_LEVEL)
         for octant in range(8):
             sub = extract_octant(labels32, octant)  # (16, 16, 16) int32
             subchunks.append(sub)
@@ -297,20 +303,35 @@ def build_pairs(
             biome_slices.append(biome_arr)
             hm5_slices.append(hm5)
             # Absolute block-Y of this octant's bottom edge.
-            # Voxy sections are 16 blocks each; labels32 covers 32 blocks.
+            # Each octant covers half the WorldSection height (ws_width // 2).
             dy = (octant >> 2) & 1
-            block_y_min_list.append(sy * 16 + dy * 16)
+            block_y_min_list.append(ws_block_y_base + dy * (ws_width // 2))
 
     if not subchunks:
         print("ERROR: No pairs generated — check that dumps_dir and voxy_dir overlap.")
+        print("  Hint: noise dumps use player-section coordinates (16-block),")
+        print("        Voxy L4 uses WorldSection coordinates (512-block).")
+        print("        Ensure section_to_world_section() maps them correctly.")
         sys.exit(1)
 
     # Voxy sections for which no dump file was found.
-    skipped_no_dump = sum(1 for key in voxy_index if key not in dump_keys)
+    # Convert dump keys → L4 WorldSection keys for comparison.
+    dump_ws_keys = {
+        (
+            section_to_world_section(cx, VOXY_LEVEL),
+            section_to_world_section(sy, VOXY_LEVEL),
+            section_to_world_section(cz, VOXY_LEVEL),
+        )
+        for (cx, sy, cz) in dump_keys
+    }
+    skipped_no_dump = sum(1 for key in voxy_index if key not in dump_ws_keys)
     total_skipped = skipped_no_voxy + skipped_no_dump
 
+    n_matched = len(matched_sections)
     n = len(subchunks)
-    print(f"  Total pairs: {n:,} ({matched_sections:,} sections × 8 octants)")
+    print(
+        f"  Total pairs: {n:,} ({n_matched:,} L4 sections × 8 octants × ~{n // max(n_matched * 8, 1)} noise samples)"
+    )
     if skipped_no_voxy:
         print(f"  Skipped (no Voxy section):  {skipped_no_voxy:,}")
     if skipped_no_dump:
@@ -318,12 +339,11 @@ def build_pairs(
 
     # Stack and save
     all_subchunks = np.stack(subchunks).astype(np.int32)  # (N, 16, 16, 16)
-    all_noise_3d = np.stack(noise_slices).astype(np.float32)  # (N, C, 4, 2, 4) C=15 or 13
+    all_noise_3d = np.stack(noise_slices).astype(np.float32)  # (N, 15, 4, 2, 4)
     all_biome_ids = np.stack(biome_slices).astype(np.int32)  # (N, 4, 2, 4)
     all_hm5 = np.stack(hm5_slices).astype(np.float32)  # (N, 5, 16, 16)
     all_block_y_min = np.array(block_y_min_list, dtype=np.int32)  # (N,)
-    n_ch = all_noise_3d.shape[1]
-    print(f"  Noise channels: {n_ch} ({'v7 RouterField' if n_ch == 15 else 'legacy cave-noise'})")
+    print(f"  Noise channels: {all_noise_3d.shape[1]} (v7 RouterField)")
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     np.savez_compressed(
@@ -340,7 +360,7 @@ def build_pairs(
 
     failure_stats: dict[str, int] = {
         "pairs_saved": n,
-        "matched_sections": matched_sections,
+        "matched_sections": n_matched,
         "total_dump_files": len(dump_files),
         "total_voxy_sections": len(voxy_index),
         "skipped_no_voxy": skipped_no_voxy,

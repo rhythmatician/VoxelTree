@@ -94,10 +94,10 @@ def _safe_unicode(char: str, fallback: str) -> str:
         return fallback
 
 
-# Path anchors — cli.py lives at VoxelTree/preprocessing/
-_PREPROCESSING_DIR = Path(__file__).resolve().parent  # VoxelTree/preprocessing/
-_PKG_DIR = _PREPROCESSING_DIR.parent  # VoxelTree/
-_REPO_ROOT = _PKG_DIR.parent  # repo root
+# Path anchors — cli.py lives at voxel_tree/tasks/preprocessing/
+_PREPROCESSING_DIR = Path(__file__).resolve().parent  # .../voxel_tree/tasks/preprocessing/
+_PKG_DIR = _PREPROCESSING_DIR.parent.parent  # .../voxel_tree/  (package root)
+_REPO_ROOT = _PKG_DIR.parent  # .../VoxelTree/  (repo root)
 
 # ---------------------------------------------------------------------------
 # Dataprep constants

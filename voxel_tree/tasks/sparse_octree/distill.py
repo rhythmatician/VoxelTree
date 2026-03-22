@@ -14,8 +14,8 @@ except ModuleNotFoundError:
     import sys
 
     script_path = Path(__file__).resolve()
-    repo_root = script_path.parents[2]
-    voxel_tree_pkg_root = script_path.parents[1]
+    repo_root = script_path.parents[4]  # .../MC/ (workspace root)
+    voxel_tree_pkg_root = script_path.parents[3]  # .../VoxelTree/ (repo root)
     for p in (voxel_tree_pkg_root, repo_root):
         if str(p) not in sys.path:
             sys.path.insert(0, str(p))

@@ -147,7 +147,7 @@ def main():
 
     # Copy weights to LODiffusion assets for runtime loading
     lodiffusion_assets = (
-        Path(__file__).parent.parent.parent
+        Path(__file__).resolve().parents[4]  # .../MC/ (workspace root)
         / "LODiffusion"
         / "src"
         / "main"

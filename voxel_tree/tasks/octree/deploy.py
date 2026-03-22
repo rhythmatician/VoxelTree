@@ -51,11 +51,13 @@ def main(argv: list[str] | None = None) -> None:
         #         scripts/        ← this file's directory
         #     LODiffusion/        ← target repo (sibling of VoxelTree repo)
         #
-        # __file__ → .parent → scripts/
-        #           → .parent.parent → VoxelTree/ (pkg)
-        #           → .parent.parent.parent → VoxelTree/ (repo, 3rd parent)
-        #           → .parent.parent.parent.parent → MC/ (workspace root)
-        workspace_root = Path(__file__).resolve().parent.parent.parent.parent
+        # __file__ at voxel_tree/tasks/octree/deploy.py:
+        #   .parent            → octree/
+        #   .parent.parent      → tasks/
+        #   .parents[2]         → voxel_tree/
+        #   .parents[3]         → VoxelTree/ (repo)
+        #   .parents[4]         → MC/ (workspace root)
+        workspace_root = Path(__file__).resolve().parents[4]
         candidate = workspace_root / "LODiffusion"
         dest = candidate / "run" / "config" / "lodiffusion"
 

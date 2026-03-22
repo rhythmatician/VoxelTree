@@ -550,7 +550,9 @@ def train_sparse_octree(
     # Auto-detect num_classes from the actual max block ID in the dataset.
     # Validate against the canonical Voxy vocab to prevent silent under-sizing
     # (blocks beyond num_classes become permanently unreachable).
-    _VOCAB_PATH = Path(__file__).resolve().parents[3] / "config" / "voxy_vocab.json"
+    _VOCAB_PATH = (
+        Path(__file__).resolve().parents[2] / "config" / "voxy_vocab.json"
+    )  # voxel_tree/config/
     _vocab_size: Optional[int] = None
     if _VOCAB_PATH.exists():
         try:

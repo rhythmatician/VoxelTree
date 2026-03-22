@@ -45,8 +45,8 @@ import time
 from pathlib import Path
 
 # Allow running from anywhere — ensure the VoxelTree package is importable.
-_SCRIPT_DIR = Path(__file__).resolve().parent
-_PKG_ROOT = _SCRIPT_DIR.parent.parent  # VoxelTree/ repo root
+_SCRIPT_DIR = Path(__file__).resolve().parent  # .../voxel_tree/tasks/preprocessing/
+_PKG_ROOT = _SCRIPT_DIR.parent.parent.parent  # .../VoxelTree/ (repo root)
 if str(_PKG_ROOT) not in sys.path:
     sys.path.insert(0, str(_PKG_ROOT))
 

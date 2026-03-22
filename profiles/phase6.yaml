@@ -1,19 +1,17 @@
-name: phase5
+name: phase6
 description: >-
-  Phase 5 training — geometric pruning in training.
-  Full-scale data harvest (1.1M noise dumps) + retrain with pruning_boost=4.0.
+  Phase 6 — v2 architecture with v7 15-channel noise + heightmaps.
+  Requires re-dumping training data with /dumpnoise v7 command.
 
 dag:
   steps:
-    - id: harvest
-    - id: extract_octree
     - id: build_v7_pairs
     - id: train_sparse_octree
     - id: export_sparse_octree
     - id: deploy_sparse_octree
 
 world:
-  radius: 2048 # blocks — covers dump range X:[-2048,879] Z:[-2048,2143]
+  radius: 2048
 
 data:
   data_dir: data/voxy_octree
@@ -24,19 +22,18 @@ data:
   min_solid: 0.02
 
 train:
-  output_dir: models/phase5
+  output_dir: models/phase6
   batch_size: 8
   device: auto
-  epochs: 1600
-  lr: 0.0001
-  sparse_octree_hidden: 80
-  sparse_octree_variant: fast
+  epochs: 400
+  lr: 0.001
+  sparse_octree_hidden: 160
+  sparse_octree_variant: v2
   num_classes: 1104
   pruning_boost: 4.0
-  resume_from: models/phase5/sparse_octree_model.pt
 
 export:
-  output_dir: production/phase5
+  output_dir: production/phase6
 
 deploy:
   target_dir: ../LODiffusion/run/config/lodiffusion

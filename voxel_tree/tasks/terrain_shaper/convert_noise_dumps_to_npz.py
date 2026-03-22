@@ -269,7 +269,7 @@ def main():
     global SUBCHUNK_MODE
     SUBCHUNK_MODE = args.subchunk
 
-    repo_root = Path(__file__).resolve().parents[1]
+    repo_root = Path(__file__).resolve().parents[3]  # .../VoxelTree/ (repo root)
     dump_dir = repo_root / args.dump_dir
     out_path = repo_root / args.out
 

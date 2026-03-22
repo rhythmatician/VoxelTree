@@ -55,7 +55,7 @@ from tqdm import tqdm
 from voxel_tree.utils.progress import report as _report_progress
 
 # Ensure project root is importable
-_REPO_ROOT = Path(__file__).resolve().parent.parent
+_REPO_ROOT = Path(__file__).resolve().parent.parent.parent.parent  # .../VoxelTree/ (repo root)
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
