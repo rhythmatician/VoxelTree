@@ -70,6 +70,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import sqlite3
 import sys
 from pathlib import Path
 
@@ -106,6 +107,109 @@ assert N_FIELDS == 15, f"Expected 15 v7 RouterField channels, got {N_FIELDS}"
 
 # Each section file covers exactly one (cx, sy, cz) triplet — 4×2×4 = 32 quart cells.
 # Section Y range in Minecraft overworld: -4 to 19 inclusive (24 sections × 16 blocks = 384 blocks)
+
+
+# ---------------------------------------------------------------------------
+# SQLite loading helpers
+# ---------------------------------------------------------------------------
+
+
+def _unpack_noise_blob(blob: bytes) -> np.ndarray:
+    """Unpack a noise BLOB (float32[480]) → (15, 4, 2, 4) float32."""
+    arr = np.frombuffer(blob, dtype=np.float32).copy()
+    return arr.reshape(N_FIELDS, 4, 2, 4)
+
+
+def _unpack_biome_blob(blob: bytes) -> np.ndarray:
+    """Unpack a biome BLOB (int32[32]) → (4, 2, 4) int32."""
+    arr = np.frombuffer(blob, dtype=np.int32).copy()
+    return arr.reshape(4, 2, 4)
+
+
+def _unpack_heightmap_blob(blob: bytes) -> np.ndarray:
+    """Unpack a heightmap BLOB (int32[256]) → (16, 16) float32."""
+    arr = np.frombuffer(blob, dtype=np.int32).copy()
+    return arr.reshape(16, 16).astype(np.float32)
+
+
+class _DumpSourceJSON:
+    """Iterate noise dumps from a directory of JSON files."""
+
+    def __init__(self, dumps_dir: Path):
+        self.dump_files = sorted(dumps_dir.glob("section_*.json"))
+        self._pattern = re.compile(r"section_(-?\d+)_(-?\d+)_(-?\d+)\.json$")
+        if not self.dump_files:
+            raise FileNotFoundError(f"No section_*.json files in {dumps_dir}")
+        print(f"  Found {len(self.dump_files):,} JSON dump files")
+
+    def __len__(self) -> int:
+        return len(self.dump_files)
+
+    def __iter__(self):
+        for dump_path in self.dump_files:
+            m = self._pattern.search(dump_path.name)
+            if not m:
+                continue
+            cx, sy, cz = int(m.group(1)), int(m.group(2)), int(m.group(3))
+            with open(dump_path) as f:
+                raw = json.load(f)
+
+            # Noise: 15 fields × 32 → (15, 4, 2, 4)
+            field_arrays = []
+            for field in NOISE_FIELDS:
+                field_arrays.append(np.array(raw[field], dtype=np.float32).reshape(4, 2, 4))
+            noise = np.stack(field_arrays)
+
+            biome = np.array(raw["biome_ids"], dtype=np.int32).reshape(4, 2, 4)
+            hm_surface = np.array(raw["heightmap_surface"], dtype=np.float32).reshape(16, 16)
+            hm_ocean = np.array(raw["heightmap_ocean_floor"], dtype=np.float32).reshape(16, 16)
+
+            yield cx, sy, cz, noise, biome, hm_surface, hm_ocean
+
+
+class _DumpSourceSQLite:
+    """Iterate noise dumps from a consolidated SQLite database."""
+
+    def __init__(self, db_path: Path):
+        self.db_path = db_path
+        conn = sqlite3.connect(str(db_path))
+        (self._count,) = conn.execute("SELECT COUNT(*) FROM sections").fetchone()
+        conn.close()
+        print(f"  SQLite DB: {db_path} ({self._count:,} sections)")
+
+    def __len__(self) -> int:
+        return self._count
+
+    def __iter__(self):
+        conn = sqlite3.connect(str(self.db_path))
+        conn.execute("PRAGMA cache_size=-256000")  # 256 MB
+
+        # Pre-load all heightmaps into a dict for fast lookup
+        hm_cache: dict[tuple[int, int], tuple[np.ndarray, np.ndarray]] = {}
+        for cx, cz, surf_blob, ocean_blob in conn.execute(
+            "SELECT chunk_x, chunk_z, surface, ocean_floor FROM heightmaps"
+        ):
+            hm_cache[(cx, cz)] = (
+                _unpack_heightmap_blob(surf_blob),
+                _unpack_heightmap_blob(ocean_blob),
+            )
+        print(f"  Loaded {len(hm_cache):,} heightmaps into cache")
+
+        # Stream sections
+        cursor = conn.execute(
+            "SELECT chunk_x, section_y, chunk_z, noise_data, biome_ids "
+            "FROM sections ORDER BY chunk_x, chunk_z, section_y"
+        )
+        for cx, sy, cz, noise_blob, biome_blob in cursor:
+            noise = _unpack_noise_blob(noise_blob)
+            biome = _unpack_biome_blob(biome_blob)
+            hm_surface, hm_ocean = hm_cache.get(
+                (cx, cz),
+                (np.zeros((16, 16), dtype=np.float32), np.zeros((16, 16), dtype=np.float32)),
+            )
+            yield cx, sy, cz, noise, biome, hm_surface, hm_ocean
+
+        conn.close()
 
 
 # ---------------------------------------------------------------------------
@@ -232,9 +336,7 @@ def build_voxy_indices(
             continue
 
         # Match both old (voxy_L4_...) and new (w0_voxy_L4_...) naming.
-        pat = re.compile(
-            rf"(?:w\d+_)?voxy_L{level}_x(-?\d+)_y(-?\d+)_z(-?\d+)\.npz$"
-        )
+        pat = re.compile(rf"(?:w\d+_)?voxy_L{level}_x(-?\d+)_y(-?\d+)_z(-?\d+)\.npz$")
         index: dict[tuple[int, int, int], Path] = {}
         for f in level_dir.iterdir():
             m = pat.search(f.name)
@@ -254,7 +356,7 @@ def build_voxy_indices(
 
 
 def build_pairs(
-    dumps_dir: Path,
+    dump_source: _DumpSourceJSON | _DumpSourceSQLite,
     voxy_dir: Path,
     output_path: Path,
     *,
@@ -267,6 +369,7 @@ def build_pairs(
     sample per dump — no octant fan-out.
 
     Args:
+        dump_source: A _DumpSourceJSON or _DumpSourceSQLite iterable.
         require_all_levels: When True (default), only include samples where
             all 5 Voxy levels are available.  When False, include partial
             samples and mark missing levels with -1 sentinel.
@@ -274,25 +377,20 @@ def build_pairs(
     Returns:
         (pairs_saved, stats_dict).
     """
-    dump_files = sorted(dumps_dir.glob("section_*.json"))
-    if not dump_files:
-        print(f"ERROR: No section_*.json files found in {dumps_dir}")
-        sys.exit(1)
-    print(f"  Found {len(dump_files):,} sparse_octree section dump files")
+    n_dumps = len(dump_source)
+    print(f"  Processing {n_dumps:,} dump sections")
 
     # ── Index all 5 Voxy LOD levels ──────────────────────────────────────
     voxy_indices = build_voxy_indices(voxy_dir)
 
-    section_pattern = re.compile(r"section_(-?\d+)_(-?\d+)_(-?\d+)\.json$")
-
     # ── Per-level label accumulators ─────────────────────────────────────
     # {level: list of ndarrays}, shapes: L4=(1,1,1), L3=(2,2,2), ..., L0=(16,16,16)
     label_lists: dict[int, list[np.ndarray]] = {lv: [] for lv in range(5)}
-    noise_slices: list[np.ndarray] = []   # (15, 4, 2, 4) float32
-    biome_slices: list[np.ndarray] = []   # (4, 2, 4) int32
-    hm5_slices: list[np.ndarray] = []     # (5, 16, 16) float32
-    block_y_min_list: list[int] = []      # sy * 16
-    finest_level_list: list[int] = []     # finest available Voxy level
+    noise_slices: list[np.ndarray] = []  # (15, 4, 2, 4) float32
+    biome_slices: list[np.ndarray] = []  # (4, 2, 4) int32
+    hm5_slices: list[np.ndarray] = []  # (5, 16, 16) float32
+    block_y_min_list: list[int] = []  # sy * 16
+    finest_level_list: list[int] = []  # finest available Voxy level
 
     # Voxy grid cache: (level, ws_tuple) → labels32 (32,32,32)
     voxy_cache: dict[tuple[int, tuple[int, int, int]], np.ndarray] = {}
@@ -300,12 +398,7 @@ def build_pairs(
     skipped_no_voxy = 0
     skipped_partial = 0
 
-    for dump_path in dump_files:
-        m = section_pattern.search(dump_path.name)
-        if not m:
-            continue
-        cx, sy, cz = int(m.group(1)), int(m.group(2)), int(m.group(3))
-
+    for cx, sy, cz, noise_block, biome_arr, hm_surface, hm_ocean in dump_source:
         # ── Check Voxy availability at each level ────────────────────────
         available_ws: dict[int, tuple[int, int, int]] = {}
         for level in range(5):
@@ -327,23 +420,7 @@ def build_pairs(
 
         finest = min(available_ws.keys())
 
-        # ── Parse noise dump ─────────────────────────────────────────────
-        with open(dump_path) as f:
-            raw = json.load(f)
-
-        # v7 noise fields: 32-value flat → (4, 2, 4)
-        field_arrays: list[np.ndarray] = []
-        for field in NOISE_FIELDS:
-            arr = np.array(raw[field], dtype=np.float32).reshape(4, 2, 4)
-            field_arrays.append(arr)
-        noise_block = np.stack(field_arrays)  # (15, 4, 2, 4)
-
-        # Biome IDs
-        biome_arr = np.array(raw["biome_ids"], dtype=np.int32).reshape(4, 2, 4)
-
         # Heightmaps → 5-plane
-        hm_surface = np.array(raw["heightmap_surface"], dtype=np.float32).reshape(16, 16)
-        hm_ocean = np.array(raw["heightmap_ocean_floor"], dtype=np.float32).reshape(16, 16)
         hm5 = compute_height_planes(hm_surface, hm_ocean)  # (5, 16, 16)
 
         # ── Extract per-level sub-cubes from Voxy ────────────────────────
@@ -389,11 +466,11 @@ def build_pairs(
         print(f"  L{lv} coverage: {level_counts[lv]:,}/{n:,} samples ({side}³ per sample)")
 
     # ── Stack and save ───────────────────────────────────────────────────
-    all_noise_3d = np.stack(noise_slices).astype(np.float32)        # (N, 15, 4, 2, 4)
-    all_biome_ids = np.stack(biome_slices).astype(np.int32)         # (N, 4, 2, 4)
-    all_hm5 = np.stack(hm5_slices).astype(np.float32)              # (N, 5, 16, 16)
-    all_block_y_min = np.array(block_y_min_list, dtype=np.int32)    # (N,)
-    all_finest = np.array(finest_level_list, dtype=np.int32)        # (N,)
+    all_noise_3d = np.stack(noise_slices).astype(np.float32)  # (N, 15, 4, 2, 4)
+    all_biome_ids = np.stack(biome_slices).astype(np.int32)  # (N, 4, 2, 4)
+    all_hm5 = np.stack(hm5_slices).astype(np.float32)  # (N, 5, 16, 16)
+    all_block_y_min = np.array(block_y_min_list, dtype=np.int32)  # (N,)
+    all_finest = np.array(finest_level_list, dtype=np.int32)  # (N,)
 
     save_dict: dict[str, np.ndarray] = {
         "noise_3d": all_noise_3d,
@@ -415,7 +492,7 @@ def build_pairs(
 
     failure_stats: dict[str, int] = {
         "pairs_saved": n,
-        "total_dump_files": len(dump_files),
+        "total_dump_files": n_dumps,
         "skipped_no_voxy": skipped_no_voxy,
         "skipped_partial": skipped_partial,
         "all_5_levels": level_counts.get(0, 0),
@@ -435,12 +512,18 @@ def main(argv: list[str] | None = None) -> None:
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument(
+    source_group = parser.add_mutually_exclusive_group(required=True)
+    source_group.add_argument(
         "--dumps",
         type=Path,
-        default=Path("VoxelTree/tools/fabric-server/runtime/v7_dumps"),
         metavar="DIR",
         help="Directory containing section_*.json v7 noise dumps",
+    )
+    source_group.add_argument(
+        "--db",
+        type=Path,
+        metavar="FILE",
+        help="Consolidated SQLite database (from consolidate_dumps.py)",
     )
     parser.add_argument(
         "--voxy",
@@ -464,17 +547,25 @@ def main(argv: list[str] | None = None) -> None:
     )
     args = parser.parse_args(argv)
 
+    # Choose dump source
+    if args.db:
+        dump_source: _DumpSourceJSON | _DumpSourceSQLite = _DumpSourceSQLite(args.db)
+        source_label = str(args.db)
+    else:
+        dump_source = _DumpSourceJSON(args.dumps)
+        source_label = str(args.dumps)
+
     print("=" * 62)
     print("  Building multi-level training pairs (15ch 4×2×4, L0-L4)")
     print("=" * 62)
-    print(f"  Dumps dir : {args.dumps}")
+    print(f"  Source    : {source_label}")
     print(f"  Voxy dir  : {args.voxy}")
     print(f"  Output    : {args.output}")
     print(f"  Require all levels: {not args.allow_partial_levels}")
     print()
 
     n, failure_stats = build_pairs(
-        args.dumps,
+        dump_source,
         args.voxy,
         args.output,
         require_all_levels=not args.allow_partial_levels,

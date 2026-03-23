@@ -134,13 +134,15 @@ class RconClient:
 
     def _recv_exact(self, n: int) -> bytes:
         assert self._sock is not None
-        buf = b""
-        while len(buf) < n:
-            chunk = self._sock.recv(n - len(buf))
+        parts: list[bytes] = []
+        received = 0
+        while received < n:
+            chunk = self._sock.recv(n - received)
             if not chunk:
                 raise RconError("Connection closed by server.")
-            buf += chunk
-        return buf
+            parts.append(chunk)
+            received += len(chunk)
+        return b"".join(parts)
 
 
 # ---------------------------------------------------------------------------

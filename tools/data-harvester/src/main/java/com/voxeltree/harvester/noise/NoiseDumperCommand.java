@@ -967,22 +967,18 @@ public final class NoiseDumperCommand {
     /**
      * Execute {@code /dumpnoise v7 <radius>}.
      *
-     * <p>Dumps all 15 RouterField channels at 4×4×4 quart resolution plus
-     * 4×4×4 biome IDs and per-column heightmaps for every section in the
-     * overworld column range.  Output: {@code v7_dumps/section_<cx>_<sy>_<cz>.json}.
+     * <p>Dumps all 15 RouterField channels at 4×2×4 quart resolution plus
+     * 4×2×4 biome IDs and per-column heightmaps for every section in the
+     * overworld column range directly into a SQLite database.
+     *
+     * <p>Output: {@code v7_dumps.db} (single file, ~200-500 MB depending on radius).
      */
     private static int executeV7(CommandContext<CommandSourceStack> ctx,
                                  int radius) {
         CommandSourceStack source = ctx.getSource();
         ServerLevel world = source.getLevel();
 
-        Path outDir = Path.of("v7_dumps");
-        try {
-            Files.createDirectories(outDir);
-        } catch (IOException e) {
-            source.sendFailure(Component.literal("[V7Dump] Cannot create output dir: " + e.getMessage()));
-            return 0;
-        }
+        Path dbPath = Path.of("v7_dumps.db");
 
         WorldNoiseAccess noise = WorldNoiseAccess.tryCreate(world);
         if (noise == null) {
@@ -990,7 +986,14 @@ public final class NoiseDumperCommand {
             return 0;
         }
 
-        long seed = world.getSeed();
+        SQLiteDumpWriter dbWriter;
+        try {
+            dbWriter = new SQLiteDumpWriter(dbPath);
+        } catch (Exception e) {
+            source.sendFailure(Component.literal("[V7Dump] Cannot open database: " + e.getMessage()));
+            return 0;
+        }
+
         int[] centre = {0, 0};
         try {
             BlockPos bOrigin = BlockPos.containing(source.getPosition());
@@ -1006,11 +1009,13 @@ public final class NoiseDumperCommand {
         int totalSections = (2 * radius + 1) * (2 * radius + 1) * 24;
         source.sendSuccess(
                 () -> Component.literal(String.format(
-                        "[V7Dump] Dumping %d sections (15ch 4×4×4) r=%d centred (%d,%d) → %s",
+                        "[V7Dump] Dumping %d sections (15ch 4x2x4) r=%d centred (%d,%d) -> %s",
                         totalSections, radius, centerCx, centerCz,
-                        outDir.toAbsolutePath())),
+                        dbPath.toAbsolutePath())),
                 false);
 
+        // Use a thread pool for noise computation; DB writes are serialized
+        // through SQLiteDumpWriter's synchronized writeSection().
         int threadCount = 4;
         ExecutorService pool = Executors.newFixedThreadPool(threadCount, r -> {
             Thread t = new Thread(r, "V7Dumper-Worker");
@@ -1022,6 +1027,8 @@ public final class NoiseDumperCommand {
         AtomicInteger failed = new AtomicInteger();
         long startTime = System.currentTimeMillis();
         List<Future<?>> futures = new ArrayList<>(totalSections);
+
+        final SQLiteDumpWriter writer = dbWriter;
 
         for (int dx = -radius; dx <= radius; dx++) {
             for (int dz = -radius; dz <= radius; dz++) {
@@ -1043,8 +1050,17 @@ public final class NoiseDumperCommand {
                     final int sectionY = sy;
                     futures.add(pool.submit(() -> {
                         try {
-                            dumpSectionNoiseV7(noise, fcx, sectionY, fcz, seed,
-                                    surfaceHm, oceanFloorHm, outDir);
+                            // Compute noise (thread-safe, pure math)
+                            float[] routerFlat = noise.sampleRouterFieldsForSection(
+                                    fcx, sectionY, fcz);
+                            int[][][] biomeIds = noise.sampleBiomeIdsForSectionV7(
+                                    fcx, sectionY, fcz);
+
+                            // Write to DB (synchronized inside writer)
+                            writer.writeSection(fcx, sectionY, fcz,
+                                    routerFlat, biomeIds,
+                                    surfaceHm, oceanFloorHm);
+
                             dumped.incrementAndGet();
                         } catch (Exception e) {
                             LOG.warn("[V7Dump] Failed section ({},{},{}): {}",
@@ -1052,7 +1068,7 @@ public final class NoiseDumperCommand {
                             failed.incrementAndGet();
                         }
                         int done = dumped.get() + failed.get();
-                        if (done % 200 == 0 || done == totalSections) {
+                        if (done % 5000 == 0 || done == totalSections) {
                             double elapsed = (System.currentTimeMillis() - startTime) / 1000.0;
                             double rate = elapsed > 0 ? done / elapsed : 0;
                             source.sendSuccess(
@@ -1065,100 +1081,32 @@ public final class NoiseDumperCommand {
             }
         }
 
+        final int finalRadius = radius;
         Thread coordinator = new Thread(() -> {
             for (Future<?> f : futures) {
                 try { f.get(); } catch (Exception e) { LOG.warn("[V7Dump] {}", e.getMessage()); }
             }
             pool.shutdown();
+
+            // Finalize and close DB
+            try {
+                writer.finalizeDb(finalRadius);
+            } catch (Exception e) {
+                LOG.error("[V7Dump] Failed to finalize DB: {}", e.getMessage());
+            }
+            writer.close();
+
             double totalSec = (System.currentTimeMillis() - startTime) / 1000.0;
             final int d = dumped.get(), fl = failed.get();
             source.sendSuccess(
                     () -> Component.literal(String.format(
-                            "[V7Dump] Done. %d dumped, %d failed in %.1fs (%.1f sections/s)",
-                            d, fl, totalSec, d / totalSec)),
+                            "[V7Dump] Done. %d dumped, %d failed in %.1fs (%.1f sections/s) -> %s",
+                            d, fl, totalSec, d / totalSec, dbPath.toAbsolutePath())),
                     false);
         }, "V7Dumper-Coordinator");
         coordinator.setDaemon(true);
         coordinator.start();
 
         return 1;
-    }
-
-    /**
-     * Dump v7 training data for a single section to JSON.
-     *
-     * <p>Each JSON file contains:
-     * <ul>
-     *   <li>15 RouterField channels as flat 32-element arrays (4×2×4, channel-first)</li>
-     *   <li>{@code biome_ids}: flat 32-element int array (4×2×4)</li>
-     *   <li>{@code heightmap_surface}: flat 256-element int array (16×16, x-major)</li>
-     *   <li>{@code heightmap_ocean_floor}: flat 256-element int array (16×16, x-major)</li>
-     * </ul>
-     *
-     * <p>Flat ordering is {@code [qx][qy][qz]} = {@code qx * 8 + qy * 4 + qz}.
-     */
-    static void dumpSectionNoiseV7(WorldNoiseAccess noise,
-                                   int cx, int sy, int cz,
-                                   long seed,
-                                   float[][] surfaceHm,
-                                   float[][] oceanFloorHm,
-                                   Path outDir) throws IOException {
-        String filename = String.format("section_%d_%d_%d.json", cx, sy, cz);
-        Path file = outDir.resolve(filename);
-
-        // 15-channel flat array [field * 32 + qx * 8 + qy * 4 + qz]
-        float[] routerFlat = noise.sampleRouterFieldsForSection(cx, sy, cz);
-
-        // 4×2×4 biome IDs
-        int[][][] biomeIds = noise.sampleBiomeIdsForSectionV7(cx, sy, cz);
-
-        // --- Write JSON
-        StringBuilder sb = new StringBuilder(24 * 1024);
-        sb.append("{\n");
-        sb.append("  \"chunk_x\": ").append(cx).append(",\n");
-        sb.append("  \"section_y\": ").append(sy).append(",\n");
-        sb.append("  \"chunk_z\": ").append(cz).append(",\n");
-        sb.append("  \"seed\": ").append(seed).append(",\n");
-        sb.append("  \"version\": 7,\n");
-        sb.append("  \"cell_resolution\": \"4x2x4\",\n");
-        sb.append("  \"note\": \"flat arrays indexed [qx*8 + qy*4 + qz]; channel-first for router fields\",\n");
-
-        // Write each of the 15 router fields as a separate JSON key,
-        // each with 32 values (4×2×4).
-        for (int field = 0; field < WorldNoiseAccess.N_ROUTER_FIELDS; field++) {
-            sb.append("  \"").append(V7_FIELD_NAMES[field]).append("\": [");
-            int base = field * 32;
-            for (int i = 0; i < 32; i++) {
-                if (i > 0) sb.append(',');
-                sb.append(String.format("%.6g", routerFlat[base + i]));
-            }
-            sb.append("],\n");
-        }
-
-        // Biome IDs — flat 32 values [qx][qy][qz]
-        sb.append("  \"biome_ids\": [");
-        boolean first = true;
-        for (int qx = 0; qx < 4; qx++) {
-            for (int qy = 0; qy < 2; qy++) {
-                for (int qz = 0; qz < 4; qz++) {
-                    if (!first) sb.append(',');
-                    first = false;
-                    sb.append(biomeIds[qx][qy][qz]);
-                }
-            }
-        }
-        sb.append("],\n");
-
-        // Per-column heightmaps (shared across all sections in same column)
-        sb.append("  \"heightmap_surface\": [");
-        appendFloatGrid(sb, surfaceHm);
-        sb.append("],\n");
-
-        sb.append("  \"heightmap_ocean_floor\": [");
-        appendFloatGrid(sb, oceanFloorHm);
-        sb.append("]\n");
-
-        sb.append("}\n");
-        Files.writeString(file, sb.toString());
     }
 }
