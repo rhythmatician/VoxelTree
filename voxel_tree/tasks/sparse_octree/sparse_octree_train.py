@@ -29,6 +29,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
+import time
+
 import numpy as np
 import torch
 import torch.nn as nn
@@ -117,7 +119,13 @@ class SparseOctreeDataset(Dataset):  # type: ignore[type-arg]
     ``finest_level`` indicates the finest available LOD per sample.
     """
 
-    def __init__(self, npz_path: Path, air_id: int = 0, cache_targets: bool = True, max_samples: Optional[int] = None) -> None:
+    def __init__(
+        self,
+        npz_path: Path,
+        air_id: int = 0,
+        cache_targets: bool = True,
+        max_samples: Optional[int] = None,
+    ) -> None:
         data = np.load(npz_path)
 
         # ── Require multi-level format ───────────────────────────────────
@@ -173,9 +181,9 @@ class SparseOctreeDataset(Dataset):  # type: ignore[type-arg]
             f"noise_2d={len(self.noise_2d)}, noise_3d={len(self.noise_3d)}, "
             f"biome_ids={len(self.biome_ids)}"
         )
-        assert len(self.heightmap5) == n, (
-            f"Heightmap5 length mismatch: samples={n}, heightmap5={len(self.heightmap5)}"
-        )
+        assert (
+            len(self.heightmap5) == n
+        ), f"Heightmap5 length mismatch: samples={n}, heightmap5={len(self.heightmap5)}"
 
         if self._cache_targets:
             self._target_cache = [self._build_targets(i) for i in range(n)]
@@ -187,6 +195,7 @@ class SparseOctreeDataset(Dataset):  # type: ignore[type-arg]
         from voxel_tree.tasks.sparse_octree.sparse_octree_targets import (
             build_multilevel_voxy_targets,
         )
+
         finest = int(self.finest_level[idx])
         grids: Dict[int, np.ndarray] = {}
         for level in range(finest, 5):
@@ -567,7 +576,9 @@ def train_sparse_octree(
 
         ds_any = SparseOctreeSQLiteDataset(data_path, max_samples=max_samples)
     else:
-        ds_any = SparseOctreeDataset(data_path, cache_targets=cache_targets, max_samples=max_samples)
+        ds_any = SparseOctreeDataset(
+            data_path, cache_targets=cache_targets, max_samples=max_samples
+        )
     ds = ds_any
     print(f"  Dataset: {len(ds)} samples" + (" (limited from full set)" if max_samples else ""))
 
@@ -591,7 +602,11 @@ def train_sparse_octree(
         if data_path.suffix == ".db":
             from .sparse_octree_dataset_db import SparseOctreeSQLiteDataset  # noqa: PLC0415
 
-            _db_ds = ds if isinstance(ds, SparseOctreeSQLiteDataset) else SparseOctreeSQLiteDataset(data_path)
+            _db_ds = (
+                ds
+                if isinstance(ds, SparseOctreeSQLiteDataset)
+                else SparseOctreeSQLiteDataset(data_path)
+            )
             max_id = _db_ds.scan_max_block_id()
             num_classes = max_id + 1
         else:
@@ -684,6 +699,10 @@ def train_sparse_octree(
             "hidden": hidden,
         }
 
+    n_batches = (len(ds) + batch_size - 1) // batch_size
+    # Print progress every ~10% of batches (at least every 50 batches)
+    _log_interval = max(1, min(n_batches // 10, 50))
+
     for epoch in range(start_epoch, epochs + 1):
         model.train()
         total_loss = 0.0
@@ -698,6 +717,7 @@ def train_sparse_octree(
             "pred_leaf_nodes": 0.0,
             "gt_leaf_nodes": 0.0,
         }
+        epoch_t0 = time.monotonic()
 
         for batch in loader:
             noise_2d = batch["noise_2d"].to(_device)
@@ -722,6 +742,31 @@ def train_sparse_octree(
             total_loss += float(loss.detach())
             total_batches += 1
             _update_batch_metrics(preds, batch["targets"], metric_accum)
+
+            # ── Intra-epoch progress with ETA ────────────────────────
+            if total_batches % _log_interval == 0 or total_batches == n_batches:
+                elapsed = time.monotonic() - epoch_t0
+                pct = 100.0 * total_batches / n_batches
+                avg_so_far = total_loss / total_batches
+                batches_left = n_batches - total_batches
+                secs_per_batch = elapsed / total_batches
+                eta_s = batches_left * secs_per_batch
+                # Overall ETA across remaining epochs
+                remaining_epochs = epochs - epoch
+                full_epoch_est = n_batches * secs_per_batch
+                total_eta_s = eta_s + remaining_epochs * full_epoch_est
+                if total_eta_s >= 3600:
+                    eta_str = f"{total_eta_s / 3600:.1f}h"
+                elif total_eta_s >= 60:
+                    eta_str = f"{total_eta_s / 60:.1f}m"
+                else:
+                    eta_str = f"{total_eta_s:.0f}s"
+                print(
+                    f"  E{epoch}/{epochs} [{total_batches:>{len(str(n_batches))}}/{n_batches}] "
+                    f"{pct:5.1f}%  loss={avg_so_far:.4f}  "
+                    f"{secs_per_batch:.3f}s/batch  ETA {eta_str}",
+                    flush=True,
+                )
 
         avg_loss = total_loss / max(total_batches, 1)
         row = {"epoch": float(epoch), "loss": avg_loss}
