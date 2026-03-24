@@ -79,6 +79,51 @@ import numpy as np
 from voxel_tree.utils.coords import section_to_world_section
 
 # ---------------------------------------------------------------------------
+# Paths
+# ---------------------------------------------------------------------------
+
+_VT_ROOT = Path(__file__).resolve().parents[3]  # VoxelTree repo root
+_DEFAULT_VOCAB_REMAP = _VT_ROOT / "voxel_tree" / "config" / "vocab_remap.json"
+
+
+# ---------------------------------------------------------------------------
+# Vocabulary remap
+# ---------------------------------------------------------------------------
+
+
+def _build_remap_lut(remap_path: Path | None) -> np.ndarray | None:
+    """Build a numpy look-up table from ``vocab_remap.json``.
+
+    The LUT maps old Voxy block IDs (0-1103) to new reduced IDs (0-512).
+    Excluded blocks (remap value == -1) are mapped to 0 (air).
+
+    Returns ``None`` when no remap file is found (labels pass through raw).
+    """
+    path = remap_path if remap_path is not None else _DEFAULT_VOCAB_REMAP
+    if not path.exists():
+        print(f"  Vocab remap not found at {path} — labels will use raw Voxy IDs")
+        return None
+
+    remap: dict[str, int] = json.loads(path.read_text(encoding="utf-8"))
+    max_old = max(int(k) for k in remap)
+    lut = np.zeros(max_old + 1, dtype=np.int32)  # unmapped → 0 (air)
+    for old_str, new_id in remap.items():
+        lut[int(old_str)] = max(new_id, 0)  # -1 (excluded) → 0 (air)
+
+    n_kept = sum(1 for v in remap.values() if v >= 0)
+    n_excluded = sum(1 for v in remap.values() if v < 0)
+    print(f"  Loaded vocab remap: {len(remap)} entries ({n_kept} kept, {n_excluded} → air)")
+    return lut
+
+
+def _apply_remap(labels: np.ndarray, lut: np.ndarray) -> np.ndarray:
+    """Remap block IDs in *labels* using the LUT, preserving -1 sentinels."""
+    mask = labels >= 0
+    clamped = np.clip(labels, 0, len(lut) - 1)
+    return np.where(mask, lut[clamped], labels).astype(np.int32)
+
+
+# ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
 
@@ -361,6 +406,7 @@ def build_pairs(
     output_path: Path,
     *,
     require_all_levels: bool = True,
+    vocab_remap_lut: np.ndarray | None = None,
 ) -> tuple[int, dict[str, int]]:
     """Build and save multi-level sparse-octree training pairs.
 
@@ -482,6 +528,22 @@ def build_pairs(
     for lv in range(5):
         save_dict[f"labels_L{lv}"] = np.stack(label_lists[lv]).astype(np.int32)
 
+    # ── Apply vocabulary remap (1104 → 513) ──────────────────────────────
+    if vocab_remap_lut is not None:
+        raw_max = max(
+            int(save_dict[f"labels_L{lv}"][save_dict[f"labels_L{lv}"] >= 0].max())
+            for lv in range(5)
+            if (save_dict[f"labels_L{lv}"] >= 0).any()
+        )
+        for lv in range(5):
+            save_dict[f"labels_L{lv}"] = _apply_remap(save_dict[f"labels_L{lv}"], vocab_remap_lut)
+        new_max = max(
+            int(save_dict[f"labels_L{lv}"][save_dict[f"labels_L{lv}"] >= 0].max())
+            for lv in range(5)
+            if (save_dict[f"labels_L{lv}"] >= 0).any()
+        )
+        print(f"  Vocab remap applied: max block ID {raw_max} → {new_max}")
+
     print(f"  Noise channels: {all_noise_3d.shape[1]} (v7 RouterField)")
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -545,6 +607,20 @@ def main(argv: list[str] | None = None) -> None:
         default=False,
         help="Include samples even if not all 5 Voxy levels are available",
     )
+    parser.add_argument(
+        "--vocab-remap",
+        type=Path,
+        default=None,
+        metavar="FILE",
+        help="Path to vocab_remap.json (old ID → new ID mapping). "
+        "Default: auto-detect from voxel_tree/config/vocab_remap.json",
+    )
+    parser.add_argument(
+        "--no-remap",
+        action="store_true",
+        default=False,
+        help="Disable vocabulary remapping (use raw Voxy block IDs)",
+    )
     args = parser.parse_args(argv)
 
     # Choose dump source
@@ -558,10 +634,16 @@ def main(argv: list[str] | None = None) -> None:
     print("=" * 62)
     print("  Building multi-level training pairs (15ch 4×2×4, L0-L4)")
     print("=" * 62)
+    # Build vocabulary remap LUT (unless --no-remap)
+    vocab_lut: np.ndarray | None = None
+    if not args.no_remap:
+        vocab_lut = _build_remap_lut(args.vocab_remap)
+
     print(f"  Source    : {source_label}")
     print(f"  Voxy dir  : {args.voxy}")
     print(f"  Output    : {args.output}")
     print(f"  Require all levels: {not args.allow_partial_levels}")
+    print(f"  Vocab remap: {args.vocab_remap or _DEFAULT_VOCAB_REMAP if vocab_lut is not None else 'disabled'}")
     print()
 
     n, failure_stats = build_pairs(
@@ -569,6 +651,7 @@ def main(argv: list[str] | None = None) -> None:
         args.voxy,
         args.output,
         require_all_levels=not args.allow_partial_levels,
+        vocab_remap_lut=vocab_lut,
     )
 
     print()
