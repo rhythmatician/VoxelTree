@@ -20,6 +20,7 @@ world:
 
 data:
   data_dir: data/voxy_octree
+  v7_dumps_db: tools/fabric-server/runtime/v7_dumps.db
   v7_dumps_dir: tools/fabric-server/runtime/v7_dumps
   v7_pairs_npz: noise_training_data/sparse_octree_pairs_v7.npz
   val_split: 0.1
@@ -30,11 +31,11 @@ train:
   output_dir: models/phase7_multilevel
   batch_size: 64
   device: auto
-  epochs: 50
+  epochs: 2
   lr: 0.001
   sparse_octree_hidden: 72
   sparse_octree_variant: fast
-  num_classes: 1104
+  num_classes: 513
   pruning_boost: 4.0
   resume_from: null
 

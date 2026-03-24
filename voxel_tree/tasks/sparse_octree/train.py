@@ -81,12 +81,11 @@ def main(argv=None):
     parser.add_argument(
         "--num-classes",
         type=int,
-        default=1104,
+        default=513,
         help=(
             "Number of block classes for the label head. "
-            "Must match the project-wide Voxy block vocabulary size (1104). "
-            "See VoxelTree/README.md and VoxelTree/VoxelTree/train/octree_models.py "
-            "(block_vocab_size = 1104)."
+            "Must match the reduced vocabulary size (513). "
+            "See voxel_tree/config/voxy_vocab.json."
         ),
     )
     parser.add_argument(

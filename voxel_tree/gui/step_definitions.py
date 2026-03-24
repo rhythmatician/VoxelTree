@@ -632,7 +632,7 @@ def _train_sparse_octree_run(p: dict[str, Any]) -> None:
         device=_resolve_device(train.get("device", "auto")),
         # Explicit num_classes prevents auto-detect from undersizing
         # when rare blocks are absent from the training data.
-        num_classes=train.get("num_classes", 1104),
+        num_classes=train.get("num_classes", 513),
         pruning_boost=train.get("pruning_boost", 4.0),
         resume_from=resume_path,
         progress_callback=lambda epoch, total, _m: _report_progress(epoch, total),
@@ -718,8 +718,13 @@ def _build_v7_pairs_run(p: dict[str, Any]) -> None:
 
     data = p.get("data", {})
     argv: list[str] = []
-    dumps_dir = data.get("v7_dumps_dir", "data/v7_dumps")
-    argv += ["--dumps", str(dumps_dir)]
+    # Prefer SQLite DB (--db) over JSON directory (--dumps) when configured.
+    db_path = data.get("v7_dumps_db")
+    if db_path and Path(db_path).exists():
+        argv += ["--db", str(db_path)]
+    else:
+        dumps_dir = data.get("v7_dumps_dir", "data/v7_dumps")
+        argv += ["--dumps", str(dumps_dir)]
 
     # --voxy should point at the extract_octree output dir (contains level_4/*.npz),
     # NOT the raw Voxy LevelDB saves directory.
