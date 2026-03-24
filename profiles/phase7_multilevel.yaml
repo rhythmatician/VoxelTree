@@ -32,13 +32,13 @@ train:
   output_dir: models/phase7_multilevel
   batch_size: 64
   device: auto
-  epochs: 2
+  epochs: 3
   lr: 0.001
   sparse_octree_hidden: 72
   sparse_octree_variant: fast
   num_classes: 513
   pruning_boost: 4.0
-  resume_from: null
+  resume_from: models/phase7_multilevel/sparse_octree_model.pt
 
 export:
   output_dir: production/phase7_multilevel
