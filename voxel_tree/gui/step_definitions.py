@@ -712,34 +712,65 @@ def _build_v7_pairs_run(p: dict[str, Any]) -> None:
     That directory must exist and contain a ``level_4/`` sub-directory before
     this step is run.
     """
+    import json  # noqa: PLC0415
+
     from voxel_tree.tasks.sparse_octree.build_sparse_octree_pairs import (  # noqa: PLC0415
-        main as pairs_main,
+        _DumpSourceJSON,
+        _DumpSourceSQLite,
+        _build_remap_lut,
+        build_pairs,
+        compute_voxy_section_bounds,
     )
 
     data = p.get("data", {})
-    argv: list[str] = []
-    # Prefer SQLite DB (--db) over JSON directory (--dumps) when configured.
+
+    # data_dir is the extract_octree output dir (contains level_4/*.npz),
+    # NOT the raw Voxy LevelDB saves directory.
+    voxy_npz_dir = Path(data.get("data_dir", "data/voxy_octree"))
+
+    # Prefer SQLite DB over JSON directory when configured.
     db_path = data.get("v7_dumps_db")
     if db_path and Path(db_path).exists():
-        argv += ["--db", str(db_path)]
+        # Pre-filter SQLite rows to the Voxy coverage area for speed.
+        section_bounds = compute_voxy_section_bounds(voxy_npz_dir)
+        if section_bounds:
+            print(f"  Pre-filter bounds: {section_bounds}")
+        dump_source: _DumpSourceJSON | _DumpSourceSQLite = _DumpSourceSQLite(
+            Path(db_path), section_bounds=section_bounds,
+        )
+        source_label = str(db_path)
     else:
         dumps_dir = data.get("v7_dumps_dir", "data/v7_dumps")
-        argv += ["--dumps", str(dumps_dir)]
+        dump_source = _DumpSourceJSON(Path(dumps_dir))
+        source_label = str(dumps_dir)
 
-    # --voxy should point at the extract_octree output dir (contains level_4/*.npz),
-    # NOT the raw Voxy LevelDB saves directory.
-    voxy_npz_dir = data.get("data_dir", "data/voxy_octree")
-    argv += ["--voxy", str(voxy_npz_dir)]
-
-    # Always pass --output so the file lands where the per-track validators expect.
-    # Validators default to "sparse_octree_pairs_v7.npz"; without an explicit
-    # --output the CLI would write to "noise_training_data/sparse_octree_pairs_v7.npz"
-    # instead, causing every downstream build_pairs validator to fail.
-    output_npz = (
+    # Always resolve output so the file lands where per-track validators expect.
+    output_npz = Path(
         data.get("v7_pairs_npz") or data.get("v7_pairs_output") or "sparse_octree_pairs_v7.npz"
     )
-    argv += ["--output", str(output_npz)]
-    pairs_main(argv)
+
+    vocab_lut = _build_remap_lut(None)  # auto-detect vocab_remap.json
+
+    print("=" * 62)
+    print("  Building multi-level training pairs (15ch 4×2×4, L0-L4)")
+    print("=" * 62)
+    print(f"  Source    : {source_label}")
+    print(f"  Voxy dir  : {voxy_npz_dir}")
+    print(f"  Output    : {output_npz}")
+    print()
+
+    n, failure_stats = build_pairs(
+        dump_source,
+        voxy_npz_dir,
+        output_npz,
+        vocab_remap_lut=vocab_lut,
+    )
+
+    print()
+    print("=" * 62)
+    print(f"  DONE — {n:,} samples saved")
+    print("=" * 62)
+    print(f"[STEP_RESULT]{json.dumps(failure_stats, sort_keys=True)}", flush=True)
 
 
 # ---------------------------------------------------------------------------

@@ -58,16 +58,27 @@ Output
 
 Usage
 -----
-  python scripts/build_sparse_octree_pairs.py \\
-      --dumps  VoxelTree/tools/fabric-server/runtime/v7_dumps \\
-      --voxy   VoxelTree/data/voxy_octree \\
-      --output noise_training_data/sparse_octree_pairs_v7.npz
+This module has no CLI entry point.  Invoke via the pipeline step runner::
+
+  voxel-tree --step build_v7_pairs --run --profile NAME
+
+All paths (dumps source, Voxy dir, output NPZ) are read from the named
+profile YAML under ``data.v7_dumps_db`` / ``data.v7_dumps_dir``,
+``data.data_dir``, and ``data.v7_pairs_npz``.
+
+The public API is :func:`build_pairs`, which can also be imported directly
+for use in tests or notebooks::
+
+  from voxel_tree.tasks.sparse_octree.build_sparse_octree_pairs import (
+      _DumpSourceSQLite,
+      build_pairs,
+  )
+  build_pairs(_DumpSourceSQLite(db_path), voxy_dir, output_path)
 
 """
 
 from __future__ import annotations
 
-import argparse
 import json
 import re
 import sqlite3
@@ -213,14 +224,41 @@ class _DumpSourceJSON:
 
 
 class _DumpSourceSQLite:
-    """Iterate noise dumps from a consolidated SQLite database."""
+    """Iterate noise dumps from a consolidated SQLite database.
 
-    def __init__(self, db_path: Path):
+    Supports optional spatial pre-filtering via *section_bounds* to avoid
+    streaming millions of rows that fall outside the Voxy coverage area.
+    """
+
+    def __init__(
+        self,
+        db_path: Path,
+        *,
+        section_bounds: dict[str, tuple[int, int]] | None = None,
+    ):
         self.db_path = db_path
+        self._bounds = section_bounds  # {"cx": (lo, hi), "sy": …, "cz": …}
+
         conn = sqlite3.connect(str(db_path))
-        (self._count,) = conn.execute("SELECT COUNT(*) FROM sections").fetchone()
+        if section_bounds:
+            where = self._where_clause()
+            (self._count,) = conn.execute(f"SELECT COUNT(*) FROM sections WHERE {where}").fetchone()
+        else:
+            (self._count,) = conn.execute("SELECT COUNT(*) FROM sections").fetchone()
         conn.close()
-        print(f"  SQLite DB: {db_path} ({self._count:,} sections)")
+        bounds_tag = "  (pre-filtered)" if section_bounds else ""
+        print(f"  SQLite DB: {db_path} ({self._count:,} sections){bounds_tag}")
+
+    # ── helpers ───────────────────────────────────────────────────────────
+
+    def _where_clause(self) -> str:
+        clauses: list[str] = []
+        if self._bounds:
+            for col, dbcol in [("cx", "chunk_x"), ("sy", "section_y"), ("cz", "chunk_z")]:
+                if col in self._bounds:
+                    lo, hi = self._bounds[col]
+                    clauses.append(f"{dbcol} BETWEEN {lo} AND {hi}")
+        return " AND ".join(clauses) if clauses else "1"
 
     def __len__(self) -> int:
         return self._count
@@ -240,10 +278,12 @@ class _DumpSourceSQLite:
             )
         print(f"  Loaded {len(hm_cache):,} heightmaps into cache")
 
-        # Stream sections
+        # Stream sections (with optional spatial pre-filter)
+        where = self._where_clause() if self._bounds else "1"
         cursor = conn.execute(
-            "SELECT chunk_x, section_y, chunk_z, noise_data, biome_ids "
-            "FROM sections ORDER BY chunk_x, chunk_z, section_y"
+            f"SELECT chunk_x, section_y, chunk_z, noise_data, biome_ids "
+            f"FROM sections WHERE {where} "
+            f"ORDER BY chunk_x, chunk_z, section_y"
         )
         for cx, sy, cz, noise_blob, biome_blob in cursor:
             noise = _unpack_noise_blob(noise_blob)
@@ -356,6 +396,52 @@ def extract_section_subcube(
     return labels32[vy0:vy1, vz0:vz1, vx0:vx1].astype(np.int32)
 
 
+def compute_voxy_section_bounds(
+    voxy_dir: Path,
+) -> dict[str, tuple[int, int]] | None:
+    """Compute the tightest section-coordinate bounds from Voxy data.
+
+    Scans all 5 levels and returns the intersection, i.e. the section coords
+    that *could* have all 5 levels available.  Useful for pre-filtering a
+    SQLite dump to avoid iterating millions of irrelevant rows.
+
+    Returns ``{"cx": (lo, hi), "sy": (lo, hi), "cz": (lo, hi)}`` or ``None``
+    if any level directory is missing.
+    """
+    bounds_per_axis: dict[str, list[tuple[int, int]]] = {"cx": [], "sy": [], "cz": []}
+
+    for level in range(5):
+        level_dir = voxy_dir / f"level_{level}"
+        if not level_dir.is_dir():
+            return None
+        pat = re.compile(rf"(?:w\d+_)?voxy_L{level}_x(-?\d+)_y(-?\d+)_z(-?\d+)\.npz$")
+        xs, ys, zs = [], [], []
+        for f in level_dir.iterdir():
+            m = pat.search(f.name)
+            if m:
+                xs.append(int(m.group(1)))
+                ys.append(int(m.group(2)))
+                zs.append(int(m.group(3)))
+        if not xs:
+            return None
+        shift = level + 1
+        # Convert world-section range to section-coordinate range
+        for axis, vals in [("cx", xs), ("sy", ys), ("cz", zs)]:
+            lo_section = min(vals) << shift
+            hi_section = ((max(vals) + 1) << shift) - 1
+            bounds_per_axis[axis].append((lo_section, hi_section))
+
+    # Intersection: take the tightest (max of lows, min of highs)
+    result: dict[str, tuple[int, int]] = {}
+    for axis in ("cx", "sy", "cz"):
+        lo = max(lo for lo, _ in bounds_per_axis[axis])
+        hi = min(hi for _, hi in bounds_per_axis[axis])
+        if lo > hi:
+            return None  # empty intersection — should never happen with real data
+        result[axis] = (lo, hi)
+    return result
+
+
 def build_voxy_indices(
     voxy_dir: Path,
     levels: list[int] | None = None,
@@ -443,8 +529,20 @@ def build_pairs(
 
     skipped_no_voxy = 0
     skipped_partial = 0
+    processed = 0
+    progress_interval = max(1, n_dumps // 20)  # ~5% increments
 
     for cx, sy, cz, noise_block, biome_arr, hm_surface, hm_ocean in dump_source:
+        processed += 1
+        if processed % progress_interval == 0:
+            pct = 100.0 * processed / n_dumps
+            matched = len(noise_slices)
+            print(
+                f"  [{pct:5.1f}%] {processed:,}/{n_dumps:,} processed, "
+                f"{matched:,} matched, {skipped_no_voxy:,} no-voxy, "
+                f"{skipped_partial:,} partial",
+                flush=True,
+            )
         # ── Check Voxy availability at each level ────────────────────────
         available_ws: dict[int, tuple[int, int, int]] = {}
         for level in range(5):
@@ -562,104 +660,3 @@ def build_pairs(
     for lv in range(5):
         failure_stats[f"L{lv}_coverage"] = level_counts[lv]
     return n, failure_stats
-
-
-# ---------------------------------------------------------------------------
-# CLI
-# ---------------------------------------------------------------------------
-
-
-def main(argv: list[str] | None = None) -> None:
-    parser = argparse.ArgumentParser(
-        description=__doc__,
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-    )
-    source_group = parser.add_mutually_exclusive_group(required=True)
-    source_group.add_argument(
-        "--dumps",
-        type=Path,
-        metavar="DIR",
-        help="Directory containing section_*.json v7 noise dumps",
-    )
-    source_group.add_argument(
-        "--db",
-        type=Path,
-        metavar="FILE",
-        help="Consolidated SQLite database (from consolidate_dumps.py)",
-    )
-    parser.add_argument(
-        "--voxy",
-        type=Path,
-        default=Path("VoxelTree/data/voxy_octree"),
-        metavar="DIR",
-        help="Voxy data directory containing level_0/ through level_4/",
-    )
-    parser.add_argument(
-        "--output",
-        type=Path,
-        default=Path("noise_training_data/sparse_octree_pairs_v7.npz"),
-        metavar="FILE",
-        help="Output npz file path",
-    )
-    parser.add_argument(
-        "--allow-partial-levels",
-        action="store_true",
-        default=False,
-        help="Include samples even if not all 5 Voxy levels are available",
-    )
-    parser.add_argument(
-        "--vocab-remap",
-        type=Path,
-        default=None,
-        metavar="FILE",
-        help="Path to vocab_remap.json (old ID → new ID mapping). "
-        "Default: auto-detect from voxel_tree/config/vocab_remap.json",
-    )
-    parser.add_argument(
-        "--no-remap",
-        action="store_true",
-        default=False,
-        help="Disable vocabulary remapping (use raw Voxy block IDs)",
-    )
-    args = parser.parse_args(argv)
-
-    # Choose dump source
-    if args.db:
-        dump_source: _DumpSourceJSON | _DumpSourceSQLite = _DumpSourceSQLite(args.db)
-        source_label = str(args.db)
-    else:
-        dump_source = _DumpSourceJSON(args.dumps)
-        source_label = str(args.dumps)
-
-    print("=" * 62)
-    print("  Building multi-level training pairs (15ch 4×2×4, L0-L4)")
-    print("=" * 62)
-    # Build vocabulary remap LUT (unless --no-remap)
-    vocab_lut: np.ndarray | None = None
-    if not args.no_remap:
-        vocab_lut = _build_remap_lut(args.vocab_remap)
-
-    print(f"  Source    : {source_label}")
-    print(f"  Voxy dir  : {args.voxy}")
-    print(f"  Output    : {args.output}")
-    print(f"  Require all levels: {not args.allow_partial_levels}")
-    print(f"  Vocab remap: {args.vocab_remap or _DEFAULT_VOCAB_REMAP if vocab_lut is not None else 'disabled'}")
-    print()
-
-    n, failure_stats = build_pairs(
-        dump_source,
-        args.voxy,
-        args.output,
-        require_all_levels=not args.allow_partial_levels,
-        vocab_remap_lut=vocab_lut,
-    )
-
-    print()
-    print("=" * 62)
-    print(f"  DONE — {n:,} samples saved")
-    print("=" * 62)
-    print(f"[STEP_RESULT]{json.dumps(failure_stats, sort_keys=True)}", flush=True)
-
-
-if __name__ == "__main__":
-    main()
