@@ -100,3 +100,6 @@ tools/fabric-server/runtime/vocab_breakdown.json
 # Temporary dump-monitoring scripts (superseded by SQLite writer)
 tools/consolidate_dumps.py
 tools/wait_for_dump.py
+noise_training_data/sparse_octree_pairs_v7.db-wal
+noise_training_data/sparse_octree_pairs_v7.db
+noise_training_data/sparse_octree_pairs_v7.db-shm

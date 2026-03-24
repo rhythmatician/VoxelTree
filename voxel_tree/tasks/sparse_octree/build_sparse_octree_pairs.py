@@ -83,7 +83,10 @@ import json
 import re
 import sqlite3
 import sys
+import time
+import zlib
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 
@@ -482,7 +485,354 @@ def build_voxy_indices(
 
 
 # ---------------------------------------------------------------------------
-# Main builder
+# Scalable SQL-accelerated pair builder (SQLite → SQLite)
+# ---------------------------------------------------------------------------
+
+# ── BLOB compression helpers ─────────────────────────────────────────────
+
+def _pack_blob(arr: np.ndarray) -> bytes:
+    """Compress a numpy array to a zlib BLOB for storage."""
+    return zlib.compress(arr.astype(arr.dtype).tobytes(), level=1)  # fast compression
+
+
+def unpack_blob(blob: bytes, dtype: Any, shape: tuple[int, ...]) -> np.ndarray:
+    """Decompress a zlib BLOB back to a numpy array.
+
+    Public because ``SparseOctreeSQLiteDataset`` uses it at training time.
+    """
+    raw = zlib.decompress(blob)
+    return np.frombuffer(raw, dtype=dtype).reshape(shape).copy()
+
+
+# ── Training pairs DB schema ─────────────────────────────────────────────
+
+_PAIRS_DB_SCHEMA = """\
+CREATE TABLE IF NOT EXISTS training_pairs (
+    sample_id    INTEGER PRIMARY KEY,
+    chunk_x      INTEGER NOT NULL,
+    section_y    INTEGER NOT NULL,
+    chunk_z      INTEGER NOT NULL,
+    block_y_min  INTEGER NOT NULL,
+    finest_level INTEGER NOT NULL,
+    noise_3d     BLOB NOT NULL,
+    biome_ids    BLOB NOT NULL,
+    heightmap5   BLOB NOT NULL,
+    labels_L0    BLOB NOT NULL,
+    labels_L1    BLOB NOT NULL,
+    labels_L2    BLOB NOT NULL,
+    labels_L3    BLOB NOT NULL,
+    labels_L4    BLOB NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS metadata (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+"""
+
+
+def _init_pairs_db(output_path: Path) -> sqlite3.Connection:
+    """Create (or overwrite) the training-pairs SQLite database."""
+    if output_path.exists():
+        output_path.unlink()
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(output_path))
+    conn.executescript(_PAIRS_DB_SCHEMA)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA synchronous=NORMAL")
+    conn.execute("PRAGMA cache_size=-256000")  # 256 MB
+    return conn
+
+
+# ── Voxy temp-table injection ────────────────────────────────────────────
+
+def _populate_voxy_temp_tables(
+    conn: sqlite3.Connection,
+    voxy_indices: dict[int, dict[tuple[int, int, int], Path]],
+) -> None:
+    """Create and populate temp tables with Voxy world-section coords.
+
+    One temp table per LOD level (``voxy_L0`` … ``voxy_L4``), each with a
+    PRIMARY KEY on ``(wx, wy, wz)`` for fast B-tree probes during the JOIN.
+    """
+    for level in range(5):
+        conn.execute(
+            f"CREATE TEMP TABLE IF NOT EXISTS voxy_L{level} "
+            f"(wx INTEGER, wy INTEGER, wz INTEGER, "
+            f"PRIMARY KEY(wx, wy, wz))"
+        )
+        coords = list(voxy_indices.get(level, {}).keys())
+        if coords:
+            conn.executemany(
+                f"INSERT OR IGNORE INTO voxy_L{level} (wx, wy, wz) VALUES (?, ?, ?)",
+                coords,
+            )
+        print(f"  Loaded {len(coords):,} Voxy L{level} world-sections into temp table")
+    conn.commit()
+
+
+# ── SQL JOIN query builder ───────────────────────────────────────────────
+
+def _voxy_join_clause(require_all_levels: bool = True) -> str:
+    """Build FROM … JOIN clause that filters sections by Voxy availability.
+
+    Uses SQLite's ``>>`` (arithmetic right-shift) to map section coordinates
+    to world-section coordinates at each Voxy level, then JOINs against
+    the temp tables populated by :func:`_populate_voxy_temp_tables`.
+
+    When *require_all_levels* is True, INNER JOINs ensure that only rows
+    present at **all** five levels are returned.
+    """
+    join_type = "JOIN" if require_all_levels else "LEFT JOIN"
+    parts = [
+        "FROM sections s",
+        "JOIN heightmaps h ON h.chunk_x = s.chunk_x AND h.chunk_z = s.chunk_z",
+    ]
+    for level in range(5):
+        shift = level + 1
+        parts.append(
+            f"{join_type} voxy_L{level} v{level}"
+            f" ON v{level}.wx = (s.chunk_x >> {shift})"
+            f" AND v{level}.wy = (s.section_y >> {shift})"
+            f" AND v{level}.wz = (s.chunk_z >> {shift})"
+        )
+    if not require_all_levels:
+        parts.append(
+            "WHERE " + " OR ".join(f"v{lv}.wx IS NOT NULL" for lv in range(5))
+        )
+    return "\n".join(parts)
+
+
+# ── Main scalable builder ───────────────────────────────────────────────
+
+def build_pairs_db(
+    dump_db_path: Path,
+    voxy_dir: Path,
+    output_path: Path,
+    *,
+    require_all_levels: bool = True,
+    vocab_remap_lut: np.ndarray | None = None,
+    batch_size: int = 10_000,
+) -> tuple[int, dict[str, int]]:
+    """Build training pairs using SQL JOINs — write to SQLite.
+
+    Scalable version of :func:`build_pairs`.  Instead of iterating all
+    dump rows in Python and filtering, this:
+
+    1. Creates temp tables with Voxy world-section coordinates.
+    2. Uses a 5-way SQL JOIN (``>>`` bit-shift) to stream only matching
+       rows — pushed to SQLite's C engine.
+    3. Processes results in batches and writes compressed BLOBs to an
+       output SQLite ``training_pairs`` table.
+
+    Memory usage: ``O(batch_size + voxy_cache)`` instead of ``O(N_total)``.
+
+    Parameters
+    ----------
+    dump_db_path : Path
+        The v7 noise dumps SQLite database.
+    voxy_dir : Path
+        Root directory of extracted Voxy data (``level_0/`` … ``level_4/``).
+    output_path : Path
+        Output ``.db`` file for the training pairs.
+    require_all_levels : bool
+        When True (default), only include samples where all 5 Voxy levels
+        are available.
+    vocab_remap_lut : ndarray or None
+        Vocabulary remap LUT (old block ID → new ID).
+    batch_size : int
+        Rows to process between DB commits and progress reports.
+
+    Returns
+    -------
+    (pairs_saved, stats_dict)
+    """
+    t0 = time.monotonic()
+
+    # ── Open source DB ──────────────────────────────────────────────────
+    src = sqlite3.connect(str(dump_db_path))
+    src.execute("PRAGMA cache_size=-512000")  # 512 MB
+    (total_sections,) = src.execute("SELECT COUNT(*) FROM sections").fetchone()
+    print(f"  Source DB: {dump_db_path} ({total_sections:,} sections)")
+
+    # ── Index all 5 Voxy LOD levels ─────────────────────────────────────
+    voxy_indices = build_voxy_indices(voxy_dir)
+
+    # ── Populate Voxy temp tables in source DB ──────────────────────────
+    _populate_voxy_temp_tables(src, voxy_indices)
+
+    # ── Count matching rows (index-only — no BLOB I/O) ─────────────────
+    join_clause = _voxy_join_clause(require_all_levels)
+    t_count = time.monotonic()
+    (n_matching,) = src.execute(f"SELECT COUNT(*) {join_clause}").fetchone()
+    dt_count = time.monotonic() - t_count
+    print(
+        f"  Matching sections (5-level JOIN): {n_matching:,} / {total_sections:,} "
+        f"({100 * n_matching / total_sections:.1f}%)  [{dt_count:.1f}s]"
+    )
+
+    if n_matching == 0:
+        print("ERROR: No matching sections — check Voxy/dump coordinate overlap.")
+        src.close()
+        sys.exit(1)
+
+    # ── Init output DB ──────────────────────────────────────────────────
+    out_conn = _init_pairs_db(output_path)
+
+    # ── Voxy grid cache: (level, ws_tuple) → labels32 (32,32,32) ───────
+    voxy_cache: dict[tuple[int, tuple[int, int, int]], np.ndarray] = {}
+
+    # ── Stream matching rows ────────────────────────────────────────────
+    select_cols = (
+        "s.chunk_x, s.section_y, s.chunk_z, "
+        "s.noise_data, s.biome_ids, "
+        "h.surface, h.ocean_floor"
+    )
+    data_sql = (
+        f"SELECT {select_cols} {join_clause} "
+        f"ORDER BY s.chunk_x, s.chunk_z, s.section_y"
+    )
+    cursor = src.execute(data_sql)
+
+    sample_id = 0
+    rows_fetched = 0
+    level_counts = {lv: 0 for lv in range(5)}
+
+    while True:
+        rows = cursor.fetchmany(batch_size)
+        if not rows:
+            break
+
+        batch_inserts: list[tuple] = []
+
+        for cx, sy, cz, noise_blob, biome_blob, hm_surf_blob, hm_ocean_blob in rows:
+            rows_fetched += 1
+
+            # Deserialize source BLOBs
+            noise = _unpack_noise_blob(noise_blob)
+            biome = _unpack_biome_blob(biome_blob)
+            hm_surface = _unpack_heightmap_blob(hm_surf_blob)
+            hm_ocean = _unpack_heightmap_blob(hm_ocean_blob)
+
+            # Compute 5-plane heightmap
+            hm5 = compute_height_planes(hm_surface, hm_ocean)
+
+            # Determine Voxy availability at each level (for subcube extraction)
+            available_ws: dict[int, tuple[int, int, int]] = {}
+            for level in range(5):
+                ws = (
+                    section_to_world_section(cx, level),
+                    section_to_world_section(sy, level),
+                    section_to_world_section(cz, level),
+                )
+                if ws in voxy_indices.get(level, {}):
+                    available_ws[level] = ws
+
+            finest = min(available_ws.keys()) if available_ws else 0
+
+            # Extract per-level subcubes from Voxy
+            label_blobs: dict[int, bytes] = {}
+            for level, ws in available_ws.items():
+                cache_key = (level, ws)
+                if cache_key not in voxy_cache:
+                    with np.load(voxy_indices[level][ws]) as vf:
+                        voxy_cache[cache_key] = vf["labels32"]
+                labels32 = voxy_cache[cache_key]
+                grid = extract_section_subcube(labels32, cx, sy, cz, level)
+                if vocab_remap_lut is not None:
+                    grid = _apply_remap(grid, vocab_remap_lut)
+                label_blobs[level] = _pack_blob(grid)
+                level_counts[level] += 1
+
+            # Fill missing levels with sentinel
+            for lv in range(5):
+                if lv not in label_blobs:
+                    n = 16 >> lv
+                    label_blobs[lv] = _pack_blob(
+                        np.full((n, n, n), -1, dtype=np.int32)
+                    )
+
+            batch_inserts.append((
+                sample_id, cx, sy, cz,
+                sy * 16,  # block_y_min
+                finest,
+                _pack_blob(noise),
+                _pack_blob(biome),
+                _pack_blob(hm5),
+                label_blobs[0], label_blobs[1], label_blobs[2],
+                label_blobs[3], label_blobs[4],
+            ))
+            sample_id += 1
+
+        # Batch INSERT + commit
+        if batch_inserts:
+            out_conn.executemany(
+                "INSERT INTO training_pairs "
+                "(sample_id, chunk_x, section_y, chunk_z, block_y_min, finest_level,"
+                " noise_3d, biome_ids, heightmap5,"
+                " labels_L0, labels_L1, labels_L2, labels_L3, labels_L4)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                batch_inserts,
+            )
+            out_conn.commit()
+
+        elapsed = time.monotonic() - t0
+        rate = sample_id / elapsed if elapsed > 0 else 0
+        eta = (n_matching - sample_id) / rate if rate > 0 else 0
+        pct = 100.0 * rows_fetched / n_matching
+        print(
+            f"  [{pct:5.1f}%] {sample_id:,}/{n_matching:,} pairs, "
+            f"{rate:,.0f}/s, ETA {eta:.0f}s, cache={len(voxy_cache):,}",
+            flush=True,
+        )
+
+    # ── Write metadata ──────────────────────────────────────────────────
+    elapsed = time.monotonic() - t0
+    db_size_mb = output_path.stat().st_size / (1024 * 1024)
+
+    meta = {
+        "total_source_sections": str(total_sections),
+        "matching_sections": str(n_matching),
+        "pairs_written": str(sample_id),
+        "require_all_levels": str(require_all_levels),
+        "vocab_remapped": str(vocab_remap_lut is not None),
+        "source_db": str(dump_db_path),
+        "elapsed_seconds": f"{elapsed:.1f}",
+    }
+    for key, val in meta.items():
+        out_conn.execute(
+            "INSERT OR REPLACE INTO metadata (key, value) VALUES (?, ?)",
+            (key, val),
+        )
+    out_conn.commit()
+
+    # ── Summary ─────────────────────────────────────────────────────────
+    print(f"\n  Total pairs written: {sample_id:,}")
+    for lv in range(5):
+        side = 16 >> lv
+        print(f"  L{lv} coverage: {level_counts[lv]:,}/{sample_id:,} ({side}³ per sample)")
+    if vocab_remap_lut is not None:
+        print(f"  Vocab remap: applied (max new ID {int(vocab_remap_lut.max())})")
+    print(f"  Output: {output_path} ({db_size_mb:.1f} MB)")
+    print(f"  Elapsed: {elapsed:.1f}s ({sample_id / elapsed:,.0f} samples/s)")
+
+    src.close()
+    out_conn.close()
+
+    stats: dict[str, int] = {
+        "pairs_saved": sample_id,
+        "total_dump_files": total_sections,
+        "skipped_no_voxy": total_sections - n_matching,
+        "skipped_partial": 0,
+        "all_5_levels": level_counts.get(0, 0),
+    }
+    for lv in range(5):
+        stats[f"L{lv}_coverage"] = level_counts[lv]
+    return sample_id, stats
+
+
+# ---------------------------------------------------------------------------
+# Legacy in-memory builder (NPZ output — for small datasets / JSON source)
 # ---------------------------------------------------------------------------
 
 

@@ -618,11 +618,21 @@ def _train_sparse_octree_run(p: dict[str, Any]) -> None:
 
     data = p.get("data", {})
     train = p.get("train", {})
-    npz_path = Path(data.get("v7_pairs_npz", "sparse_octree_pairs_v7.npz"))
+
+    # Prefer .db (scalable/lazy) over .npz (loads all into RAM).
+    db_path_str = data.get("v7_pairs_db")
+    npz_path_str = data.get("v7_pairs_npz", "sparse_octree_pairs_v7.npz")
+    if db_path_str and Path(db_path_str).exists():
+        data_path = Path(db_path_str)
+        print(f"  Using SQLite dataset: {data_path}")
+    else:
+        data_path = Path(npz_path_str)
+        print(f"  Using NPZ dataset: {data_path}")
+
     out_path = Path(train.get("output_dir", ".")) / _SPARSE_OCTREE_CHECKPOINT
     resume_path = Path(train.get("resume_from")) if train.get("resume_from") else None
     result = train_sparse_octree(
-        data_path=npz_path,
+        data_path=data_path,
         out_path=out_path,
         model_variant=train.get("sparse_octree_variant", "fast"),
         hidden=train.get("sparse_octree_hidden", 80),
@@ -701,16 +711,18 @@ def _distill_sparse_octree_run(p: dict[str, Any]) -> None:
 
 
 def _build_v7_pairs_run(p: dict[str, Any]) -> None:
-    """Build v7 training pairs NPZ from noise dumps + Voxy L4 sections.
+    """Build v7 training pairs from noise dumps + Voxy LOD sections.
 
-    Requires both:
-      - noise dumps  (section_*.json from dumpnoise)
-      - Voxy L4 data  (voxy_L4_*.npz produced by the extract_octree step)
+    Supports two output modes:
+      - **SQLite DB** (scalable): Used when ``data.v7_dumps_db`` exists.
+        Writes to ``data.v7_pairs_db`` via SQL JOIN — O(batch) memory.
+      - **NPZ** (legacy): Used for JSON dump source or when no DB is
+        configured.  Accumulates all pairs in RAM, writes one .npz file.
 
     The extracted Voxy data lives in ``data.data_dir`` (e.g. ``data/voxy_octree``),
     which is the output directory of the ``extract_octree`` pipeline step.
-    That directory must exist and contain a ``level_4/`` sub-directory before
-    this step is run.
+    That directory must exist and contain ``level_0/`` … ``level_4/``
+    sub-directories before this step is run.
     """
     import json  # noqa: PLC0415
 
@@ -719,52 +731,65 @@ def _build_v7_pairs_run(p: dict[str, Any]) -> None:
         _DumpSourceSQLite,
         _build_remap_lut,
         build_pairs,
-        compute_voxy_section_bounds,
+        build_pairs_db,
     )
 
     data = p.get("data", {})
 
-    # data_dir is the extract_octree output dir (contains level_4/*.npz),
+    # data_dir is the extract_octree output dir (contains level_0-4/*.npz),
     # NOT the raw Voxy LevelDB saves directory.
     voxy_npz_dir = Path(data.get("data_dir", "data/voxy_octree"))
 
-    # Prefer SQLite DB over JSON directory when configured.
-    db_path = data.get("v7_dumps_db")
-    if db_path and Path(db_path).exists():
-        # Pre-filter SQLite rows to the Voxy coverage area for speed.
-        section_bounds = compute_voxy_section_bounds(voxy_npz_dir)
-        if section_bounds:
-            print(f"  Pre-filter bounds: {section_bounds}")
-        dump_source: _DumpSourceJSON | _DumpSourceSQLite = _DumpSourceSQLite(
-            Path(db_path), section_bounds=section_bounds,
-        )
-        source_label = str(db_path)
-    else:
-        dumps_dir = data.get("v7_dumps_dir", "data/v7_dumps")
-        dump_source = _DumpSourceJSON(Path(dumps_dir))
-        source_label = str(dumps_dir)
-
-    # Always resolve output so the file lands where per-track validators expect.
-    output_npz = Path(
-        data.get("v7_pairs_npz") or data.get("v7_pairs_output") or "sparse_octree_pairs_v7.npz"
-    )
-
     vocab_lut = _build_remap_lut(None)  # auto-detect vocab_remap.json
 
-    print("=" * 62)
-    print("  Building multi-level training pairs (15ch 4×2×4, L0-L4)")
-    print("=" * 62)
-    print(f"  Source    : {source_label}")
-    print(f"  Voxy dir  : {voxy_npz_dir}")
-    print(f"  Output    : {output_npz}")
-    print()
+    # ── Prefer scalable SQL-JOIN path when SQLite source is available ───
+    db_path = data.get("v7_dumps_db")
+    if db_path and Path(db_path).exists():
+        # Output to .db (scalable) — use build_pairs_db() with SQL JOINs.
+        output_db = Path(
+            data.get("v7_pairs_db")
+            or data.get("v7_pairs_output", "").replace(".npz", ".db")
+            or "noise_training_data/sparse_octree_pairs_v7.db"
+        )
 
-    n, failure_stats = build_pairs(
-        dump_source,
-        voxy_npz_dir,
-        output_npz,
-        vocab_remap_lut=vocab_lut,
-    )
+        print("=" * 62)
+        print("  Building multi-level training pairs (SQL JOIN, DB output)")
+        print("=" * 62)
+        print(f"  Source    : {db_path}")
+        print(f"  Voxy dir  : {voxy_npz_dir}")
+        print(f"  Output    : {output_db}")
+        print()
+
+        n, failure_stats = build_pairs_db(
+            dump_db_path=Path(db_path),
+            voxy_dir=voxy_npz_dir,
+            output_path=output_db,
+            vocab_remap_lut=vocab_lut,
+        )
+    else:
+        # ── Fallback: legacy NPZ path (JSON source or no DB) ───────────
+        dumps_dir = data.get("v7_dumps_dir", "data/v7_dumps")
+        dump_source: _DumpSourceJSON | _DumpSourceSQLite = _DumpSourceJSON(Path(dumps_dir))
+        source_label = str(dumps_dir)
+
+        output_npz = Path(
+            data.get("v7_pairs_npz") or data.get("v7_pairs_output") or "sparse_octree_pairs_v7.npz"
+        )
+
+        print("=" * 62)
+        print("  Building multi-level training pairs (legacy NPZ)")
+        print("=" * 62)
+        print(f"  Source    : {source_label}")
+        print(f"  Voxy dir  : {voxy_npz_dir}")
+        print(f"  Output    : {output_npz}")
+        print()
+
+        n, failure_stats = build_pairs(
+            dump_source,
+            voxy_npz_dir,
+            output_npz,
+            vocab_remap_lut=vocab_lut,
+        )
 
     print()
     print("=" * 62)

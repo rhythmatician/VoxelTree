@@ -559,7 +559,16 @@ def train_sparse_octree(
     data_path = Path(data_path)
     out_path = Path(out_path)
     _device = torch.device(device)
-    ds = SparseOctreeDataset(data_path, cache_targets=cache_targets, max_samples=max_samples)
+
+    # ── Choose dataset backend based on file extension ──────────────────
+    ds_any: Any  # Union of SparseOctreeDataset | SparseOctreeSQLiteDataset
+    if data_path.suffix == ".db":
+        from .sparse_octree_dataset_db import SparseOctreeSQLiteDataset  # noqa: PLC0415
+
+        ds_any = SparseOctreeSQLiteDataset(data_path, max_samples=max_samples)
+    else:
+        ds_any = SparseOctreeDataset(data_path, cache_targets=cache_targets, max_samples=max_samples)
+    ds = ds_any
     print(f"  Dataset: {len(ds)} samples" + (" (limited from full set)" if max_samples else ""))
 
     # Auto-detect num_classes from the actual max block ID in the dataset.
@@ -579,17 +588,24 @@ def train_sparse_octree(
             pass
 
     if num_classes <= 0:
-        raw = np.load(data_path)
-        max_id = 0
-        for level in range(5):
-            key = f"labels_L{level}"
-            if key in raw:
-                arr = raw[key]
-                valid = arr[arr >= 0]  # exclude -1 sentinel
-                if len(valid) > 0:
-                    max_id = max(max_id, int(valid.max()))
-        num_classes = max_id + 1
-        raw.close()
+        if data_path.suffix == ".db":
+            from .sparse_octree_dataset_db import SparseOctreeSQLiteDataset  # noqa: PLC0415
+
+            _db_ds = ds if isinstance(ds, SparseOctreeSQLiteDataset) else SparseOctreeSQLiteDataset(data_path)
+            max_id = _db_ds.scan_max_block_id()
+            num_classes = max_id + 1
+        else:
+            raw = np.load(data_path)
+            max_id = 0
+            for level in range(5):
+                key = f"labels_L{level}"
+                if key in raw:
+                    arr = raw[key]
+                    valid = arr[arr >= 0]  # exclude -1 sentinel
+                    if len(valid) > 0:
+                        max_id = max(max_id, int(valid.max()))
+            num_classes = max_id + 1
+            raw.close()
         if _vocab_size is not None and num_classes < _vocab_size:
             print(
                 f"  WARNING: auto-detected num_classes={num_classes} from data, "

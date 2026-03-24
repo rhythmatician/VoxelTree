@@ -23,6 +23,7 @@ data:
   v7_dumps_db: tools/fabric-server/runtime/v7_dumps.db
   v7_dumps_dir: tools/fabric-server/runtime/v7_dumps
   v7_pairs_npz: noise_training_data/sparse_octree_pairs_v7.npz
+  v7_pairs_db: noise_training_data/sparse_octree_pairs_v7.db
   val_split: 0.1
   max_sections: null
   min_solid: 0.02
