@@ -16,7 +16,7 @@ ONNX contract: ``lodiffusion.v7.sparse_octree``
 Inputs:
   noise_3d              float32[1, n3d, 4, spatial_y, 4]   (n2d=0 → no noise_2d input)
   biome_ids             int64[1, 4, spatial_y, 4]           discrete biome IDs
-  heightmap5            float32[1, 5, 16, 16]               5-plane heightmap (surface, ocean, slope_x, slope_z, curvature)
+  heightmap5            float32[1, 5, 4, 4]                 5-plane heightmap at density-cell resolution
 
 Outputs (10 tensors, levels 4 down to 0):
   occ_L4     float32[1,    1, 8]  per-child occupancy logits at L4 root
@@ -312,7 +312,7 @@ def export_sparse_octree(
     # until a fresh retrain populates the weights properly.
     #
     # Pre-heightmap checkpoints also lack the heightmap columns.  We pad those
-    # with zeros too (5*16*16 = 1280 extra columns for heightmap5).
+    # with zeros too (5*4*4 = 80 extra columns for heightmap5).
     #
     # Phase 4: Pre-prior checkpoints lack the surface_type_embed columns in
     # mlp.0.weight.  The generic column-padding below handles this automatically
@@ -363,7 +363,7 @@ def export_sparse_octree(
     # ── Dummy inputs ───────────────────────────────────────────────────────
     dummy_3d = torch.zeros(1, n3d, 4, spatial_y, 4)
     dummy_biome = torch.zeros(1, 4, spatial_y, 4, dtype=torch.long)
-    dummy_hm5 = torch.zeros(1, 5, 16, 16)
+    dummy_hm5 = torch.zeros(1, 5, 4, 4)
     if n2d > 0:
         dummy_2d = torch.zeros(1, n2d, 4, 4)
 
@@ -478,7 +478,7 @@ def export_sparse_octree(
             **({"noise_2d": [1, n2d, 4, 4]} if n2d > 0 else {}),
             "noise_3d": [1, n3d, 4, spatial_y, 4],
             "biome_ids": [1, 4, spatial_y, 4],
-            "heightmap5": [1, 5, 16, 16],
+            "heightmap5": [1, 5, 4, 4],
         },
         "outputs": {
             "occ_L4": [1, 1, 8],

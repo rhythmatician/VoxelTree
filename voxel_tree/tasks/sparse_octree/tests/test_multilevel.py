@@ -291,7 +291,7 @@ class TestMultilevelDataset:
         save_dict = {
             "noise_3d": rng.standard_normal((n, 15, 4, 2, 4)).astype(np.float32),
             "biome_ids": rng.integers(0, 10, (n, 4, 2, 4)).astype(np.int32),
-            "heightmap5": rng.standard_normal((n, 5, 16, 16)).astype(np.float32),
+            "heightmap5": rng.standard_normal((n, 5, 4, 4)).astype(np.float32),
             "block_y_min": np.arange(n, dtype=np.int32) * 16,
             "finest_level": np.zeros(n, dtype=np.int32),  # all levels available
         }

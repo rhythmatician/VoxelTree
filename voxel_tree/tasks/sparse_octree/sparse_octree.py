@@ -33,7 +33,7 @@ v7 pipeline (default):
   noise_2d              : [B, n2d, 4, 4]       climate fields at 4×4 cell res per chunk (0 or 7)
   noise_3d              : [B, n3d, 4, 2, 4]    15 RouterField channels at 4×2×4 quart resolution
   biome_ids             : [B, 4, 2, 4]         discrete biome IDs at 4×2×4 quart resolution
-  heightmap5            : [B, 5, 16, 16]       5-plane heightmap (surface, ocean, slope_x, slope_z, curvature)
+  heightmap5            : [B, 5, 4, 4]         5-plane heightmap (surface, ocean, slope_x, slope_z, curvature) at density-cell res
   ctx       : [B, D]
   node_feat : [B * N_nodes, D]      N_nodes = 1 / 8 / 64 / 512 / 4096 at L4..L0
   occ       : [B, N_nodes, 8]       per-child occupancy logits
@@ -126,8 +126,8 @@ class _NoiseEncoder(nn.Module):
         flat_biome = 4 * spatial_y * 4 * biome_embed_dim
         flat_prior = 4 * spatial_y * 4 * prior_dim  # Phase 4: surface-rule prior
         flat_heightmaps = (
-            5 * 16 * 16
-        )  # 5-plane: [surface, ocean_floor, slope_x, slope_z, curvature]
+            5 * 4 * 4
+        )  # 5-plane at density-cell resolution (4×4): [surface, ocean_floor, slope_x, slope_z, curvature]
         in_dim = flat_2d + flat_3d + flat_biome + flat_prior + flat_heightmaps
 
         self.biome_embed = nn.Embedding(biome_vocab_size, biome_embed_dim)
@@ -165,7 +165,7 @@ class _NoiseEncoder(nn.Module):
             noise_2d:    [B, n2d, 4, 4]
             noise_3d:    [B, n3d, 4, spatial_y, 4]
             biome_ids:   [B, 4, spatial_y, 4] (integer biome indices)
-            heightmap5:  [B, 5, 16, 16] (normalized 5-plane: surface, ocean, slope_x, slope_z, curvature)
+            heightmap5:  [B, 5, 4, 4] (normalized 5-plane: surface, ocean, slope_x, slope_z, curvature)
         Returns:
             ctx: [B, hidden]
         """
@@ -295,7 +295,7 @@ class SparseOctreeModel(nn.Module):
             noise_2d: [B, n2d, 4, 4]
             noise_3d: [B, n3d, 4, spatial_y, 4]
             biome_ids: [B, 4, spatial_y, 4]
-            heightmap5: [B, 5, 16, 16] (normalized 5-plane heightmap)
+            heightmap5: [B, 5, 4, 4] (normalized 5-plane heightmap at density-cell resolution)
 
         Returns:
             Dict[level → {'split': [B, N], 'label': [B, N, C]}]

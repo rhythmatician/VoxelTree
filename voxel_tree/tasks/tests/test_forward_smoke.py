@@ -64,7 +64,7 @@ def _sparse_octree_batch(
         "noise_2d": torch.zeros(B, n2d, 4, 4),
         "noise_3d": torch.randn(B, n3d, 4, spatial_y, 4),
         "biome_ids": torch.zeros(B, 4, spatial_y, 4, dtype=torch.long),
-        "heightmap5": torch.randn(B, 5, 16, 16),
+        "heightmap5": torch.randn(B, 5, 4, 4),
     }
 
 
@@ -260,7 +260,7 @@ def test_distill_evaluate_student_call_pattern() -> None:
         save_kw: dict[str, np.ndarray] = {
             "noise_3d": rng.standard_normal((n, 15, 4, 2, 4)).astype(np.float32),
             "biome_ids": np.zeros((n, 4, 2, 4), dtype=np.int32),
-            "heightmap5": rng.standard_normal((n, 5, 16, 16)).astype(np.float32),
+            "heightmap5": rng.standard_normal((n, 5, 4, 4)).astype(np.float32),
             "finest_level": np.zeros(n, dtype=np.int32),
             "block_y_min": np.zeros(n, dtype=np.int32),
         }

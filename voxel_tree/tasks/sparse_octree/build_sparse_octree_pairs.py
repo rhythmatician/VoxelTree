@@ -47,7 +47,7 @@ Output
 ------
   noise_3d       : (N, 15, 4, 2, 4)  float32 — all 15 v7 RouterField channels
   biome_ids      : (N, 4, 2, 4)      int32   — biome index per quart cell
-  heightmap5     : (N, 5, 16, 16)    float32 — 5-plane heightmap
+  heightmap5     : (N, 5, 4, 4)      float32 — 5-plane heightmap (density-cell res)
   block_y_min    : (N,)              int32   — sy * 16 (actual section block Y)
   labels_L0      : (N, 16, 16, 16)   int32   — Voxy L0 ground truth
   labels_L1      : (N, 8, 8, 8)      int32   — Voxy L1 ground truth
@@ -126,7 +126,7 @@ def _build_remap_lut(remap_path: Path | None) -> np.ndarray | None:
 
     n_kept = sum(1 for v in remap.values() if v >= 0)
     n_excluded = sum(1 for v in remap.values() if v < 0)
-    print(f"  Loaded vocab remap: {len(remap)} entries ({n_kept} kept, {n_excluded} → air)")
+    print(f"  Loaded vocab remap: {len(remap)} entries ({n_kept} kept, {n_excluded} -> air)")
     return lut
 
 
@@ -189,6 +189,23 @@ def _unpack_heightmap_blob(blob: bytes) -> np.ndarray:
     """Unpack a heightmap BLOB (int32[256]) → (16, 16) float32."""
     arr = np.frombuffer(blob, dtype=np.int32).copy()
     return arr.reshape(16, 16).astype(np.float32)
+
+
+# Vanilla density cells are 4 blocks wide on X/Z (horizontalCellBlockCount=4).
+# The 16×16 block-resolution heightmap contains only ~4×4 independent samples;
+# intermediate values are trilinear interpolation of cell-corner densities.
+# Downsampling to 4×4 preserves all independent information and reduces the
+# model input from 1280 features to 80 (56% → 7.5% of total input dim).
+_HM_CELL_STRIDE = 4
+
+
+def _downsample_heightmap(hm: np.ndarray) -> np.ndarray:
+    """Downsample a 16×16 block-resolution heightmap to 4×4 density-cell resolution.
+
+    Samples at cell-corner positions (0, 4, 8, 12) on each axis,
+    matching vanilla's ``horizontalCellBlockCount = 4``.
+    """
+    return hm[::_HM_CELL_STRIDE, ::_HM_CELL_STRIDE].copy()
 
 
 class _DumpSourceJSON:
@@ -309,7 +326,7 @@ def compute_height_planes(hm_surface: np.ndarray, hm_ocean: np.ndarray) -> np.nd
     """Compute 5-plane heightmap from raw surface + ocean-floor heightmaps.
 
     This mirrors ``LodGenerationService.computeOctreeHeightPlanes()`` in Java.
-    Works on any (H, W) grid (16×16 training, 32×32 runtime).
+    Works on any (H, W) grid (4×4 training, 4×4 runtime).
 
     Returns
     -------
@@ -714,8 +731,11 @@ def build_pairs_db(
             hm_surface = _unpack_heightmap_blob(hm_surf_blob)
             hm_ocean = _unpack_heightmap_blob(hm_ocean_blob)
 
-            # Compute 5-plane heightmap
-            hm5 = compute_height_planes(hm_surface, hm_ocean)
+            # Downsample 16×16 → 4×4 (density-cell resolution) then compute 5-plane
+            hm5 = compute_height_planes(
+                _downsample_heightmap(hm_surface),
+                _downsample_heightmap(hm_ocean),
+            )
 
             # Determine Voxy availability at each level (for subcube extraction)
             available_ws: dict[int, tuple[int, int, int]] = {}
@@ -870,7 +890,7 @@ def build_pairs(
     label_lists: dict[int, list[np.ndarray]] = {lv: [] for lv in range(5)}
     noise_slices: list[np.ndarray] = []  # (15, 4, 2, 4) float32
     biome_slices: list[np.ndarray] = []  # (4, 2, 4) int32
-    hm5_slices: list[np.ndarray] = []  # (5, 16, 16) float32
+    hm5_slices: list[np.ndarray] = []  # (5, 4, 4) float32
     block_y_min_list: list[int] = []  # sy * 16
     finest_level_list: list[int] = []  # finest available Voxy level
 
@@ -914,8 +934,11 @@ def build_pairs(
 
         finest = min(available_ws.keys())
 
-        # Heightmaps → 5-plane
-        hm5 = compute_height_planes(hm_surface, hm_ocean)  # (5, 16, 16)
+        # Downsample 16×16 → 4×4 (density-cell resolution) then compute 5-plane
+        hm5 = compute_height_planes(
+            _downsample_heightmap(hm_surface),
+            _downsample_heightmap(hm_ocean),
+        )  # (5, 4, 4)
 
         # ── Extract per-level sub-cubes from Voxy ────────────────────────
         level_grids: dict[int, np.ndarray] = {}
@@ -962,7 +985,7 @@ def build_pairs(
     # ── Stack and save ───────────────────────────────────────────────────
     all_noise_3d = np.stack(noise_slices).astype(np.float32)  # (N, 15, 4, 2, 4)
     all_biome_ids = np.stack(biome_slices).astype(np.int32)  # (N, 4, 2, 4)
-    all_hm5 = np.stack(hm5_slices).astype(np.float32)  # (N, 5, 16, 16)
+    all_hm5 = np.stack(hm5_slices).astype(np.float32)  # (N, 5, 4, 4)
     all_block_y_min = np.array(block_y_min_list, dtype=np.int32)  # (N,)
     all_finest = np.array(finest_level_list, dtype=np.int32)  # (N,)
 
@@ -990,7 +1013,7 @@ def build_pairs(
             for lv in range(5)
             if (save_dict[f"labels_L{lv}"] >= 0).any()
         )
-        print(f"  Vocab remap applied: max block ID {raw_max} → {new_max}")
+        print(f"  Vocab remap applied: max block ID {raw_max} -> {new_max}")
 
     print(f"  Noise channels: {all_noise_3d.shape[1]} (v7 RouterField)")
 

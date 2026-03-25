@@ -253,7 +253,7 @@ class TestFullPipelinePruning:
         noise_2d = torch.empty(B, 0, 4, 4)
         noise_3d = torch.randn(B, 15, 4, 2, 4)
         biome_ids = torch.randint(0, 54, (B, 4, 2, 4))
-        heightmap5 = torch.randn(B, 5, 16, 16)
+        heightmap5 = torch.randn(B, 5, 4, 4)
 
         # Build targets from random voxel data
         targets = {}
@@ -261,8 +261,8 @@ class TestFullPipelinePruning:
             voxels = np.random.randint(0, 32, size=(16, 16, 16), dtype=np.int32)
             raw = build_sparse_octree_targets(voxels, air_id=0, split_label=-1)
             # Create a surface at Y=72, subchunk at Y=64
-            surface = np.full((16, 16), 72.0, dtype=np.float32)
-            hm5_np = np.zeros((5, 16, 16), dtype=np.float32)
+            surface = np.full((4, 4), 72.0, dtype=np.float32)
+            hm5_np = np.zeros((5, 4, 4), dtype=np.float32)
             hm5_np[0] = surface / 320.0
             prunable_flags = compute_prunable_flags(hm5_np, block_y_min=64)
 

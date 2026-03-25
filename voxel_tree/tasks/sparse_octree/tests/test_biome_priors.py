@@ -117,7 +117,7 @@ class TestBiomePriorInModel:
         noise_2d = torch.empty(B, 0, 4, 4)
         noise_3d = torch.randn(B, 15, 4, 2, 4)
         biome_ids = torch.randint(0, 54, (B, 4, 2, 4))
-        heightmap5 = torch.randn(B, 5, 16, 16)
+        heightmap5 = torch.randn(B, 5, 4, 4)
 
         ctx = enc(noise_2d, noise_3d, biome_ids, heightmap5)
         assert ctx.shape == (B, 64)
@@ -131,7 +131,7 @@ class TestBiomePriorInModel:
 
         noise_2d = torch.empty(2, 0, 4, 4)
         noise_3d = torch.zeros(2, 15, 4, 2, 4)
-        heightmap5 = torch.zeros(2, 5, 16, 16)
+        heightmap5 = torch.zeros(2, 5, 4, 4)
 
         # Batch 0: all desert (SAND=12), Batch 1: all snowy_plains (SNOW=39)
         biome_desert = torch.full((1, 4, 2, 4), 12, dtype=torch.long)
@@ -157,7 +157,7 @@ class TestBiomePriorInModel:
         noise_2d = torch.empty(B, 0, 4, 4)
         noise_3d = torch.randn(B, 15, 4, 2, 4)
         biome_ids = torch.randint(0, 54, (B, 4, 2, 4))
-        heightmap5 = torch.randn(B, 5, 16, 16)
+        heightmap5 = torch.randn(B, 5, 4, 4)
 
         with torch.no_grad():
             outputs = model(noise_2d, noise_3d, biome_ids, heightmap5)

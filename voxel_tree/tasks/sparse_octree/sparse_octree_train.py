@@ -10,7 +10,7 @@ labels_L4           : int32   [N, 1, 1, 1]     Voxy L4 ground truth
 finest_level        : int32   [N]              finest Voxy level per sample
 noise_3d            : float32 [N, C3, 4, Y, 4]  vanilla 3-D volumetric fields
 biome_ids           : int32   [N, 4, Y, 4]      discrete biome IDs at spatial resolution
-heightmap5          : float32 [N, 5, 16, 16]    5-plane heightmap (surface_norm, ocean_approx, slope_x, slope_z, curvature)
+heightmap5          : float32 [N, 5, 4, 4]      5-plane heightmap at density-cell resolution
 block_y_min         : int32   [N]              absolute block-Y of subchunk bottom
 
 Targets are built on-the-fly by ``build_multilevel_voxy_targets`` and stored as
@@ -62,10 +62,15 @@ def compute_prunable_flags(
     Prunable above surface: ``node_y_min >= local_surf_max``
     Prunable below surface: ``node_y_max <= local_surf_min``
 
+    Resolution-independent: works with any heightmap spatial size (e.g.
+    4×4 density-cell resolution or 16×16 block resolution).  Node XZ
+    footprints are mapped proportionally to the heightmap grid.
+
     Parameters
     ----------
-    heightmap5 : ndarray (5, 16, 16)
+    heightmap5 : ndarray (5, H, W)
         5-plane heightmap.  Channel 0 is ``surface_norm = raw_surface / 320``.
+        H×W may be 4×4 (density-cell res) or 16×16 (block res).
     block_y_min : int
         Absolute world block-Y of this subchunk's bottom edge.
     max_level : int
@@ -78,7 +83,8 @@ def compute_prunable_flags(
     Dict[level → bool ndarray (side, side, side)] where ``True`` ⇒ prunable.
     """
     # Recover raw surface heights in block coordinates.
-    raw_surface = heightmap5[0] * _HEIGHT_RANGE  # (16, 16)
+    raw_surface = heightmap5[0] * _HEIGHT_RANGE  # (H, W)
+    hm_h, hm_w = raw_surface.shape
 
     result: Dict[int, np.ndarray] = {}
     for lvl in range(max_level, -1, -1):
@@ -91,11 +97,13 @@ def compute_prunable_flags(
             node_y_max = block_y_min + (y_idx + 1) * cell
             for z_idx in range(side):
                 for x_idx in range(side):
-                    # Surface heights in this node's XZ footprint (16×16 hm)
-                    hm_slice = raw_surface[
-                        z_idx * cell : (z_idx + 1) * cell,
-                        x_idx * cell : (x_idx + 1) * cell,
-                    ]
+                    # Map node XZ footprint proportionally to heightmap grid.
+                    # This works for any heightmap resolution (4×4, 16×16, etc).
+                    hz0 = z_idx * hm_h // side
+                    hz1 = max(hz0 + 1, (z_idx + 1) * hm_h // side)
+                    hx0 = x_idx * hm_w // side
+                    hx1 = max(hx0 + 1, (x_idx + 1) * hm_w // side)
+                    hm_slice = raw_surface[hz0:hz1, hx0:hx1]
                     surf_min = float(hm_slice.min())
                     surf_max = float(hm_slice.max())
                     # Zero-margin: prune if entirely above OR entirely below
@@ -162,9 +170,9 @@ class SparseOctreeDataset(Dataset):  # type: ignore[type-arg]
         else:
             self.biome_ids = np.zeros((_n_limit, 4, self.spatial_y, 4), dtype=np.int32)
         if "heightmap5" in data:
-            self.heightmap5 = data["heightmap5"].astype(np.float32)[:_n_limit]  # (N,5,16,16)
+            self.heightmap5 = data["heightmap5"].astype(np.float32)[:_n_limit]  # (N,5,H,W)
         else:
-            self.heightmap5 = np.zeros((_n_limit, 5, 16, 16), dtype=np.float32)
+            self.heightmap5 = np.zeros((_n_limit, 5, 4, 4), dtype=np.float32)
         if "block_y_min" in data:
             self.block_y_min = data["block_y_min"].astype(np.int32)[:_n_limit]  # (N,)
         else:
@@ -236,7 +244,7 @@ class SparseOctreeDataset(Dataset):  # type: ignore[type-arg]
             "noise_2d": torch.from_numpy(self.noise_2d[idx]),  # [C2,4,4]
             "noise_3d": torch.from_numpy(self.noise_3d[idx]),  # [C3,4,Y,4]
             "biome_ids": torch.from_numpy(self.biome_ids[idx]),  # [4,Y,4]
-            "heightmap5": torch.from_numpy(self.heightmap5[idx]),  # [5,16,16]
+            "heightmap5": torch.from_numpy(self.heightmap5[idx]),  # [5,H,W]
             "targets": targets,
         }
 
@@ -251,7 +259,7 @@ def sparse_octree_collate(batch: List[Dict[str, Any]]) -> Dict[str, Any]:
     noise_2d = torch.stack([b["noise_2d"] for b in batch], dim=0)  # [B,C2,4,4]
     noise_3d = torch.stack([b["noise_3d"] for b in batch], dim=0)  # [B,C3,4,Y,4]
     biome_ids = torch.stack([b["biome_ids"] for b in batch], dim=0)  # [B,4,Y,4]
-    heightmap5 = torch.stack([b["heightmap5"] for b in batch], dim=0)  # [B,5,16,16]
+    heightmap5 = torch.stack([b["heightmap5"] for b in batch], dim=0)  # [B,5,H,W]
 
     levels = sorted(batch[0]["targets"].keys(), reverse=True)
     targets: Dict[int, Dict[str, torch.Tensor]] = {}

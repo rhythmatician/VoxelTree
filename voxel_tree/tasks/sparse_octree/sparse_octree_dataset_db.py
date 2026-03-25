@@ -38,7 +38,7 @@ from voxel_tree.tasks.sparse_octree.sparse_octree_train import compute_prunable_
 # Fixed shapes for each field in the training_pairs table.
 _NOISE_3D_SHAPE = (15, 4, 2, 4)
 _BIOME_IDS_SHAPE = (4, 2, 4)
-_HEIGHTMAP5_SHAPE = (5, 16, 16)
+_HEIGHTMAP5_SHAPE = (5, 4, 4)
 _LABEL_SHAPES: dict[int, tuple[int, int, int]] = {
     0: (16, 16, 16),
     1: (8, 8, 8),
@@ -113,8 +113,7 @@ class SparseOctreeSQLiteDataset(Dataset):  # type: ignore[type-arg]
         if row is None:
             raise IndexError(f"sample_id {idx} not found in {self.db_path}")
 
-        (noise_blob, biome_blob, hm5_blob, block_y_min, finest_level,
-         *label_blobs) = row
+        (noise_blob, biome_blob, hm5_blob, block_y_min, finest_level, *label_blobs) = row
 
         # Decompress arrays
         noise_3d = unpack_blob(noise_blob, np.float32, _NOISE_3D_SHAPE)
@@ -129,7 +128,9 @@ class SparseOctreeSQLiteDataset(Dataset):  # type: ignore[type-arg]
 
         # Build multi-level targets (same logic as SparseOctreeDataset)
         raw_targets = build_multilevel_voxy_targets(
-            level_grids, air_id=self.air_id, split_label=-1,
+            level_grids,
+            air_id=self.air_id,
+            split_label=-1,
         )
         prunable_flags = compute_prunable_flags(heightmap5, int(block_y_min))
 

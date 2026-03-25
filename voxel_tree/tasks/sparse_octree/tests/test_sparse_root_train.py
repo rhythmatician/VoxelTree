@@ -27,6 +27,7 @@ from voxel_tree.tasks.sparse_octree.build_sparse_octree_pairs import (
 # Helper: build a minimal multi-level NPZ for test fixtures
 # ---------------------------------------------------------------------------
 
+
 def _make_test_npz(
     path: Path,
     n: int = 4,
@@ -51,7 +52,7 @@ def _make_test_npz(
     if include_noise_2d:
         save_dict["noise_2d"] = rng.standard_normal((n, n2d, 4, 4)).astype(np.float32)
     if include_heightmap5:
-        save_dict["heightmap5"] = rng.standard_normal((n, 5, 16, 16)).astype(np.float32)
+        save_dict["heightmap5"] = rng.standard_normal((n, 5, 4, 4)).astype(np.float32)
     if include_biome_ids:
         save_dict["biome_ids"] = rng.integers(0, 10, (n, 4, spatial_y, 4)).astype(np.int32)
     np.savez_compressed(path, **save_dict)
@@ -159,7 +160,8 @@ def test_sparse_octree_dataset_handles_missing_noise_2d() -> None:
     n = 4
     with tempfile.TemporaryDirectory() as tmpdir:
         npz_path = _make_test_npz(
-            Path(tmpdir) / "test.npz", n=n,
+            Path(tmpdir) / "test.npz",
+            n=n,
             include_noise_2d=False,
         )
         ds = SparseOctreeDataset(npz_path, cache_targets=False)
@@ -175,8 +177,10 @@ def test_sparse_octree_dataset_loads_noise_2d_when_present() -> None:
     c2d = 6
     with tempfile.TemporaryDirectory() as tmpdir:
         npz_path = _make_test_npz(
-            Path(tmpdir) / "test.npz", n=n,
-            include_noise_2d=True, n2d=c2d,
+            Path(tmpdir) / "test.npz",
+            n=n,
+            include_noise_2d=True,
+            n2d=c2d,
         )
         ds = SparseOctreeDataset(npz_path, cache_targets=False)
         assert ds.noise_2d.shape == (n, c2d, 4, 4)
@@ -186,15 +190,16 @@ def test_sparse_octree_dataset_loads_noise_2d_when_present() -> None:
 
 
 def test_sparse_octree_dataset_handles_missing_heightmaps() -> None:
-    """NPZs without heightmap5 key should zero-fill with shape (N, 5, 16, 16)."""
+    """NPZs without heightmap5 key should zero-fill with shape (N, 5, 4, 4)."""
     n = 4
     with tempfile.TemporaryDirectory() as tmpdir:
         npz_path = _make_test_npz(
-            Path(tmpdir) / "test.npz", n=n,
+            Path(tmpdir) / "test.npz",
+            n=n,
             include_heightmap5=False,
         )
         ds = SparseOctreeDataset(npz_path, cache_targets=False)
-        assert ds.heightmap5.shape == (n, 5, 16, 16)
+        assert ds.heightmap5.shape == (n, 5, 4, 4)
         assert ds.heightmap5.sum() == 0.0
 
 
@@ -203,11 +208,12 @@ def test_sparse_octree_dataset_loads_heightmaps_when_present() -> None:
     n = 3
     with tempfile.TemporaryDirectory() as tmpdir:
         npz_path = _make_test_npz(
-            Path(tmpdir) / "test.npz", n=n,
+            Path(tmpdir) / "test.npz",
+            n=n,
             include_heightmap5=True,
         )
         ds = SparseOctreeDataset(npz_path, cache_targets=False)
-        assert ds.heightmap5.shape == (n, 5, 16, 16)
+        assert ds.heightmap5.shape == (n, 5, 4, 4)
         # Verify it loaded actual data (not zeros)
         assert ds.heightmap5.sum() != 0.0
 
@@ -219,7 +225,7 @@ def test_collate_includes_heightmaps() -> None:
         npz_path = _make_test_npz(Path(tmpdir) / "test.npz", n=n)
         ds = SparseOctreeDataset(npz_path, cache_targets=True)
         batch = sparse_octree_collate([ds[i] for i in range(n)])
-        assert batch["heightmap5"].shape == (n, 5, 16, 16)
+        assert batch["heightmap5"].shape == (n, 5, 4, 4)
 
 
 def test_fast_model_forward_with_heightmaps() -> None:
@@ -229,7 +235,7 @@ def test_fast_model_forward_with_heightmaps() -> None:
     noise_2d = torch.zeros(B, 0, 4, 4)
     noise_3d = torch.randn(B, 15, 4, 2, 4)
     biome_ids = torch.zeros(B, 4, 2, 4, dtype=torch.long)
-    hm5 = torch.randn(B, 5, 16, 16)
+    hm5 = torch.randn(B, 5, 4, 4)
 
     out = model(noise_2d, noise_3d, biome_ids, hm5)
 
@@ -259,7 +265,7 @@ def test_v7_15ch_npz_trains_with_auto_n3d() -> None:
             torch.zeros(B, 0, 4, 4),
             torch.randn(B, 15, 4, 2, 4),
             torch.zeros(B, 4, 2, 4, dtype=torch.long),
-            torch.randn(B, 5, 16, 16),
+            torch.randn(B, 5, 4, 4),
         )
         assert isinstance(out, dict)
         assert set(out.keys()) == {0, 1, 2, 3, 4}
