@@ -7,7 +7,8 @@ description: >-
 dag:
   steps:
     - id: dumpnoise
-    - id: build_v7_pairs
+    - id: import_voxy          # import Voxy NPZ -> voxy_sections table (replaces build_v7_pairs)
+    # - id: build_v7_pairs     # legacy — superseded by import_voxy + JoinDataset
     - id: train_sparse_octree
     - id: export_sparse_octree
     - id: deploy_sparse_octree

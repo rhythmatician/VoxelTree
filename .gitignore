@@ -12,10 +12,14 @@ artifacts/
 
 # Test and temporary files
 check_*.py
+inspect_*.py
+eval_*.py
+_smoke_test.py
+_run_train.py
 test_metrics_report.json
 debug_*
 output.txt
-_run_train.py
+*.bak
 
 # External dependencies and reference code
 libraries/

@@ -619,15 +619,36 @@ def _train_sparse_octree_run(p: dict[str, Any]) -> None:
     data = p.get("data", {})
     train = p.get("train", {})
 
-    # Prefer .db (scalable/lazy) over .npz (loads all into RAM).
+    # Dataset priority:
+    #   1. JoinDataset (virtual — reads dumps DB + voxy_sections directly)
+    #   2. SQLite pairs DB (pre-built)
+    #   3. NPZ (legacy, loads all into RAM)
+    dumps_db_str = data.get("v7_dumps_db")
     db_path_str = data.get("v7_pairs_db")
     npz_path_str = data.get("v7_pairs_npz", "sparse_octree_pairs_v7.npz")
-    if db_path_str and Path(db_path_str).exists():
-        data_path = Path(db_path_str)
-        print(f"  Using SQLite dataset: {data_path}")
-    else:
-        data_path = Path(npz_path_str)
-        print(f"  Using NPZ dataset: {data_path}")
+
+    data_path: Path | None = None
+
+    # Check if dumps DB has voxy_sections table (JoinDataset-ready)
+    if dumps_db_str and Path(dumps_db_str).exists():
+        import sqlite3 as _sql  # noqa: PLC0415
+
+        _c = _sql.connect(dumps_db_str)
+        _tables = {r[0] for r in _c.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        )}
+        _c.close()
+        if "voxy_sections" in _tables:
+            data_path = Path(dumps_db_str)
+            print(f"  Using JoinDataset (virtual): {data_path}")
+
+    if data_path is None:
+        if db_path_str and Path(db_path_str).exists():
+            data_path = Path(db_path_str)
+            print(f"  Using SQLite pairs dataset: {data_path}")
+        else:
+            data_path = Path(npz_path_str)
+            print(f"  Using NPZ dataset: {data_path}")
 
     out_path = Path(train.get("output_dir", ".")) / _SPARSE_OCTREE_CHECKPOINT
     resume_path = Path(train.get("resume_from")) if train.get("resume_from") else None
@@ -708,6 +729,40 @@ def _distill_sparse_octree_run(p: dict[str, Any]) -> None:
         student_hidden=train.get("sparse_octree_hidden", 80),
         progress_callback=lambda epoch, total, _m: _report_progress(epoch, total),
     )
+
+
+def _import_voxy_run(p: dict[str, Any]) -> None:
+    """Import Voxy NPZ ground-truth grids into the dumps SQLite database.
+
+    Creates a ``voxy_sections`` table so that training data can be assembled
+    via a single SQL JOIN — no ``build_v7_pairs`` step needed.
+    """
+    from voxel_tree.tasks.sparse_octree.import_voxy_to_db import import_voxy  # noqa: PLC0415
+
+    data = p.get("data", {})
+    db_path = data.get("v7_dumps_db")
+    if not db_path or not Path(db_path).exists():
+        raise FileNotFoundError(
+            f"v7_dumps_db not found: {db_path}. Run the dumpnoise step first."
+        )
+    voxy_dir = Path(data.get("data_dir", "data/voxy_octree"))
+    if not voxy_dir.is_dir():
+        raise FileNotFoundError(
+            f"Voxy data dir not found: {voxy_dir}. Run the extract_octree step first."
+        )
+
+    print("=" * 62)
+    print("  Importing Voxy ground-truth into dumps DB")
+    print("=" * 62)
+    print(f"  Source : {voxy_dir}")
+    print(f"  Target : {db_path}")
+    print()
+
+    n = import_voxy(
+        dumps_db_path=Path(db_path),
+        voxy_dir=voxy_dir,
+    )
+    print(f"\n  Imported {n:,} Voxy sections.")
 
 
 def _build_v7_pairs_run(p: dict[str, Any]) -> None:
@@ -1120,6 +1175,15 @@ _DATA_ACQ_STEPS: list[StepDef] = [
         phase="data_acq",
         produces=frozenset({"v7_pairs_npz"}),
         consumes=frozenset({"noise_dumps", "octree_npz"}),
+    ),
+    StepDef(
+        id="import_voxy",
+        label="Voxy->DB",
+        prereqs=[],
+        run_fn=_import_voxy_run,
+        phase="data_acq",
+        produces=frozenset({"voxy_db_imported"}),
+        consumes=frozenset({"octree_npz", "noise_dumps"}),
     ),
 ]
 

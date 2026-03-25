@@ -149,7 +149,8 @@ class TestArtifactGraph:
         important_steps = {
             "extract_octree": ["harvest"],
             "column_heights": ["extract_octree", "dumpnoise"],
-            "build_pairs_sparse_octree": ["build_v7_pairs"],
+            "build_pairs_sparse_octree": ["dumpnoise", "harvest"],
+            "import_voxy": ["dumpnoise", "extract_octree"],
             "train_sparse_octree": ["build_pairs_sparse_octree"],
             "export_sparse_octree": ["train_sparse_octree"],
             "deploy_sparse_octree": ["export_sparse_octree"],

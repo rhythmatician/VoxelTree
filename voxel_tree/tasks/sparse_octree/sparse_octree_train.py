@@ -578,11 +578,25 @@ def train_sparse_octree(
     _device = torch.device(device)
 
     # ── Choose dataset backend based on file extension ──────────────────
-    ds_any: Any  # Union of SparseOctreeDataset | SparseOctreeSQLiteDataset
+    ds_any: Any  # Union of SparseOctreeDataset | SparseOctreeSQLiteDataset | SparseOctreeJoinDataset
     if data_path.suffix == ".db":
-        from .sparse_octree_dataset_db import SparseOctreeSQLiteDataset  # noqa: PLC0415
+        # Detect whether this is a dumps DB (has voxy_sections) or a pairs DB
+        import sqlite3 as _sql  # noqa: PLC0415
 
-        ds_any = SparseOctreeSQLiteDataset(data_path, max_samples=max_samples)
+        _c = _sql.connect(str(data_path))
+        _tables = {r[0] for r in _c.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        )}
+        _c.close()
+
+        if "voxy_sections" in _tables:
+            from .sparse_octree_dataset_join import SparseOctreeJoinDataset  # noqa: PLC0415
+
+            ds_any = SparseOctreeJoinDataset(data_path, max_samples=max_samples)
+        else:
+            from .sparse_octree_dataset_db import SparseOctreeSQLiteDataset  # noqa: PLC0415
+
+            ds_any = SparseOctreeSQLiteDataset(data_path, max_samples=max_samples)
     else:
         ds_any = SparseOctreeDataset(
             data_path, cache_targets=cache_targets, max_samples=max_samples
@@ -607,7 +621,10 @@ def train_sparse_octree(
             pass
 
     if num_classes <= 0:
-        if data_path.suffix == ".db":
+        if data_path.suffix == ".db" and hasattr(ds, "scan_max_block_id"):
+            max_id = ds.scan_max_block_id()
+            num_classes = max_id + 1
+        elif data_path.suffix == ".db":
             from .sparse_octree_dataset_db import SparseOctreeSQLiteDataset  # noqa: PLC0415
 
             _db_ds = (
@@ -642,7 +659,18 @@ def train_sparse_octree(
         else:
             print(f"  auto-detected num_classes={num_classes}")
 
-    loader = DataLoader(ds, batch_size=batch_size, shuffle=True, collate_fn=sparse_octree_collate)
+    import os as _os  # noqa: PLC0415
+
+    _nw = min(4, _os.cpu_count() or 1)
+    loader = DataLoader(
+        ds,
+        batch_size=batch_size,
+        shuffle=True,
+        collate_fn=sparse_octree_collate,
+        num_workers=_nw,
+        persistent_workers=_nw > 0,
+        prefetch_factor=2 if _nw > 0 else None,
+    )
 
     # Infer noise channel counts and spatial_y from the first sample
     sample = ds[0]
