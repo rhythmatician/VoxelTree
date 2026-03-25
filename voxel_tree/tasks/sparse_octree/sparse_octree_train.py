@@ -290,6 +290,68 @@ def sparse_octree_collate(batch: List[Dict[str, Any]]) -> Dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# Reachability masking — training/inference alignment
+# ---------------------------------------------------------------------------
+
+
+def _compute_reachable_masks(
+    targets: Dict[int, Dict[str, torch.Tensor]],
+) -> Dict[int, torch.Tensor]:
+    """Compute per-level reachability from ground-truth ``is_leaf`` flags.
+
+    A node is *reachable* iff every ancestor on the root-to-node path is a
+    split (non-leaf) node.  The root (highest level) is always fully
+    reachable.  Unreachable ("orphaned") nodes are children of leaf parents
+    whose subtrees would never be expanded at inference time.
+
+    This aligns training supervision with inference behaviour: the model is
+    only supervised on nodes it would actually visit during generation.
+
+    Returns
+    -------
+    Dict[level -> BoolTensor[B, N]]
+        ``True`` for reachable nodes.
+    """
+    levels = sorted(targets.keys(), reverse=True)  # e.g. [4, 3, 2, 1, 0]
+    reachable: Dict[int, torch.Tensor] = {}
+
+    for i, lvl in enumerate(levels):
+        tgt = targets[lvl]
+
+        # Determine [B, N] shape from any available tensor
+        ref_key = next((k for k in ("split", "label", "is_leaf", "occ") if k in tgt), None)
+        if ref_key is None:
+            continue
+        ref = tgt[ref_key]
+        B = ref.shape[0]
+        N = ref.shape[1] if ref.ndim >= 2 else ref.numel()
+
+        if i == 0:
+            reachable[lvl] = torch.ones(B, N, dtype=torch.bool)
+
+        # Propagate to the next finer level
+        if i + 1 < len(levels):
+            child_lvl = levels[i + 1]
+            parent_reach = reachable.get(lvl)
+            if parent_reach is None:
+                parent_reach = torch.ones(B, N, dtype=torch.bool)
+                reachable[lvl] = parent_reach
+
+            if "is_leaf" in tgt:
+                is_leaf = tgt["is_leaf"]
+                if is_leaf.ndim == 1:
+                    is_leaf = is_leaf.unsqueeze(0)
+                can_expand = parent_reach & (~is_leaf.bool())
+            else:
+                # No leaf info -> assume all expandable (backward compat)
+                can_expand = parent_reach
+
+            reachable[child_lvl] = can_expand.unsqueeze(-1).expand(B, N, 8).reshape(B, N * 8)
+
+    return reachable
+
+
+# ---------------------------------------------------------------------------
 # Loss
 # ---------------------------------------------------------------------------
 
@@ -322,6 +384,7 @@ def _sparse_octree_loss(
     loss = torch.zeros((), device=device)
     level_split_weights = level_split_weights or {}
     level_label_weights = level_label_weights or {}
+    reachable = _compute_reachable_masks(targets)
 
     for lvl, out in preds.items():
         label_pred = out["label"]  # [B, N, C]
@@ -354,8 +417,20 @@ def _sparse_octree_loss(
 
             bce: nn.Module
             if dynamic_split_pos_weight:
-                pos = float(bce_tgt.sum().item())
-                neg = float(bce_tgt.numel() - pos)
+                # Only count reachable elements for pos/neg ratio
+                _reach_pw = reachable.get(lvl)
+                if _reach_pw is not None and not _reach_pw.all():
+                    _r_bool = _reach_pw.to(device=device, dtype=torch.bool)
+                    if bce_tgt.ndim == 3:
+                        _r_3d = _r_bool.unsqueeze(-1).expand_as(bce_tgt)
+                        _tgt_r = bce_tgt[_r_3d]
+                    else:
+                        _tgt_r = bce_tgt[_r_bool]
+                    pos = float(_tgt_r.sum().item())
+                    neg = float(_tgt_r.numel() - pos)
+                else:
+                    pos = float(bce_tgt.sum().item())
+                    neg = float(bce_tgt.numel() - pos)
                 if pos > 0.0 and neg > 0.0:
                     # Clamp to [0.5, 10] — at coarse levels the tiny per-batch
                     # sample count makes the raw ratio extremely noisy.
@@ -370,7 +445,19 @@ def _sparse_octree_loss(
             bce_unreduced = bce(bce_pred, bce_tgt)  # same shape as bce_pred
             if prunable_weight is not None:
                 bce_unreduced = bce_unreduced * prunable_weight
-            loss = loss + split_scale * bce_unreduced.mean()
+            # Mask to reachable nodes only (orphaned children -> zero loss)
+            _reach_bce = reachable.get(lvl)
+            if _reach_bce is not None and not _reach_bce.all():
+                reach_f = _reach_bce.to(device=device, dtype=torch.float32)
+                if bce_unreduced.ndim == 3:
+                    bce_unreduced = bce_unreduced * reach_f.unsqueeze(-1)
+                    n_reach = reach_f.sum() * 8.0
+                else:
+                    bce_unreduced = bce_unreduced * reach_f
+                    n_reach = reach_f.sum()
+                loss = loss + split_scale * bce_unreduced.sum() / n_reach.clamp(min=1.0)
+            else:
+                loss = loss + split_scale * bce_unreduced.mean()
 
         # Explicit leaf-only mask keeps material supervision restricted to
         # split_target == 0. This remains robust even if future target writers
@@ -382,6 +469,10 @@ def _sparse_octree_loss(
             leaf_mask = tgt["occ"].to(device).sum(dim=-1) == 0
         else:
             leaf_mask = tgt["split"].to(device) < 0.5
+        # Restrict to reachable leaves (skip orphaned subtrees)
+        _reach_lbl = reachable.get(lvl)
+        if _reach_lbl is not None:
+            leaf_mask = leaf_mask & _reach_lbl.to(device=device, dtype=torch.bool)
         if leaf_mask.any():
             label_scale = label_weight * level_label_weights.get(lvl, 1.0)
             loss = loss + label_scale * ce(label_pred[leaf_mask], label_tgt[leaf_mask])
@@ -413,6 +504,7 @@ def _update_batch_metrics(
     tracked under ``split_tp_L{lvl}`` etc. so callers can diagnose per-level
     calibration without a separate evaluation pass.
     """
+    reachable = _compute_reachable_masks(targets)
     for lvl, out in preds.items():
         # Derive split from occ: any child logit > 0 ↔ sigmoid > 0.5
         if "occ" in out:
@@ -421,10 +513,21 @@ def _update_batch_metrics(
             split_pred = out["split"] > 0
         split_tgt = targets[lvl]["split"].to(split_pred.device) > 0.5
 
-        tp = (split_pred & split_tgt).sum().item()
-        tn = ((~split_pred) & (~split_tgt)).sum().item()
-        fp = (split_pred & (~split_tgt)).sum().item()
-        fn = ((~split_pred) & split_tgt).sum().item()
+        # Reachable mask for this level (aligned with loss)
+        _reach = reachable.get(lvl)
+        if _reach is not None and not _reach.all():
+            _rm = _reach.to(device=split_pred.device, dtype=torch.bool)
+        else:
+            _rm = None
+
+        # Mask to reachable nodes for split metrics
+        sp = split_pred[_rm] if _rm is not None else split_pred
+        st = split_tgt[_rm] if _rm is not None else split_tgt
+
+        tp = (sp & st).sum().item()
+        tn = ((~sp) & (~st)).sum().item()
+        fp = (sp & (~st)).sum().item()
+        fn = ((~sp) & st).sum().item()
         accum["split_tp"] += float(tp)
         accum["split_tn"] += float(tn)
         accum["split_fp"] += float(fp)
@@ -435,18 +538,20 @@ def _update_batch_metrics(
             lk = f"{key}_L{lvl}"
             accum[lk] = accum.get(lk, 0.0) + float(val)
 
-        # Predicted/ground-truth node counts proxy complexity. A node is active
-        # when it is internal (split=1) or a leaf with material supervision.
-        pred_active = split_pred.numel() - split_pred.sum().item()
-        gt_active = split_tgt.numel() - split_tgt.sum().item()
+        # Predicted/ground-truth node counts — reachable only
+        pred_active = sp.numel() - sp.sum().item()
+        gt_active = st.numel() - st.sum().item()
         accum["pred_leaf_nodes"] += float(pred_active)
         accum["gt_leaf_nodes"] += float(gt_active)
 
         label_pred = out["label"].argmax(dim=-1)
         if "is_leaf" in targets[lvl]:
-            leaf_mask = targets[lvl]["is_leaf"].to(label_pred.device)
+            leaf_mask = targets[lvl]["is_leaf"].to(label_pred.device).bool()
         else:
             leaf_mask = targets[lvl]["label"].to(label_pred.device) != -1
+        # Restrict to reachable leaves
+        if _rm is not None:
+            leaf_mask = leaf_mask & _rm
         if leaf_mask.any():
             label_tgt = targets[lvl]["label"].to(label_pred.device)
             accum["leaf_total"] += float(leaf_mask.sum().item())
@@ -455,9 +560,11 @@ def _update_batch_metrics(
             )
 
         # Phase 5: pruning agreement — does the model predict occ=0 for
-        # geometrically prunable nodes?
+        # geometrically prunable nodes?  Restricted to reachable nodes.
         if "is_prunable" in targets[lvl]:
             prunable = targets[lvl]["is_prunable"].to(split_pred.device).bool()
+            if _rm is not None:
+                prunable = prunable & _rm
             if prunable.any():
                 # For prunable nodes, the model should NOT split (occ=0).
                 prune_agree = (~split_pred & prunable).sum().item()
@@ -578,15 +685,15 @@ def train_sparse_octree(
     _device = torch.device(device)
 
     # ── Choose dataset backend based on file extension ──────────────────
-    ds_any: Any  # Union of SparseOctreeDataset | SparseOctreeSQLiteDataset | SparseOctreeJoinDataset
+    ds_any: (
+        Any  # Union of SparseOctreeDataset | SparseOctreeSQLiteDataset | SparseOctreeJoinDataset
+    )
     if data_path.suffix == ".db":
         # Detect whether this is a dumps DB (has voxy_sections) or a pairs DB
         import sqlite3 as _sql  # noqa: PLC0415
 
         _c = _sql.connect(str(data_path))
-        _tables = {r[0] for r in _c.execute(
-            "SELECT name FROM sqlite_master WHERE type='table'"
-        )}
+        _tables = {r[0] for r in _c.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         _c.close()
 
         if "voxy_sections" in _tables:
@@ -761,7 +868,13 @@ def train_sparse_octree(
             biome_ids = batch["biome_ids"].to(_device)
             heightmap5 = batch["heightmap5"].to(_device)
             optimizer.zero_grad()
-            preds = model(noise_2d, noise_3d, biome_ids, heightmap5)
+            preds = model(
+                noise_2d,
+                noise_3d,
+                biome_ids,
+                heightmap5,
+                targets=batch["targets"],
+            )
             loss = _sparse_octree_loss(
                 preds,
                 batch["targets"],

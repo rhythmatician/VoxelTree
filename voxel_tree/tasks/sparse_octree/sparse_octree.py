@@ -402,7 +402,18 @@ class SparseOctreeFastModel(nn.Module):
         noise_3d: torch.Tensor,
         biome_ids: torch.Tensor,
         heightmap5: torch.Tensor,
+        targets: t.Optional[t.Dict[int, t.Dict[str, torch.Tensor]]] = None,
     ) -> t.Dict[int, t.Dict[str, torch.Tensor]]:
+        """Forward pass with optional train/inference alignment.
+
+        When *targets* is provided (training), only non-leaf nodes are
+        expanded through ``child_proj``, matching the selective expansion
+        used at inference.  Orphaned child features are zeroed so no
+        gradient flows through unreachable subtrees.
+
+        When *targets* is ``None`` (backward-compatible default), all
+        nodes are expanded (dense teacher forcing).
+        """
         B = noise_2d.shape[0]
         device = noise_2d.device
 
@@ -428,7 +439,26 @@ class SparseOctreeFastModel(nn.Module):
             if lvl == 0:
                 break
 
-            cur_feat = self.child_proj(flat).reshape(B, N * 8, self.hidden)
+            # ── Selective expansion (train/inference aligned) ─────────
+            if targets is not None and lvl in targets:
+                # Only expand non-leaf (split) nodes; zero orphaned children
+                is_leaf = targets[lvl]["is_leaf"].to(device=device, dtype=torch.bool)
+                expand_mask = (~is_leaf).reshape(B * N)  # True = expand
+                n_expand = int(expand_mask.sum())
+                if n_expand > 0 and n_expand < B * N:
+                    expanded = self.child_proj(flat[expand_mask])  # [n_expand, D*8]
+                    child_all = flat.new_zeros(B * N, self.hidden * 8)
+                    child_all[expand_mask] = expanded
+                elif n_expand == B * N:
+                    # All nodes are split — same as dense path
+                    child_all = self.child_proj(flat)  # [B*N, D*8]
+                else:
+                    # All nodes are leaves — nothing to expand
+                    child_all = flat.new_zeros(B * N, self.hidden * 8)
+                cur_feat = child_all.reshape(B, N * 8, self.hidden)
+            else:
+                # Dense expansion (backward-compat / inference placeholder)
+                cur_feat = self.child_proj(flat).reshape(B, N * 8, self.hidden)
 
         return outputs
 

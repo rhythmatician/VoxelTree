@@ -8,6 +8,7 @@ import torch
 
 from voxel_tree.tasks.sparse_octree.sparse_octree_train import (
     SparseOctreeDataset,
+    _compute_reachable_masks,
     _finalize_metrics,
     _sparse_octree_loss,
     _update_batch_metrics,
@@ -269,3 +270,166 @@ def test_v7_15ch_npz_trains_with_auto_n3d() -> None:
         )
         assert isinstance(out, dict)
         assert set(out.keys()) == {0, 1, 2, 3, 4}
+
+
+# ---------------------------------------------------------------------------
+# Reachability masking (train/inference alignment)
+# ---------------------------------------------------------------------------
+
+
+def test_compute_reachable_masks_root_leaf_orphans_children() -> None:
+    """If the root (L4) is a leaf, ALL child levels should be unreachable."""
+    targets = {
+        4: {
+            "split": torch.tensor([[0.0]]),  # leaf
+            "label": torch.tensor([[5]]),
+            "is_leaf": torch.tensor([[True]]),
+        },
+        3: {
+            "split": torch.zeros(1, 8),
+            "label": torch.zeros(1, 8, dtype=torch.long),
+            "is_leaf": torch.ones(1, 8, dtype=torch.bool),
+        },
+        2: {
+            "split": torch.zeros(1, 64),
+            "label": torch.zeros(1, 64, dtype=torch.long),
+            "is_leaf": torch.ones(1, 64, dtype=torch.bool),
+        },
+    }
+    reach = _compute_reachable_masks(targets)
+
+    # Root is always reachable
+    assert reach[4].all()
+    # All L3 nodes unreachable (root is leaf)
+    assert not reach[3].any()
+    # All L2 nodes also unreachable (cascaded)
+    assert not reach[2].any()
+
+
+def test_compute_reachable_masks_partial_split() -> None:
+    """Only children of split (non-leaf) parents should be reachable."""
+    targets = {
+        3: {
+            "split": torch.tensor([[1.0, 0.0]]),  # node 0=split, node 1=leaf
+            "label": torch.tensor([[-1, 7]]),
+            "is_leaf": torch.tensor([[False, True]]),
+        },
+        2: {
+            "split": torch.zeros(1, 16),
+            "label": torch.zeros(1, 16, dtype=torch.long),
+            "is_leaf": torch.ones(1, 16, dtype=torch.bool),
+        },
+    }
+    reach = _compute_reachable_masks(targets)
+    assert reach[3].all()  # both root-level nodes reachable
+    # First 8 children (from split parent 0) reachable, last 8 (from leaf parent 1) not
+    assert reach[2].shape == (1, 16)
+    assert reach[2][0, :8].all()
+    assert not reach[2][0, 8:].any()
+
+
+def test_orphaned_nodes_do_not_contribute_to_loss() -> None:
+    """Loss should be identical regardless of orphaned node predictions.
+
+    If the root is a leaf, the child level's predictions are orphaned and
+    should NOT affect the loss.
+    """
+    C = 4  # num_classes
+    # Root (L1) is a leaf → L0 children are all orphaned
+    targets = {
+        1: {
+            "split": torch.tensor([[0.0]]),
+            "label": torch.tensor([[2]]),
+            "is_leaf": torch.tensor([[True]]),
+            "occ": torch.zeros(1, 1, 8),
+        },
+        0: {
+            "split": torch.zeros(1, 8),
+            "label": torch.zeros(1, 8, dtype=torch.long),
+            "is_leaf": torch.ones(1, 8, dtype=torch.bool),
+            "occ": torch.zeros(1, 8, 8),
+        },
+    }
+
+    # Prediction A: orphaned children predict garbage
+    preds_a = {
+        1: {
+            "occ": torch.tensor([[[-9.0] * 8]]),
+            "split": torch.tensor([[-9.0]]),
+            "label": torch.zeros(1, 1, C),
+        },
+        0: {
+            "occ": torch.randn(1, 8, 8) * 10,  # garbage
+            "split": torch.randn(1, 8) * 10,
+            "label": torch.randn(1, 8, C) * 10,
+        },
+    }
+    # Prediction B: orphaned children predict different garbage
+    preds_b = {
+        1: {
+            "occ": preds_a[1]["occ"].clone(),
+            "split": preds_a[1]["split"].clone(),
+            "label": preds_a[1]["label"].clone(),
+        },
+        0: {
+            "occ": torch.randn(1, 8, 8) * 10,  # different garbage
+            "split": torch.randn(1, 8) * 10,
+            "label": torch.randn(1, 8, C) * 10,
+        },
+    }
+
+    loss_a = _sparse_octree_loss(
+        preds_a,
+        targets,
+        level_split_weights={1: 1.0, 0: 1.0},
+        level_label_weights={1: 1.0, 0: 1.0},
+    )
+    loss_b = _sparse_octree_loss(
+        preds_b,
+        targets,
+        level_split_weights={1: 1.0, 0: 1.0},
+        level_label_weights={1: 1.0, 0: 1.0},
+    )
+
+    # Losses must be identical since orphaned nodes shouldn't contribute
+    assert torch.allclose(
+        loss_a, loss_b, atol=1e-6
+    ), f"Orphaned nodes affected loss: {loss_a.item()} vs {loss_b.item()}"
+
+
+def test_model_forward_with_targets_selective_expansion() -> None:
+    """Model forward with targets should skip child_proj for leaf nodes."""
+    B, C = 2, 10
+    model = SparseOctreeFastModel(n2d=0, n3d=2, hidden=16, num_classes=C, spatial_y=2)
+    noise_2d = torch.zeros(B, 0, 4, 4)
+    noise_3d = torch.randn(B, 2, 4, 2, 4)
+    biome_ids = torch.zeros(B, 4, 2, 4, dtype=torch.long)
+    hm5 = torch.randn(B, 5, 4, 4)
+
+    # Build targets where root is a leaf for batch 0, split for batch 1
+    targets = {}
+    for lvl in range(4, -1, -1):
+        N = 8 ** (4 - lvl)
+        targets[lvl] = {
+            "is_leaf": torch.zeros(B, N, dtype=torch.bool),
+            "split": torch.ones(B, N),
+            "label": torch.zeros(B, N, dtype=torch.long),
+            "occ": torch.ones(B, N, 8),
+        }
+    # Make root a leaf in batch 0
+    targets[4]["is_leaf"][0, 0] = True
+
+    # Forward with targets — should not crash
+    out_aligned = model(noise_2d, noise_3d, biome_ids, hm5, targets=targets)
+    assert set(out_aligned.keys()) == {0, 1, 2, 3, 4}
+
+    # L3 features for batch 0 should be zero (orphaned children of leaf root)
+    # This manifests as all-zero logits from zero features
+    # (the occ_head/label_head see zero input for orphaned nodes)
+    # Just verify shapes are correct
+    assert out_aligned[3]["occ"].shape == (B, 8, 8)
+    assert out_aligned[0]["label"].shape == (B, 4096, C)
+
+    # Forward without targets — backward compat
+    out_dense = model(noise_2d, noise_3d, biome_ids, hm5)
+    assert set(out_dense.keys()) == {0, 1, 2, 3, 4}
