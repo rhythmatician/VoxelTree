@@ -333,8 +333,8 @@ def compute_height_planes(hm_surface: np.ndarray, hm_ocean: np.ndarray) -> np.nd
     planes : ndarray, float32, shape (5, H, W)
         [0] surface_norm       = surface / 320
         [1] ocean_floor_approx = min(surface, 62) / 320
-        [2] slope_x            = central-difference of surface_norm along x (cols)
-        [3] slope_z            = central-difference of surface_norm along z (rows)
+        [2] slope_x            = central-difference of surface_norm along x (rows, axis=0)
+        [3] slope_z            = central-difference of surface_norm along z (cols, axis=1)
         [4] curvature          = Laplacian (d²surface/dx² + d²surface/dz²)
     """
     HEIGHT_RANGE = 320.0
@@ -347,28 +347,28 @@ def compute_height_planes(hm_surface: np.ndarray, hm_ocean: np.ndarray) -> np.nd
     surf_norm = hm_surface / HEIGHT_RANGE
     ocean_approx = np.minimum(hm_surface, SEA_LEVEL_PLANE) / HEIGHT_RANGE
 
-    # slope_x: central difference along columns (axis=1)
+    # slope_x: central difference along rows (axis=0 = X in x-major layout)
     slope_x = np.empty_like(surf_norm)
-    slope_x[:, 0] = surf_norm[:, 1] - surf_norm[:, 0]
-    slope_x[:, -1] = surf_norm[:, -1] - surf_norm[:, -2]
-    slope_x[:, 1:-1] = (surf_norm[:, 2:] - surf_norm[:, :-2]) / 2.0
+    slope_x[0, :] = surf_norm[1, :] - surf_norm[0, :]
+    slope_x[-1, :] = surf_norm[-1, :] - surf_norm[-2, :]
+    slope_x[1:-1, :] = (surf_norm[2:, :] - surf_norm[:-2, :]) / 2.0
 
-    # slope_z: central difference along rows (axis=0)
+    # slope_z: central difference along columns (axis=1 = Z in x-major layout)
     slope_z = np.empty_like(surf_norm)
-    slope_z[0, :] = surf_norm[1, :] - surf_norm[0, :]
-    slope_z[-1, :] = surf_norm[-1, :] - surf_norm[-2, :]
-    slope_z[1:-1, :] = (surf_norm[2:, :] - surf_norm[:-2, :]) / 2.0
+    slope_z[:, 0] = surf_norm[:, 1] - surf_norm[:, 0]
+    slope_z[:, -1] = surf_norm[:, -1] - surf_norm[:, -2]
+    slope_z[:, 1:-1] = (surf_norm[:, 2:] - surf_norm[:, :-2]) / 2.0
 
-    # curvature: second-order central difference (Laplacian)
+    # curvature: second-order central difference (Laplacian = d²H/dx² + d²H/dz²)
     dsx = np.empty_like(slope_x)
-    dsx[:, 0] = slope_x[:, 1] - slope_x[:, 0]
-    dsx[:, -1] = slope_x[:, -1] - slope_x[:, -2]
-    dsx[:, 1:-1] = (slope_x[:, 2:] - slope_x[:, :-2]) / 2.0
+    dsx[0, :] = slope_x[1, :] - slope_x[0, :]
+    dsx[-1, :] = slope_x[-1, :] - slope_x[-2, :]
+    dsx[1:-1, :] = (slope_x[2:, :] - slope_x[:-2, :]) / 2.0
 
     dsz = np.empty_like(slope_z)
-    dsz[0, :] = slope_z[1, :] - slope_z[0, :]
-    dsz[-1, :] = slope_z[-1, :] - slope_z[-2, :]
-    dsz[1:-1, :] = (slope_z[2:, :] - slope_z[:-2, :]) / 2.0
+    dsz[:, 0] = slope_z[:, 1] - slope_z[:, 0]
+    dsz[:, -1] = slope_z[:, -1] - slope_z[:, -2]
+    dsz[:, 1:-1] = (slope_z[:, 2:] - slope_z[:, :-2]) / 2.0
 
     curvature = dsx + dsz
 
