@@ -89,6 +89,25 @@ Built by `WorldConversionFactory.convert()` (fills level 0) then `mipSection()` 
 levels 1–4). This structure is then passed to `WorldUpdater.insertUpdate()` which assembles
 it into the persistent `WorldSection` (32³).
 
+### 4.1 Top-down generated section writes (Sparse Octree / LODiffusion)
+
+For auto-generated terrain (e.g. LODiffusion sparse-octree inference), the preferred
+workflow is *not* to fully build an L0 `VoxelizedSection` and then call `mipSection()`.
+Instead, write the model output directly to the target LOD level(s) using the same
+low-level format used by Voxy's runtime writer:
+
+- Write each Voxy `WorldSection` at the LOD level corresponding to model resolution
+  (e.g. L4 output to L4 section, L3 output to L3 section, L2 → L2/16×16×16 etc.).
+- Set `nonEmptyChildren` bits in parent sections (via `propagateChildExistence`) to
+  reflect which octants are populated.
+- Let Voxy's renderer traverse down from the first non-empty child until leaf or missing,
+  delivering coarse LOD at distance and finer details as tasks refine.
+- Skip `mipSection()` for generated content; `mipSection()` is reserved for ingesting
+  full-resolution vanilla chunk sections (L0-first path).
+
+This enables a distance-gated, top-down LOD policy where far columns are seeded at
+L4 and only refined to L3/L2/L1/L0 as needed.
+
 ---
 
 ## 5. LOD Downsampling Algorithm (`Mipper.java`)

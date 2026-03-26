@@ -21,6 +21,14 @@ Three ONNX models form a breadth-first octree traversal aligned with Voxy's
 `WorldSection` hierarchy. Each model produces a complete **32³ Voxy WorldSection**
 at a specific LOD level. Empty octants are pruned via predicted occupancy masks.
 
+The recommended runtime policy is **top-down, distance-gated refinement**:
+
+- Run `octree_init` for all candidate L4 sections in view radius (far field base). 
+- For nearer regions, run `octree_refine` selectively for L3/L2/L1 as needed.
+- Only run `octree_leaf` for close-range sections that require full L0 detail.
+- Do not `mipSection()` generated data; write directly into Voxy section storage
+  and update `nonEmptyChildren`.
+
 ```
   octree_init (L4)
        │  occ_logits → spawnChildren

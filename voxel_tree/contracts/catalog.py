@@ -387,7 +387,7 @@ _register(
         "Spatial layout remains 4×2×4 (vanilla cellHeight=8). "
         "Backward-compat: legacy 13ch dumps auto-detected and still loadable.",
         build_pairs_fn="voxel_tree.tasks.sparse_octree.build_sparse_octree_pairs:main",
-        train_fn="voxel_tree.tasks.sparse_octree.train:train_sparse_octree",
-        export_fn="voxel_tree.tasks.sparse_octree.export_sparse_octree:export_sparse_octree",
+        train_fn="voxel_tree.tasks.sparse_octree.voxy_train:train_voxy_level",
+        export_fn="voxel_tree.tasks.sparse_octree.voxy_train:train_voxy_level",  # TODO: add per-level ONNX export
     )
 )

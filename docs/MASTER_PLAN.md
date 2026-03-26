@@ -52,6 +52,9 @@ playable-resolution terrain (LOD 0). The system:
   (L4 → L1, skipping empty subtrees).
 - Anchors all macro-structure in **vanilla noise functions** (heightmap, biome,
   y-position) so generated terrain is seed-stable and seamless.
+- **Never samples any input at higher resolution than vanilla Minecraft** —
+  L0 uses exactly vanilla's native grid; L1–L4 use a strict subset (fewer
+  channels, equal or lower resolution).
 - Targets **< 100 ms** per inference call on consumer CPUs.
 
 The four-phase training plan described here produces the lightweight feature
@@ -765,6 +768,20 @@ model larger.
 **Current plan:** Strategy A for the demo milestone (simpler, easier to
 debug), migrate to Strategy B for production (fewer inference calls at
 runtime).
+
+**Runtime LODiffusion direction (top-down, distance-gated):**
+
+- L4 init-only model across full radius (1 ONNX call per 32³ section), write directly
+  to Voxy L4 sections via `writeFullWorldSection` and set `nonEmptyChildren`.
+- Mid-range: refine L3/L2/L1 only where view distance requires; each level expansion
+  is an independent `octree_refine` call with parent context.
+- Near: leaf L0 model (`octree_leaf`) only for visible/chunk-update sections.
+- Avoid `mipSection()` for generated sections; `mipSection` remains the ingestion path
+  for full L0 vanilla chunks.
+
+This supports continuous migration from dense “bottom-up full L0” to efficient
+“top-down progressive refinement” and enables large-radius DH rendering with
+manageable ONNX call counts.
 
 ---
 

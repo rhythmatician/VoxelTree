@@ -7,7 +7,7 @@ description: >-
 dag:
   steps:
     - id: dumpnoise
-    - id: import_voxy          # import Voxy NPZ -> voxy_sections table (replaces build_v7_pairs)
+    - id: import_voxy # import Voxy NPZ -> voxy_sections table (replaces build_v7_pairs)
     # - id: build_v7_pairs     # legacy — superseded by import_voxy + JoinDataset
     - id: train_sparse_octree
     - id: export_sparse_octree
@@ -33,7 +33,8 @@ train:
   output_dir: models/phase7_multilevel
   batch_size: 64
   device: auto
-  epochs: 1
+  epochs: 10
+  epochs_l0: 3 # L0 has 165K samples — 3 epochs for first pass
   lr: 0.001
   sparse_octree_hidden: 72
   sparse_octree_variant: fast

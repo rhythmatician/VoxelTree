@@ -613,122 +613,75 @@ def _resolve_device(raw: str) -> str:
 def _train_sparse_octree_run(p: dict[str, Any]) -> None:
     import json  # noqa: PLC0415
 
-    from voxel_tree.tasks.sparse_octree.train import train_sparse_octree  # noqa: PLC0415
+    from voxel_tree.tasks.sparse_octree.voxy_train import train_voxy_level  # noqa: PLC0415
     from voxel_tree.utils.progress import report as _report_progress  # noqa: PLC0415
 
     data = p.get("data", {})
     train = p.get("train", {})
 
-    # Dataset priority:
-    #   1. JoinDataset (virtual — reads dumps DB + voxy_sections directly)
-    #   2. SQLite pairs DB (pre-built)
-    #   3. NPZ (legacy, loads all into RAM)
+    # Require a dumps DB with voxy_sections
     dumps_db_str = data.get("v7_dumps_db")
-    db_path_str = data.get("v7_pairs_db")
-    npz_path_str = data.get("v7_pairs_npz", "sparse_octree_pairs_v7.npz")
+    if not dumps_db_str or not Path(dumps_db_str).exists():
+        raise FileNotFoundError(
+            "v7_dumps_db is required for per-level Voxy training. "
+            "Set data.v7_dumps_db in your profile YAML."
+        )
 
-    data_path: Path | None = None
+    # Train each level sequentially (L4 → L0)
+    out_dir = Path(train.get("output_dir", "."))
+    default_epochs = train.get("epochs", 40)
 
-    # Check if dumps DB has voxy_sections table (JoinDataset-ready)
-    if dumps_db_str and Path(dumps_db_str).exists():
-        import sqlite3 as _sql  # noqa: PLC0415
+    # Optional per-level epoch overrides (e.g. epochs_l0: 3)
+    level_epochs = {}
+    for lv in range(5):
+        key = f"epochs_l{lv}"
+        if key in train:
+            level_epochs[lv] = int(train[key])
 
-        _c = _sql.connect(dumps_db_str)
-        _tables = {r[0] for r in _c.execute(
-            "SELECT name FROM sqlite_master WHERE type='table'"
-        )}
-        _c.close()
-        if "voxy_sections" in _tables:
-            data_path = Path(dumps_db_str)
-            print(f"  Using JoinDataset (virtual): {data_path}")
+    # Optional: train only specific levels (e.g. only_levels: [0])
+    only_levels = train.get("only_levels", None)
 
-    if data_path is None:
-        if db_path_str and Path(db_path_str).exists():
-            data_path = Path(db_path_str)
-            print(f"  Using SQLite pairs dataset: {data_path}")
-        else:
-            data_path = Path(npz_path_str)
-            print(f"  Using NPZ dataset: {data_path}")
+    for level in range(4, -1, -1):
+        if only_levels is not None and level not in only_levels:
+            print(f"[L{level}] Skipped (only_levels={only_levels})")
+            continue
 
-    out_path = Path(train.get("output_dir", ".")) / _SPARSE_OCTREE_CHECKPOINT
-    resume_path = Path(train.get("resume_from")) if train.get("resume_from") else None
-    result = train_sparse_octree(
-        data_path=data_path,
-        out_path=out_path,
-        model_variant=train.get("sparse_octree_variant", "fast"),
-        hidden=train.get("sparse_octree_hidden", 80),
-        epochs=train.get("epochs", 20),
-        batch_size=train.get("batch_size", 4),
-        lr=train.get("lr", 1e-4),
-        device=_resolve_device(train.get("device", "auto")),
-        # Explicit num_classes prevents auto-detect from undersizing
-        # when rare blocks are absent from the training data.
-        num_classes=train.get("num_classes", 513),
-        pruning_boost=train.get("pruning_boost", 4.0),
-        resume_from=resume_path,
-        progress_callback=lambda epoch, total, _m: _report_progress(epoch, total),
-    )
-    print(f"[STEP_RESULT]{json.dumps(result, sort_keys=True)}")
+        out_path = out_dir / f"voxy_L{level}.pt"
+
+        # Skip levels that already have a checkpoint (unless resume requested)
+        if out_path.exists() and not train.get("force_retrain", False):
+            print(
+                f"[L{level}] Checkpoint exists at {out_path} — skipping (set force_retrain: true to override)"
+            )
+            continue
+
+        ep = level_epochs.get(level, default_epochs)
+
+        result = train_voxy_level(
+            db_path=Path(dumps_db_str),
+            out_path=out_path,
+            level=level,
+            epochs=ep,
+            batch_size=train.get("batch_size", 16),
+            lr=train.get("lr", 1e-3),
+            device=_resolve_device(train.get("device", "auto")),
+            num_workers=train.get("num_workers", None),
+            progress_callback=lambda epoch, total, _m: _report_progress(epoch, total),
+        )
+        print(f"[STEP_RESULT]{json.dumps(result, sort_keys=True)}")
 
 
 def _export_sparse_octree_run(p: dict[str, Any]) -> None:
-    from voxel_tree.tasks.sparse_octree.export_sparse_octree import (
-        export_sparse_octree,
-    )  # noqa: PLC0415
-
-    train = p.get("train", {})
-    export = p.get("export", {})
-    _out = export.get("output_dir")
-    export_sparse_octree(
-        checkpoint=Path(train.get("output_dir", ".")) / _SPARSE_OCTREE_CHECKPOINT,
-        out_dir=(
-            Path(_out)
-            if _out
-            else Path(__file__).parent.parent / "tasks" / "sparse_octree" / "model"
-        ),
-        n3d=15,
-        spatial_y=2,
-        hidden=train.get("sparse_octree_hidden", 80),
+    # TODO: Implement per-level ONNX export for Voxy models
+    raise NotImplementedError(
+        "Per-level ONNX export is not yet implemented. "
+        "Use voxy_models.create_model() + torch.onnx.export() manually."
     )
 
 
 def _deploy_sparse_octree_run(p: dict[str, Any]) -> None:
-    from voxel_tree.tasks.sparse_octree.export_sparse_octree import (
-        export_sparse_octree,
-    )  # noqa: PLC0415
-
-    train = p.get("train", {})
-    deploy = p.get("deploy", {})
-    out_dir = deploy.get("target_dir") or p.get("export", {}).get("output_dir")
-    export_sparse_octree(
-        checkpoint=Path(train.get("output_dir", ".")) / _SPARSE_OCTREE_CHECKPOINT,
-        out_dir=(
-            Path(out_dir)
-            if out_dir
-            else Path(__file__).parent.parent / "tasks" / "sparse_octree" / "model"
-        ),
-        n3d=15,
-        spatial_y=2,
-        hidden=train.get("sparse_octree_hidden", 80),
-    )
-
-
-def _distill_sparse_octree_run(p: dict[str, Any]) -> None:
-    from voxel_tree.tasks.sparse_octree.distill import distill_sparse_octree  # noqa: PLC0415
-    from voxel_tree.utils.progress import report as _report_progress  # noqa: PLC0415
-
-    data = p.get("data", {})
-    train = p.get("train", {})
-    npz_path = Path(data.get("v7_pairs_npz", "sparse_octree_pairs_v7.npz"))
-    teacher_dir = train.get("output_dir", ".")
-    distill_sparse_octree(
-        teacher_checkpoint=Path(teacher_dir) / "sparse_octree_model.pt",
-        data_path=npz_path,
-        out_path=Path(teacher_dir) / "sparse_octree_distilled.pt",
-        student_variant=train.get("sparse_octree_variant", "fast"),
-        student_hidden=train.get("sparse_octree_hidden", 80),
-        progress_callback=lambda epoch, total, _m: _report_progress(epoch, total),
-    )
+    # TODO: Implement per-level deployment to LODiffusion
+    raise NotImplementedError("Per-level deployment is not yet implemented.")
 
 
 def _import_voxy_run(p: dict[str, Any]) -> None:
@@ -742,9 +695,7 @@ def _import_voxy_run(p: dict[str, Any]) -> None:
     data = p.get("data", {})
     db_path = data.get("v7_dumps_db")
     if not db_path or not Path(db_path).exists():
-        raise FileNotFoundError(
-            f"v7_dumps_db not found: {db_path}. Run the dumpnoise step first."
-        )
+        raise FileNotFoundError(f"v7_dumps_db not found: {db_path}. Run the dumpnoise step first.")
     voxy_dir = Path(data.get("data_dir", "data/voxy_octree"))
     if not voxy_dir.is_dir():
         raise FileNotFoundError(
@@ -1054,18 +1005,6 @@ MODEL_TRACKS: list[ModelTrack] = [
         checkpoint_filename=_SPARSE_OCTREE_CHECKPOINT,
         contract_name="sparse_octree",
         contract_revision=3,
-        extra_steps=[
-            StepDef(
-                id="distill_sparse_octree",
-                label="Distill",
-                prereqs=[],
-                run_fn=_distill_sparse_octree_run,
-                track="sparse_octree",
-                phase="distill",
-                produces=frozenset({"sparse_octree_distilled"}),
-                consumes=frozenset({"sparse_octree_checkpoint", "sparse_octree_pairs"}),
-            ),
-        ],
     ),
     # ── Density (climate → density prediction) ────────────────────────
     ModelTrack(
