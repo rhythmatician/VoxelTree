@@ -45,6 +45,48 @@ from .voxy_models import VoxyModelConfig, create_model
 # ══════════════════════════════════════════════════════════════════════
 
 
+def _compute_surface_weights(
+    labels: torch.Tensor,
+    interior_weight: float = 0.1,
+    air_id: int = 0,
+) -> torch.Tensor:
+    """Compute per-voxel weights: 1.0 for visible (air-adjacent) blocks,
+    *interior_weight* for fully buried blocks.
+
+    A block is "visible" if any of its 6 face-neighbours is air.  Air blocks
+    themselves are always weighted 1.0 (predicting air correctly matters for
+    the silhouette).
+
+    Boundary voxels (at the edge of the 32³ grid) are treated as visible
+    because we cannot see their neighbours.
+
+    Args:
+        labels: ``[B, Y, Z, X]`` int block IDs.
+        interior_weight: Weight for non-visible solid blocks (0–1).
+        air_id: Block ID representing air.
+
+    Returns:
+        ``[B, Y, Z, X]`` float weight tensor.
+    """
+    is_air = labels == air_id  # [B, Y, Z, X]
+
+    # Pad with True (air) on all 6 faces so boundary blocks count as visible
+    padded = F.pad(is_air.float(), (1, 1, 1, 1, 1, 1), value=1.0)
+    # Check 6-connected neighbours for air
+    has_air_neighbour = (
+        padded[:, :-2, 1:-1, 1:-1]  # Y-1
+        + padded[:, 2:, 1:-1, 1:-1]  # Y+1
+        + padded[:, 1:-1, :-2, 1:-1]  # Z-1
+        + padded[:, 1:-1, 2:, 1:-1]  # Z+1
+        + padded[:, 1:-1, 1:-1, :-2]  # X-1
+        + padded[:, 1:-1, 1:-1, 2:]  # X+1
+    ) > 0  # [B, Y, Z, X]
+
+    # Weight: 1.0 for air blocks and visible solid blocks, interior_weight otherwise
+    weights = torch.where(is_air | has_air_neighbour, 1.0, interior_weight)
+    return weights
+
+
 def _voxy_level_loss(
     block_logits: torch.Tensor,
     labels: torch.Tensor,
@@ -54,9 +96,7 @@ def _voxy_level_loss(
     ignore_index: int = -1,
     label_smoothing: float = 0.02,
     occ_weight: float = 1.0,
-    surface_weight: float = 3.0,
-    heightmap5: Optional[torch.Tensor] = None,
-    block_y_min: Optional[torch.Tensor] = None,
+    interior_weight: float = 1.0,
 ) -> Dict[str, torch.Tensor]:
     """Compute per-level training loss.
 
@@ -68,12 +108,12 @@ def _voxy_level_loss(
         ignore_index: Label value to ignore (e.g. -1 for missing data).
         label_smoothing: Cross-entropy label smoothing.
         occ_weight: Weight for occupancy loss.
-        surface_weight: Extra weight for voxels near the heightmap surface.
-        heightmap5: ``[B, 5, H, W]`` — for surface weighting.
-        block_y_min: ``[B]`` — block Y offset for surface weighting.
+        interior_weight: Weight for non-visible (buried) blocks.  1.0 = equal
+            weighting (default), 0.1 = 10× priority on visible blocks.
 
     Returns:
-        Dict with 'loss', 'block_loss', 'occ_loss' (if applicable).
+        Dict with 'loss', 'block_loss', 'occ_loss' (if applicable),
+        and 'surface_frac' (fraction of voxels weighted at 1.0).
     """
     # ── Block classification loss ─────────────────────────────────
     # L4 outputs [B, V, 32, 32, 24] (Y trimmed to MC world height).
@@ -86,36 +126,34 @@ def _voxy_level_loss(
     logits_flat = block_logits.permute(0, 2, 3, 4, 1).reshape(-1, block_logits.shape[1])
     labels_flat = labels.reshape(-1)
 
-    # Per-voxel weights: boost surface voxels
-    if heightmap5 is not None and block_y_min is not None:
-        weight_map = _compute_surface_weights(
-            heightmap5, block_y_min, labels.shape, surface_weight
+    if interior_weight < 1.0:
+        # Visibility-weighted loss: prioritise air-adjacent blocks
+        surface_w = _compute_surface_weights(labels, interior_weight)
+        weights_flat = surface_w.reshape(-1)
+
+        per_voxel = F.cross_entropy(
+            logits_flat,
+            labels_flat,
+            ignore_index=ignore_index,
+            label_smoothing=label_smoothing,
+            reduction="none",
         )
-        per_voxel_weight = weight_map.reshape(-1)
-        # Manual weighted CE since F.cross_entropy doesn't support per-sample weights
-        log_probs = F.log_softmax(logits_flat, dim=-1)
-        # Smooth targets
-        V = logits_flat.shape[1]
+        # Zero weight for ignored voxels
         valid_mask = labels_flat != ignore_index
-        safe_labels = labels_flat.clamp(min=0)
-        # One-hot with smoothing
-        one_hot = torch.zeros_like(log_probs)
-        one_hot.scatter_(1, safe_labels.unsqueeze(1), 1.0)
-        smooth = label_smoothing / V
-        one_hot = one_hot * (1.0 - label_smoothing) + smooth
-        block_loss_per = -(one_hot * log_probs).sum(dim=-1)
-        block_loss_per = block_loss_per * per_voxel_weight * valid_mask.float()
-        n_valid = valid_mask.sum().clamp(min=1)
-        block_loss = block_loss_per.sum() / n_valid
+        block_loss = (per_voxel * weights_flat)[valid_mask].mean()
+        surface_frac = (weights_flat[valid_mask] == 1.0).float().mean().item()
     else:
         block_loss = F.cross_entropy(
-            logits_flat, labels_flat,
+            logits_flat,
+            labels_flat,
             ignore_index=ignore_index,
             label_smoothing=label_smoothing,
         )
+        surface_frac = 1.0
 
     result: Dict[str, torch.Tensor] = {
         "block_loss": block_loss,
+        "surface_frac": torch.tensor(surface_frac),
     }
 
     # ── Occupancy loss ────────────────────────────────────────────
@@ -128,56 +166,6 @@ def _voxy_level_loss(
         result["loss"] = block_loss
 
     return result
-
-
-def _compute_surface_weights(
-    heightmap5: torch.Tensor,
-    block_y_min: torch.Tensor,
-    label_shape: tuple,
-    surface_weight: float,
-) -> torch.Tensor:
-    """Compute per-voxel weights that boost surface-adjacent voxels.
-
-    Voxels within ±4 blocks of the heightmap surface get ``surface_weight``,
-    all others get 1.0.
-
-    Args:
-        heightmap5: ``[B, 5, H, W]`` — channel 0 is ``surface / 320``.
-        block_y_min: ``[B]`` — absolute block Y offset.
-        label_shape: ``(B, 32, 32, 32)`` target shape.
-        surface_weight: Weight multiplier for surface voxels.
-
-    Returns:
-        ``[B, 32, 32, 32]`` float weight tensor.
-    """
-    B = heightmap5.shape[0]
-    device = heightmap5.device
-    Y_size = label_shape[1]  # 32 normally, 24 for L4
-
-    # Extract raw surface height from channel 0
-    HEIGHT_RANGE = 320.0
-    raw_surface = heightmap5[:, 0] * HEIGHT_RANGE  # [B, H, W]
-
-    # Interpolate to 32×32 if needed
-    if raw_surface.shape[-1] != 32:
-        raw_surface = F.interpolate(
-            raw_surface.unsqueeze(1), size=(32, 32), mode="bilinear", align_corners=False
-        ).squeeze(1)
-
-    # Compute per-voxel Y positions
-    y_positions = block_y_min.float().view(B, 1, 1, 1) + torch.arange(
-        Y_size, device=device, dtype=torch.float32
-    ).view(1, Y_size, 1, 1)
-
-    # Surface height broadcast: [B, 1, 32, 32]
-    surface = raw_surface.unsqueeze(1)
-
-    # Distance from surface
-    dist = (y_positions - surface).abs()
-
-    # Within 4 blocks → surface weight, else 1.0
-    weight = torch.where(dist <= 4.0, surface_weight, 1.0)
-    return weight
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -258,12 +246,14 @@ def train_voxy_level(
     lr: float = 1e-3,
     device: str = "cpu",
     label_smoothing: float = 0.02,
-    surface_weight: float = 3.0,
     occ_weight: float = 1.0,
     min_coverage: float = 1.0,
     resume_from: Optional[Path] = None,
     max_samples: Optional[int] = None,
     num_workers: Optional[int] = None,
+    channels_last: bool = True,
+    cache_dataset: bool = True,
+    interior_weight: float = 0.1,
     progress_callback: Optional[Callable[[int, int, Dict[str, float]], None]] = None,
 ) -> Dict[str, Any]:
     """Train a single Voxy-level model.
@@ -277,13 +267,18 @@ def train_voxy_level(
         lr: Learning rate (AdamW).
         device: PyTorch device string.
         label_smoothing: CE label smoothing.
-        surface_weight: Extra weight for surface-adjacent voxels.
         occ_weight: Occupancy loss multiplier.
         min_coverage: Fraction of constituent sections needed (1.0=all).
         resume_from: Path to a checkpoint to resume from.
         max_samples: Cap dataset size for debugging.
         num_workers: DataLoader worker count.  Default: 0 on Windows
             (SQLite + spawn multiprocessing deadlocks), 4 elsewhere.
+        channels_last: Use channels-last-3d memory format for ~1.6x CPU
+            speedup on 3D convolutions.  Default True.
+        cache_dataset: Pre-load entire dataset into RAM to eliminate
+            per-batch SQLite I/O overhead (~40% faster).  Default True.
+        interior_weight: Weight for buried (non-visible) blocks.  0.1 means
+            visible blocks get 10× priority.  Default 0.1.
         progress_callback: Called each epoch with (epoch, total, metrics).
 
     Returns:
@@ -310,10 +305,12 @@ def train_voxy_level(
     # ── Dataset ───────────────────────────────────────────────────
     if level == 4:
         ds: VoxyLevelDataset | VoxyLevelWithParentDataset = VoxyLevelDataset(
-            db_path, level, min_coverage, vocab_remap=_vocab_remap
+            db_path, level, min_coverage, vocab_remap=_vocab_remap, cache=cache_dataset
         )
     else:
-        ds = VoxyLevelWithParentDataset(db_path, level, min_coverage, vocab_remap=_vocab_remap)
+        ds = VoxyLevelWithParentDataset(
+            db_path, level, min_coverage, vocab_remap=_vocab_remap, cache=cache_dataset
+        )
 
     if max_samples is not None and len(ds) > max_samples:
         # Simple truncation for debugging
@@ -330,6 +327,11 @@ def train_voxy_level(
     # ── Model ─────────────────────────────────────────────────────
     cfg = VoxyModelConfig(block_vocab_size=num_classes)
     model = create_model(level, cfg).to(_device)
+
+    # ── Channels-last 3D memory format (CPU speedup) ─────────
+    if channels_last and hasattr(model, "unet"):
+        model.unet.channels_last_3d = True
+        print(f"[L{level}] Using channels-last-3d memory format")
 
     n_params = sum(p.numel() for p in model.parameters())
     print(f"[L{level}] Model params: {n_params:,}")
@@ -384,13 +386,13 @@ def train_voxy_level(
         total_loss = 0.0
         total_block_loss = 0.0
         total_occ_loss = 0.0
+        total_surface_frac = 0.0
         total_acc = 0.0
         total_valid = 0
         total_batches = 0
         epoch_t0 = time.monotonic()
 
         for batch in loader:
-            heightmap = batch["heightmap"].to(_device)
             y_position = batch["y_position"].to(_device)
             labels32 = batch["labels32"].to(_device)
 
@@ -400,17 +402,17 @@ def train_voxy_level(
                 biome_2d = batch["biome_2d"].to(_device)
                 if has_parent:
                     parent_blocks = batch["parent_blocks"].to(_device)
-                    preds = model(climate_2d, biome_2d, heightmap, y_position, parent_blocks)
+                    preds = model(climate_2d, biome_2d, y_position, parent_blocks)
                 else:
-                    preds = model(climate_2d, biome_2d, heightmap, y_position)
+                    preds = model(climate_2d, biome_2d, y_position)
             else:
                 noise_3d = batch["noise_3d"].to(_device)
                 biome_3d = batch["biome_3d"].to(_device)
                 if has_parent:
                     parent_blocks = batch["parent_blocks"].to(_device)
-                    preds = model(noise_3d, biome_3d, heightmap, y_position, parent_blocks)
+                    preds = model(noise_3d, biome_3d, y_position, parent_blocks)
                 else:
-                    preds = model(noise_3d, biome_3d, heightmap, y_position)
+                    preds = model(noise_3d, biome_3d, y_position)
 
             # Occupancy targets
             occ_target = None
@@ -424,25 +426,25 @@ def train_voxy_level(
                 occ_target=occ_target,
                 label_smoothing=label_smoothing,
                 occ_weight=occ_weight,
-                surface_weight=surface_weight,
-                heightmap5=heightmap,
-                block_y_min=batch["block_y_min"].to(_device),
+                interior_weight=interior_weight,
             )
 
             loss = losses["loss"]
-            optimizer.zero_grad()
+            optimizer.zero_grad(set_to_none=True)
             loss.backward()
             optimizer.step()
 
             total_loss += loss.item()
             total_block_loss += losses["block_loss"].item()
             total_occ_loss += losses["occ_loss"].item()
+            total_surface_frac += losses["surface_frac"].item()
             total_batches += 1
 
-            # Accuracy
-            acc = _compute_block_accuracy(preds["block_logits"], labels32)
-            total_acc += acc["block_acc"] * acc["n_valid"]
-            total_valid += acc["n_valid"]
+            # Accuracy (no grad needed)
+            with torch.no_grad():
+                acc = _compute_block_accuracy(preds["block_logits"], labels32)
+                total_acc += acc["block_acc"] * acc["n_valid"]
+                total_valid += acc["n_valid"]
 
             # Progress logging
             if total_batches % _log_interval == 0 or total_batches == n_batches:
@@ -466,6 +468,7 @@ def train_voxy_level(
         avg_loss = total_loss / max(total_batches, 1)
         avg_block = total_block_loss / max(total_batches, 1)
         avg_occ = total_occ_loss / max(total_batches, 1)
+        avg_surface = total_surface_frac / max(total_batches, 1)
         avg_acc = total_acc / max(total_valid, 1)
 
         row = {
@@ -474,11 +477,13 @@ def train_voxy_level(
             "block_loss": avg_block,
             "occ_loss": avg_occ,
             "block_acc": avg_acc,
+            "surface_frac": avg_surface,
         }
         history.append(row)
+        sfrac_str = f" surface={avg_surface:.1%}" if interior_weight < 1.0 else ""
         print(
             f"  [L{level}] E{epoch}: loss={avg_loss:.4f} block={avg_block:.4f} "
-            f"occ={avg_occ:.4f} acc={avg_acc:.3f}"
+            f"occ={avg_occ:.4f} acc={avg_acc:.3f}{sfrac_str}"
         )
 
         if avg_loss < best_loss:
@@ -491,7 +496,8 @@ def train_voxy_level(
     # ── Save checkpoint ───────────────────────────────────────────
     out_path.parent.mkdir(parents=True, exist_ok=True)
     ckpt = {
-        "model_state_dict": best_state or {k: v.cpu().clone() for k, v in model.state_dict().items()},
+        "model_state_dict": best_state
+        or {k: v.cpu().clone() for k, v in model.state_dict().items()},
         "optimizer_state_dict": optimizer.state_dict(),
         "epoch": epochs,
         "best_loss": best_loss,
@@ -524,15 +530,33 @@ def main() -> None:
     parser.add_argument("--epochs", type=int, default=40)
     parser.add_argument("--batch-size", type=int, default=16)
     parser.add_argument("--lr", type=float, default=1e-3)
-    parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
+    parser.add_argument(
+        "--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu"
+    )
     parser.add_argument("--label-smoothing", type=float, default=0.02)
-    parser.add_argument("--surface-weight", type=float, default=3.0)
     parser.add_argument("--occ-weight", type=float, default=1.0)
     parser.add_argument("--min-coverage", type=float, default=1.0)
     parser.add_argument("--max-samples", type=int, default=None)
-    parser.add_argument("--num-workers", type=int, default=None,
-                        help="DataLoader workers (default: 0 on Windows, 4 on Linux)")
+    parser.add_argument(
+        "--num-workers",
+        type=int,
+        default=None,
+        help="DataLoader workers (default: 0 on Windows, 4 on Linux)",
+    )
     parser.add_argument("--resume", type=Path, default=None)
+    parser.add_argument(
+        "--no-channels-last", action="store_true", help="Disable channels-last-3d memory format"
+    )
+    parser.add_argument(
+        "--no-cache", action="store_true", help="Disable pre-loading dataset into RAM"
+    )
+    parser.add_argument(
+        "--interior-weight",
+        type=float,
+        default=0.1,
+        help="Loss weight for buried (non-visible) blocks. 0.1 = 10x priority on "
+        "air-adjacent blocks. 1.0 = equal weighting (default: 0.1)",
+    )
     args = parser.parse_args()
 
     out = args.out or Path(f"checkpoints/voxy_L{args.level}.pt")
@@ -546,14 +570,18 @@ def main() -> None:
         lr=args.lr,
         device=args.device,
         label_smoothing=args.label_smoothing,
-        surface_weight=args.surface_weight,
         occ_weight=args.occ_weight,
         min_coverage=args.min_coverage,
         resume_from=args.resume,
         max_samples=args.max_samples,
         num_workers=args.num_workers,
+        channels_last=not args.no_channels_last,
+        cache_dataset=not args.no_cache,
+        interior_weight=args.interior_weight,
     )
 
 
 if __name__ == "__main__":
+    import logging
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
     main()

@@ -2,7 +2,7 @@
 
 Each output sample is one 16-block noise section paired with ground-truth
 labels at all 5 Voxy LOD levels (L0-L4), plus the 15-channel v7 RouterField
-noise context, biome IDs, and per-column heightmaps.
+noise context and biome IDs.
 
 Multi-level Voxy ground truth
 -----------------------------
@@ -40,14 +40,14 @@ V7 noise dumps
           barrier, fluid_level_floodedness, fluid_level_spread, lava,
           vein_toggle, vein_ridged, vein_gap
   biome_ids: 32 discrete biome indices (int), same layout
-  heightmap_surface: 256 ints (16×16, x-major)
-  heightmap_ocean_floor: 256 ints (16×16, x-major)
+  (heightmap_surface / heightmap_ocean_floor fields are present in legacy
+   JSON dumps but are NO LONGER USED — the model infers surface information
+   directly from the 15 noise channels)
 
 Output
 ------
   noise_3d       : (N, 15, 4, 2, 4)  float32 — all 15 v7 RouterField channels
   biome_ids      : (N, 4, 2, 4)      int32   — biome index per quart cell
-  heightmap5     : (N, 5, 4, 4)      float32 — 5-plane heightmap (density-cell res)
   block_y_min    : (N,)              int32   — sy * 16 (actual section block Y)
   labels_L0      : (N, 16, 16, 16)   int32   — Voxy L0 ground truth
   labels_L1      : (N, 8, 8, 8)      int32   — Voxy L1 ground truth
@@ -185,29 +185,6 @@ def _unpack_biome_blob(blob: bytes) -> np.ndarray:
     return arr.reshape(4, 2, 4)
 
 
-def _unpack_heightmap_blob(blob: bytes) -> np.ndarray:
-    """Unpack a heightmap BLOB (int32[256]) → (16, 16) float32."""
-    arr = np.frombuffer(blob, dtype=np.int32).copy()
-    return arr.reshape(16, 16).astype(np.float32)
-
-
-# Vanilla density cells are 4 blocks wide on X/Z (horizontalCellBlockCount=4).
-# The 16×16 block-resolution heightmap contains only ~4×4 independent samples;
-# intermediate values are trilinear interpolation of cell-corner densities.
-# Downsampling to 4×4 preserves all independent information and reduces the
-# model input from 1280 features to 80 (56% → 7.5% of total input dim).
-_HM_CELL_STRIDE = 4
-
-
-def _downsample_heightmap(hm: np.ndarray) -> np.ndarray:
-    """Downsample a 16×16 block-resolution heightmap to 4×4 density-cell resolution.
-
-    Samples at cell-corner positions (0, 4, 8, 12) on each axis,
-    matching vanilla's ``horizontalCellBlockCount = 4``.
-    """
-    return hm[::_HM_CELL_STRIDE, ::_HM_CELL_STRIDE].copy()
-
-
 class _DumpSourceJSON:
     """Iterate noise dumps from a directory of JSON files."""
 
@@ -237,10 +214,8 @@ class _DumpSourceJSON:
             noise = np.stack(field_arrays)
 
             biome = np.array(raw["biome_ids"], dtype=np.int32).reshape(4, 2, 4)
-            hm_surface = np.array(raw["heightmap_surface"], dtype=np.float32).reshape(16, 16)
-            hm_ocean = np.array(raw["heightmap_ocean_floor"], dtype=np.float32).reshape(16, 16)
 
-            yield cx, sy, cz, noise, biome, hm_surface, hm_ocean
+            yield cx, sy, cz, noise, biome, None, None
 
 
 class _DumpSourceSQLite:
@@ -287,17 +262,6 @@ class _DumpSourceSQLite:
         conn = sqlite3.connect(str(self.db_path))
         conn.execute("PRAGMA cache_size=-256000")  # 256 MB
 
-        # Pre-load all heightmaps into a dict for fast lookup
-        hm_cache: dict[tuple[int, int], tuple[np.ndarray, np.ndarray]] = {}
-        for cx, cz, surf_blob, ocean_blob in conn.execute(
-            "SELECT chunk_x, chunk_z, surface, ocean_floor FROM heightmaps"
-        ):
-            hm_cache[(cx, cz)] = (
-                _unpack_heightmap_blob(surf_blob),
-                _unpack_heightmap_blob(ocean_blob),
-            )
-        print(f"  Loaded {len(hm_cache):,} heightmaps into cache")
-
         # Stream sections (with optional spatial pre-filter)
         where = self._where_clause() if self._bounds else "1"
         cursor = conn.execute(
@@ -308,11 +272,7 @@ class _DumpSourceSQLite:
         for cx, sy, cz, noise_blob, biome_blob in cursor:
             noise = _unpack_noise_blob(noise_blob)
             biome = _unpack_biome_blob(biome_blob)
-            hm_surface, hm_ocean = hm_cache.get(
-                (cx, cz),
-                (np.zeros((16, 16), dtype=np.float32), np.zeros((16, 16), dtype=np.float32)),
-            )
-            yield cx, sy, cz, noise, biome, hm_surface, hm_ocean
+            yield cx, sy, cz, noise, biome, None, None
 
         conn.close()
 
@@ -320,61 +280,6 @@ class _DumpSourceSQLite:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-
-def compute_height_planes(hm_surface: np.ndarray, hm_ocean: np.ndarray) -> np.ndarray:
-    """Compute 5-plane heightmap from raw surface + ocean-floor heightmaps.
-
-    This mirrors ``LodGenerationService.computeOctreeHeightPlanes()`` in Java.
-    Works on any (H, W) grid (4×4 training, 4×4 runtime).
-
-    Returns
-    -------
-    planes : ndarray, float32, shape (5, H, W)
-        [0] surface_norm       = surface / 320
-        [1] ocean_floor_approx = min(surface, 62) / 320
-        [2] slope_x            = central-difference of surface_norm along x (rows, axis=0)
-        [3] slope_z            = central-difference of surface_norm along z (cols, axis=1)
-        [4] curvature          = Laplacian (d²surface/dx² + d²surface/dz²)
-    """
-    HEIGHT_RANGE = 320.0
-    SEA_LEVEL_PLANE = 62.0
-
-    hm_surface = hm_surface.astype(np.float32)
-    hm_ocean = hm_ocean.astype(np.float32)
-    H, W = hm_surface.shape
-
-    surf_norm = hm_surface / HEIGHT_RANGE
-    ocean_approx = np.minimum(hm_surface, SEA_LEVEL_PLANE) / HEIGHT_RANGE
-
-    # slope_x: central difference along rows (axis=0 = X in x-major layout)
-    slope_x = np.empty_like(surf_norm)
-    slope_x[0, :] = surf_norm[1, :] - surf_norm[0, :]
-    slope_x[-1, :] = surf_norm[-1, :] - surf_norm[-2, :]
-    slope_x[1:-1, :] = (surf_norm[2:, :] - surf_norm[:-2, :]) / 2.0
-
-    # slope_z: central difference along columns (axis=1 = Z in x-major layout)
-    slope_z = np.empty_like(surf_norm)
-    slope_z[:, 0] = surf_norm[:, 1] - surf_norm[:, 0]
-    slope_z[:, -1] = surf_norm[:, -1] - surf_norm[:, -2]
-    slope_z[:, 1:-1] = (surf_norm[:, 2:] - surf_norm[:, :-2]) / 2.0
-
-    # curvature: second-order central difference (Laplacian = d²H/dx² + d²H/dz²)
-    dsx = np.empty_like(slope_x)
-    dsx[0, :] = slope_x[1, :] - slope_x[0, :]
-    dsx[-1, :] = slope_x[-1, :] - slope_x[-2, :]
-    dsx[1:-1, :] = (slope_x[2:, :] - slope_x[:-2, :]) / 2.0
-
-    dsz = np.empty_like(slope_z)
-    dsz[:, 0] = slope_z[:, 1] - slope_z[:, 0]
-    dsz[:, -1] = slope_z[:, -1] - slope_z[:, -2]
-    dsz[:, 1:-1] = (slope_z[:, 2:] - slope_z[:, :-2]) / 2.0
-
-    curvature = dsx + dsz
-
-    return np.stack([surf_norm, ocean_approx, slope_x, slope_z, curvature], axis=0).astype(
-        np.float32
-    )
 
 
 def extract_section_subcube(
@@ -533,7 +438,6 @@ CREATE TABLE IF NOT EXISTS training_pairs (
     finest_level INTEGER NOT NULL,
     noise_3d     BLOB NOT NULL,
     biome_ids    BLOB NOT NULL,
-    heightmap5   BLOB NOT NULL,
     labels_L0    BLOB NOT NULL,
     labels_L1    BLOB NOT NULL,
     labels_L2    BLOB NOT NULL,
@@ -603,7 +507,6 @@ def _voxy_join_clause(require_all_levels: bool = True) -> str:
     join_type = "JOIN" if require_all_levels else "LEFT JOIN"
     parts = [
         "FROM sections s",
-        "JOIN heightmaps h ON h.chunk_x = s.chunk_x AND h.chunk_z = s.chunk_z",
     ]
     for level in range(5):
         shift = level + 1
@@ -702,8 +605,7 @@ def build_pairs_db(
     # ── Stream matching rows ────────────────────────────────────────────
     select_cols = (
         "s.chunk_x, s.section_y, s.chunk_z, "
-        "s.noise_data, s.biome_ids, "
-        "h.surface, h.ocean_floor"
+        "s.noise_data, s.biome_ids"
     )
     data_sql = (
         f"SELECT {select_cols} {join_clause} "
@@ -722,20 +624,12 @@ def build_pairs_db(
 
         batch_inserts: list[tuple] = []
 
-        for cx, sy, cz, noise_blob, biome_blob, hm_surf_blob, hm_ocean_blob in rows:
+        for cx, sy, cz, noise_blob, biome_blob in rows:
             rows_fetched += 1
 
             # Deserialize source BLOBs
             noise = _unpack_noise_blob(noise_blob)
             biome = _unpack_biome_blob(biome_blob)
-            hm_surface = _unpack_heightmap_blob(hm_surf_blob)
-            hm_ocean = _unpack_heightmap_blob(hm_ocean_blob)
-
-            # Downsample 16×16 → 4×4 (density-cell resolution) then compute 5-plane
-            hm5 = compute_height_planes(
-                _downsample_heightmap(hm_surface),
-                _downsample_heightmap(hm_ocean),
-            )
 
             # Determine Voxy availability at each level (for subcube extraction)
             available_ws: dict[int, tuple[int, int, int]] = {}
@@ -778,7 +672,6 @@ def build_pairs_db(
                 finest,
                 _pack_blob(noise),
                 _pack_blob(biome),
-                _pack_blob(hm5),
                 label_blobs[0], label_blobs[1], label_blobs[2],
                 label_blobs[3], label_blobs[4],
             ))
@@ -789,9 +682,9 @@ def build_pairs_db(
             out_conn.executemany(
                 "INSERT INTO training_pairs "
                 "(sample_id, chunk_x, section_y, chunk_z, block_y_min, finest_level,"
-                " noise_3d, biome_ids, heightmap5,"
+                " noise_3d, biome_ids,"
                 " labels_L0, labels_L1, labels_L2, labels_L3, labels_L4)"
-                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 batch_inserts,
             )
             out_conn.commit()
@@ -890,7 +783,6 @@ def build_pairs(
     label_lists: dict[int, list[np.ndarray]] = {lv: [] for lv in range(5)}
     noise_slices: list[np.ndarray] = []  # (15, 4, 2, 4) float32
     biome_slices: list[np.ndarray] = []  # (4, 2, 4) int32
-    hm5_slices: list[np.ndarray] = []  # (5, 4, 4) float32
     block_y_min_list: list[int] = []  # sy * 16
     finest_level_list: list[int] = []  # finest available Voxy level
 
@@ -934,12 +826,6 @@ def build_pairs(
 
         finest = min(available_ws.keys())
 
-        # Downsample 16×16 → 4×4 (density-cell resolution) then compute 5-plane
-        hm5 = compute_height_planes(
-            _downsample_heightmap(hm_surface),
-            _downsample_heightmap(hm_ocean),
-        )  # (5, 4, 4)
-
         # ── Extract per-level sub-cubes from Voxy ────────────────────────
         level_grids: dict[int, np.ndarray] = {}
         for level, ws in available_ws.items():
@@ -953,7 +839,6 @@ def build_pairs(
         # ── Accumulate sample ────────────────────────────────────────────
         noise_slices.append(noise_block)
         biome_slices.append(biome_arr)
-        hm5_slices.append(hm5)
         block_y_min_list.append(sy * 16)  # actual section block Y
         finest_level_list.append(finest)
 
@@ -985,14 +870,12 @@ def build_pairs(
     # ── Stack and save ───────────────────────────────────────────────────
     all_noise_3d = np.stack(noise_slices).astype(np.float32)  # (N, 15, 4, 2, 4)
     all_biome_ids = np.stack(biome_slices).astype(np.int32)  # (N, 4, 2, 4)
-    all_hm5 = np.stack(hm5_slices).astype(np.float32)  # (N, 5, 4, 4)
     all_block_y_min = np.array(block_y_min_list, dtype=np.int32)  # (N,)
     all_finest = np.array(finest_level_list, dtype=np.int32)  # (N,)
 
     save_dict: dict[str, np.ndarray] = {
         "noise_3d": all_noise_3d,
         "biome_ids": all_biome_ids,
-        "heightmap5": all_hm5,
         "block_y_min": all_block_y_min,
         "finest_level": all_finest,
     }

@@ -1,11 +1,12 @@
 """Per-level tiling dataset for Voxy-native models.
 
-Tiles noise, biome, and heightmap data from the v7 noise-dumps DB into
+Tiles noise and biome data from the v7 noise-dumps DB into
 WorldSection-sized inputs for each Voxy LOD level.
 
 **Golden Rule — Input Resolution Invariant**:
 Inputs never exceed vanilla Minecraft's native sampling resolution.
 L0 = exactly vanilla's grid.  L1–L4 ⊆ vanilla (strict subset).
+All inputs are vanilla density-function *inputs*, never *outputs*.
 
 A Voxy WorldSection at level L covers ``32 × 2^L`` blocks per axis, which
 spans ``2^(L+1)`` noise sections in each dimension.  This dataset:
@@ -13,7 +14,7 @@ spans ``2^(L+1)`` noise sections in each dimension.  This dataset:
 1. Discovers all WorldSection coordinates at a given level that have
    **complete** coverage in the noise-dumps DB (every constituent section
    present) AND a matching Voxy ground-truth grid.
-2. On ``__getitem__``, tiles the constituent noise/biome/heightmap blobs
+2. On ``__getitem__``, tiles the constituent noise/biome blobs
    into the native-resolution tensors expected by :class:`VoxyL{level}Model`.
 3. Returns ``(inputs_dict, labels_32)`` where ``labels_32`` is the Voxy
    ``int32[32, 32, 32]`` ground-truth voxel grid.
@@ -23,7 +24,6 @@ Coordinate conventions
 - Section DB uses ``(chunk_x, section_y, chunk_z)`` — 16-block aligned.
 - ``section_to_world_section(coord, level) = coord >> (level + 1)``.
 - Voxy WorldSection DB uses ``(level, ws_x, ws_y, ws_z)``.
-- Heightmap DB uses ``(chunk_x, chunk_z)`` — one entry per 16×16 chunk column.
 """
 
 from __future__ import annotations
@@ -42,9 +42,7 @@ from torch.utils.data import Dataset
 from .build_sparse_octree_pairs import (
     N_FIELDS,
     _unpack_biome_blob,
-    _unpack_heightmap_blob,
     _unpack_noise_blob,
-    compute_height_planes,
 )
 from .voxy_models import L2_NOISE_CHANNELS, L3_NOISE_CHANNELS, L4_NOISE_CHANNELS
 
@@ -59,9 +57,6 @@ log = logging.getLogger(__name__)
 _NOISE_QX = 4
 _NOISE_QY = 2
 _NOISE_QZ = 4
-
-# Block-resolution heightmap per chunk
-_HM_BLOCK_RES = 16
 
 # Subsampled grid size for L2–L4 2D inputs
 _SUBSAMPLE_XZ = 8
@@ -117,9 +112,7 @@ def _discover_complete_world_sections(
     T = 1 << shift
 
     # Determine actual Y extent in section coordinates from the DB
-    y_range = conn.execute(
-        "SELECT MIN(section_y), MAX(section_y) FROM sections"
-    ).fetchone()
+    y_range = conn.execute("SELECT MIN(section_y), MAX(section_y) FROM sections").fetchone()
     if y_range[0] is None:
         return []
     y_min_global, y_max_global = y_range  # e.g. -4, 19
@@ -140,8 +133,8 @@ def _discover_complete_world_sections(
     candidates = []
     for ws_x, ws_y, ws_z, cnt in rows:
         # Compute how many Y-sections actually exist in this WS's Y range
-        ws_y_lo = ws_y * T       # first section_y in this WS
-        ws_y_hi = ws_y_lo + T    # exclusive upper bound
+        ws_y_lo = ws_y * T  # first section_y in this WS
+        ws_y_hi = ws_y_lo + T  # exclusive upper bound
         # Clamp to the global Y extent
         actual_y = max(0, min(ws_y_hi, y_max_global + 1) - max(ws_y_lo, y_min_global))
         expected = T * actual_y * T  # X × Y_actual × Z
@@ -241,64 +234,6 @@ def _tile_noise_and_biome(
     return noise_out, biome_out
 
 
-def _tile_heightmap(
-    conn: sqlite3.Connection,
-    ws_x: int,
-    ws_z: int,
-    level: int,
-) -> np.ndarray:
-    """Tile heightmaps from constituent chunk columns into WorldSection 5-plane.
-
-    Args:
-        conn: SQLite connection to noise-dumps DB.
-        ws_x, ws_z: WorldSection XZ coordinates.
-        level: Voxy LOD level.
-
-    Returns:
-        ``float32[5, H, W]`` where ``H = W = 2^(level+1) * 4`` (at cell resolution).
-    """
-    shift = level + 1
-    T = 1 << shift  # chunks per axis in this WorldSection
-
-    # We tile at block resolution (16 per chunk) then downsample to cell resolution
-    block_res = T * _HM_BLOCK_RES  # total blocks per axis
-    surface_full = np.zeros((block_res, block_res), dtype=np.float32)
-    ocean_full = np.zeros((block_res, block_res), dtype=np.float32)
-
-    cx_base = ws_x << shift
-    cz_base = ws_z << shift
-
-    rows = conn.execute(
-        """
-        SELECT chunk_x, chunk_z, surface, ocean_floor
-        FROM heightmaps
-        WHERE chunk_x >= ? AND chunk_x < ?
-          AND chunk_z >= ? AND chunk_z < ?
-        """,
-        (cx_base, cx_base + T, cz_base, cz_base + T),
-    ).fetchall()
-
-    for cx, cz, surface_blob, ocean_blob in rows:
-        dx = cx - cx_base
-        dz = cz - cz_base
-
-        hm_s = _unpack_heightmap_blob(surface_blob)  # (16, 16) float32
-        hm_o = _unpack_heightmap_blob(ocean_blob)
-
-        x0, x1 = dx * _HM_BLOCK_RES, (dx + 1) * _HM_BLOCK_RES
-        z0, z1 = dz * _HM_BLOCK_RES, (dz + 1) * _HM_BLOCK_RES
-
-        surface_full[x0:x1, z0:z1] = hm_s
-        ocean_full[x0:x1, z0:z1] = hm_o
-
-    # Downsample to density-cell resolution (stride 4)
-    surface_ds = surface_full[::_CELL_WIDTH, ::_CELL_WIDTH].copy()
-    ocean_ds = ocean_full[::_CELL_WIDTH, ::_CELL_WIDTH].copy()
-
-    # Compute 5-plane features
-    return compute_height_planes(surface_ds, ocean_ds)
-
-
 def _select_climate_2d(
     noise_3d: np.ndarray,
     biome_3d: np.ndarray,
@@ -348,14 +283,14 @@ class VoxyLevelDataset(Dataset):  # type: ignore[type-arg]
     """Per-level tiling dataset for Voxy-native models.
 
     Each sample is a complete WorldSection at the specified Voxy LOD level.
-    The dataset tiles noise/biome/heightmap from the constituent 16-block
-    sections and retrieves the matching Voxy ground-truth grid.
+    The dataset tiles noise/biome from the constituent 16-block sections
+    and retrieves the matching Voxy ground-truth grid.
 
     Thread-safe: each DataLoader worker opens its own SQLite connection.
 
     Args:
-        db_path: Path to the v7 noise-dumps DB (must have ``sections``,
-            ``heightmaps``, and ``voxy_sections`` tables).
+        db_path: Path to the v7 noise-dumps DB (must have ``sections``
+            and ``voxy_sections`` tables).
         level: Voxy LOD level (0–4).
         min_coverage: Fraction of constituent sections required for a
             WorldSection to be included (default 1.0 = all required).
@@ -368,6 +303,7 @@ class VoxyLevelDataset(Dataset):  # type: ignore[type-arg]
         level: int,
         min_coverage: float = 1.0,
         vocab_remap: Optional[Dict[int, int]] = None,
+        cache: bool = False,
     ) -> None:
         self.db_path = str(db_path)
         self.level = level
@@ -387,6 +323,11 @@ class VoxyLevelDataset(Dataset):  # type: ignore[type-arg]
             len(self.samples),
             min_coverage * 100,
         )
+
+        # In-memory cache: pre-load all samples to eliminate per-batch SQLite I/O
+        self._cache: Optional[List[Dict[str, Any]]] = None
+        if cache:
+            self._preload_cache()
 
     def _get_conn(self) -> sqlite3.Connection:
         """Get or create a per-thread SQLite connection."""
@@ -408,15 +349,53 @@ class VoxyLevelDataset(Dataset):  # type: ignore[type-arg]
     def __len__(self) -> int:
         return len(self.samples)
 
-    def __getitem__(self, idx: int) -> Dict[str, Any]:
+    def _preload_cache(self) -> None:
+        """Pre-load all samples into RAM to eliminate per-batch SQLite I/O."""
+        import time as _time
+
+        n = len(self.samples)
+        log.info(
+            "VoxyLevelDataset(level=%d): pre-loading %d samples into RAM ...",
+            self.level,
+            n,
+        )
+        t0 = _time.monotonic()
+        conn = sqlite3.connect(self.db_path)
+        self._cache = []
+        for i in range(n):
+            self._cache.append(self._load_one(conn, i))
+            if (i + 1) % 200 == 0 or (i + 1) == n:
+                elapsed = _time.monotonic() - t0
+                rate = (i + 1) / elapsed
+                remaining = (n - i - 1) / max(rate, 1e-9)
+                log.info(
+                    "  ...cached %d/%d (%.1f samples/s, ~%.0fs remaining)",
+                    i + 1,
+                    n,
+                    rate,
+                    remaining,
+                )
+        conn.close()
+        elapsed = _time.monotonic() - t0
+        # Estimate memory usage
+        mem_bytes = sum(
+            sum(v.nelement() * v.element_size() for v in s.values() if isinstance(v, torch.Tensor))
+            for s in self._cache
+        )
+        log.info(
+            "VoxyLevelDataset(level=%d): cached %d samples in %.1fs (~%.0f MB RAM)",
+            self.level,
+            n,
+            elapsed,
+            mem_bytes / 1e6,
+        )
+
+    def _load_one(self, conn: sqlite3.Connection, idx: int) -> Dict[str, Any]:
+        """Load a single sample from SQLite.  Used by both __getitem__ and _preload_cache."""
         ws_x, ws_y, ws_z = self.samples[idx]
-        conn = self._get_conn()
 
         # ── Tile noise/biome ──────────────────────────────────────
         noise_3d, biome_3d = _tile_noise_and_biome(conn, ws_x, ws_y, ws_z, self.level)
-
-        # ── Tile heightmap ────────────────────────────────────────
-        heightmap5 = _tile_heightmap(conn, ws_x, ws_z, self.level)
 
         # ── Y position ────────────────────────────────────────────
         # WorldSection Y in section units → y_position index
@@ -446,7 +425,6 @@ class VoxyLevelDataset(Dataset):  # type: ignore[type-arg]
 
         # ── Pack as tensors ───────────────────────────────────────
         result: Dict[str, Any] = {
-            "heightmap": torch.from_numpy(heightmap5),  # [5, Hx, Hz]
             "y_position": torch.tensor(y_position, dtype=torch.long),
             "labels32": torch.from_numpy(labels32).long(),  # [32, 32, 32]
             "block_y_min": torch.tensor(block_y_min, dtype=torch.long),
@@ -458,17 +436,16 @@ class VoxyLevelDataset(Dataset):  # type: ignore[type-arg]
             climate_2d, biome_2d = _select_climate_2d(noise_3d, biome_3d, self.level)
             result["climate_2d"] = torch.from_numpy(climate_2d)  # [C_sel, 8, 8]
             result["biome_2d"] = torch.from_numpy(biome_2d).int()  # [8, 8]
-            # Subsample heightmap to 8×8 to match climate grid
-            hm_h, hm_w = heightmap5.shape[1], heightmap5.shape[2]
-            sh = max(1, hm_h // _SUBSAMPLE_XZ)
-            sw = max(1, hm_w // _SUBSAMPLE_XZ)
-            hm_sub = heightmap5[:, ::sh, ::sw][:, :_SUBSAMPLE_XZ, :_SUBSAMPLE_XZ].copy()
-            result["heightmap"] = torch.from_numpy(hm_sub)  # [5, 8, 8]
         else:
             result["noise_3d"] = torch.from_numpy(noise_3d)  # [15, Nx, Ny, Nz]
             result["biome_3d"] = torch.from_numpy(biome_3d).int()  # [Nx, Ny, Nz]
 
         return result
+
+    def __getitem__(self, idx: int) -> Dict[str, Any]:
+        if self._cache is not None:
+            return self._cache[idx]
+        return self._load_one(self._get_conn(), idx)
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -484,7 +461,6 @@ def voxy_level_collate(
     Works for both 3D (L0/L1) and 2D (L2-L4) input schemas.
     """
     result: Dict[str, torch.Tensor] = {
-        "heightmap": torch.stack([s["heightmap"] for s in batch]),
         "y_position": torch.stack([s["y_position"] for s in batch]),
         "labels32": torch.stack([s["labels32"] for s in batch]),
         "block_y_min": torch.stack([s["block_y_min"] for s in batch]),
@@ -571,6 +547,7 @@ class VoxyLevelWithParentDataset(Dataset):  # type: ignore[type-arg]
         level: int,
         min_coverage: float = 1.0,
         vocab_remap: Optional[Dict[int, int]] = None,
+        cache: bool = False,
     ) -> None:
         assert 0 <= level <= 3, "VoxyLevelWithParentDataset: level must be 0–3 (L4 has no parent)"
         self.db_path = str(db_path)
@@ -578,7 +555,7 @@ class VoxyLevelWithParentDataset(Dataset):  # type: ignore[type-arg]
         self.vocab_remap = vocab_remap
         self._local = threading.local()
 
-        # The base dataset for this level
+        # The base dataset for this level (no cache here — we cache at this level instead)
         self.base = VoxyLevelDataset(db_path, level, min_coverage, vocab_remap)
 
         # Pre-filter: only keep samples where the parent (coarser) level also exists
@@ -610,6 +587,11 @@ class VoxyLevelWithParentDataset(Dataset):  # type: ignore[type-arg]
                 coarser,
             )
 
+        # In-memory cache: pre-load all samples to eliminate per-batch SQLite I/O
+        self._cache: Optional[List[Dict[str, Any]]] = None
+        if cache:
+            self._preload_cache()
+
     def _get_conn(self) -> sqlite3.Connection:
         if not hasattr(self._local, "conn") or self._local.conn is None:
             self._local.conn = sqlite3.connect(self.db_path)
@@ -627,10 +609,50 @@ class VoxyLevelWithParentDataset(Dataset):  # type: ignore[type-arg]
     def __len__(self) -> int:
         return len(self.base)
 
-    def __getitem__(self, idx: int) -> Dict[str, Any]:
-        sample = self.base[idx]
+    def _preload_cache(self) -> None:
+        """Pre-load all samples (base + parent) into RAM."""
+        import time as _time
+
+        n = len(self.base)
+        log.info(
+            "VoxyLevelWithParentDataset(L%d): pre-loading %d samples into RAM ...",
+            self.level,
+            n,
+        )
+        t0 = _time.monotonic()
+        conn = sqlite3.connect(self.db_path)
+        self._cache = []
+        for i in range(n):
+            self._cache.append(self._load_one(conn, i))
+            if (i + 1) % 200 == 0 or (i + 1) == n:
+                elapsed = _time.monotonic() - t0
+                rate = (i + 1) / elapsed
+                remaining = (n - i - 1) / max(rate, 1e-9)
+                log.info(
+                    "  ...cached %d/%d (%.1f samples/s, ~%.0fs remaining)",
+                    i + 1,
+                    n,
+                    rate,
+                    remaining,
+                )
+        conn.close()
+        elapsed = _time.monotonic() - t0
+        mem_bytes = sum(
+            sum(v.nelement() * v.element_size() for v in s.values() if isinstance(v, torch.Tensor))
+            for s in self._cache
+        )
+        log.info(
+            "VoxyLevelWithParentDataset(L%d): cached %d samples in %.1fs (~%.0f MB RAM)",
+            self.level,
+            n,
+            elapsed,
+            mem_bytes / 1e6,
+        )
+
+    def _load_one(self, conn: sqlite3.Connection, idx: int) -> Dict[str, Any]:
+        """Load a single sample (base + parent) from SQLite."""
+        sample = self.base._load_one(conn, idx)
         ws_x, ws_y, ws_z = self.base.samples[idx]
-        conn = self._get_conn()
 
         # Fetch parent grid from coarser level
         coarser = self.level + 1
@@ -661,6 +683,11 @@ class VoxyLevelWithParentDataset(Dataset):  # type: ignore[type-arg]
 
         sample["parent_blocks"] = torch.from_numpy(parent_blocks).long()
         return sample
+
+    def __getitem__(self, idx: int) -> Dict[str, Any]:
+        if self._cache is not None:
+            return self._cache[idx]
+        return self._load_one(self._get_conn(), idx)
 
 
 __all__ = [

@@ -149,7 +149,7 @@ ROUTER_ACCESSOR_NAMES: List[str] = [
     "erosion",
     "depth",
     "ridges",
-    "initialDensityWithoutJaggedness",
+    "preliminarySurfaceLevel",
     "finalDensity",
     "barrierNoise",
     "fluidLevelFloodednessNoise",

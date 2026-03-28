@@ -64,7 +64,7 @@ import torch.nn.functional as F
 # Channel indices kept at each level (RouterField ordinals)
 L2_NOISE_CHANNELS: List[int] = [0, 1, 2, 3, 4, 5, 7]  # 6 climate + final_density
 L3_NOISE_CHANNELS: List[int] = [0, 1, 2, 3, 4, 5]      # 6 climate
-L4_NOISE_CHANNELS: List[int] = [0, 1, 2, 3, 5]          # 5 climate (drop depth)
+L4_NOISE_CHANNELS: List[int] = [0, 1, 2, 3, 4, 5]       # 6 climate (all including depth)
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -93,9 +93,6 @@ class VoxyModelConfig:
     # Parent block-ID embedding dimension
     parent_embed_dim: int = 16
 
-    # Heightmap: 5 channels (surface_norm, ocean_floor_approx, slope_x, slope_z, curvature)
-    height_channels: int = 5
-
     # Noise encoder: output channel count after 3D conv processing
     noise_encoder_out: int = 32
 
@@ -112,7 +109,7 @@ class VoxyModelConfig:
     # Feature-selected noise channel counts per level
     l2_noise_ch: int = 7   # 6 climate + final_density
     l3_noise_ch: int = 6   # 6 climate
-    l4_noise_ch: int = 5   # 5 climate (no depth)
+    l4_noise_ch: int = 6   # 6 climate (all including depth)
 
     # Bottleneck extra depth (extra DoubleConv3d blocks at 8³)
     l0_bottleneck_extra: int = 1
@@ -237,7 +234,7 @@ class NoiseEncoder3D(nn.Module):
 
 
 # ══════════════════════════════════════════════════════════════════════
-#  Heightmap encoder — 2D features broadcast to 3D
+#  Climate encoder — 2D features broadcast to 3D (L2–L4)
 # ══════════════════════════════════════════════════════════════════════
 
 
@@ -308,44 +305,6 @@ class ClimateEncoder2D(nn.Module):
         return x.unsqueeze(2).expand(-1, -1, 32, -1, -1)  # [B, out_ch, 32, 32, 32]
 
 
-class HeightmapEncoder2D(nn.Module):
-    """Encode 2D heightmap features and broadcast to 3D volume.
-
-    The heightmap has varying resolution per level (e.g. ``[5, 8, 8]`` for
-    L0, ``[5, 16, 16]`` for L1).  This module:
-
-    1. Processes the 2D heightmap with a small 2D CNN at native resolution.
-    2. Bilinearly interpolates to 32×32.
-    3. Broadcasts along Y to form ``[B, C, 32, 32, 32]``.
-    """
-
-    def __init__(self, in_channels: int = 5, out_channels: int = 8) -> None:
-        super().__init__()
-        self.conv = nn.Sequential(
-            nn.Conv2d(in_channels, out_channels, 3, padding=1),
-            nn.BatchNorm2d(out_channels),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(out_channels, out_channels, 3, padding=1),
-            nn.BatchNorm2d(out_channels),
-            nn.ReLU(inplace=True),
-        )
-
-    def forward(self, heightmap: torch.Tensor) -> torch.Tensor:
-        """Encode heightmap to 3D volume.
-
-        Args:
-            heightmap: ``[B, 5, Hx, Hz]`` — at level-native resolution.
-
-        Returns:
-            ``[B, out_channels, 32, 32, 32]`` — broadcast along Y.
-        """
-        x = self.conv(heightmap.float())  # [B, C, Hx, Hz]
-        # Bilinear to 32×32
-        x = F.interpolate(x, size=(32, 32), mode="bilinear", align_corners=False)
-        # Broadcast along Y
-        return x.unsqueeze(2).expand(-1, -1, 32, -1, -1)  # [B, C, 32, 32, 32]
-
-
 # ══════════════════════════════════════════════════════════════════════
 #  3D U-Net backbone (adapted from octree/models.py)
 # ══════════════════════════════════════════════════════════════════════
@@ -376,6 +335,7 @@ class UNet3D32(nn.Module):
     ) -> None:
         super().__init__()
         c0, c1, c2 = channels
+        self.channels_last_3d: bool = False  # set True for CPU speedup
 
         # Encoder
         self.enc1 = DoubleConv3d(in_channels, c0)
@@ -399,6 +359,8 @@ class UNet3D32(nn.Module):
 
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """Forward: input ``[B, in, 32³]`` → ``(features [B, C₀, 32³], bottleneck [B, C₂, 8³])``."""
+        if self.channels_last_3d:
+            x = x.to(memory_format=torch.channels_last_3d)
         e1 = self.enc1(x)
         e2 = self.enc2(self.pool1(e1))
         bn = self.bottleneck(self.pool2(e2))
@@ -497,7 +459,6 @@ class VoxyL0Model(nn.Module):
         - ``noise_3d  [B, 15, 8, 4, 8]``  — 15 RouterField channels at native
           cell resolution (8 cells XZ, 4 cells Y for a 32-block footprint)
         - ``biome_3d  [B, 8, 4, 8]``      — biome IDs at same resolution
-        - ``heightmap [B, 5, 8, 8]``       — 5-plane heightmap at 4-block XZ res
         - ``y_position [B]``               — section Y index
         - ``parent_blocks [B, 32, 32, 32]`` — from L1, octant-extracted + upsampled
 
@@ -511,14 +472,12 @@ class VoxyL0Model(nn.Module):
         c0, c1, c2 = cfg.l0_channels
 
         self.noise_encoder = NoiseEncoder3D(cfg)
-        self.heightmap_encoder = HeightmapEncoder2D(cfg.height_channels, out_channels=8)
         self.parent_encoder = ParentEncoder(cfg.block_vocab_size, cfg.parent_embed_dim)
         self.y_encoder = YPositionEncoder(cfg.y_vocab_size, cfg.y_embed_dim)
 
-        # U-Net input: noise_enc + heightmap_enc + parent_enc + y_enc
+        # U-Net input: noise_enc + parent_enc + y_enc
         in_channels = (
             cfg.noise_encoder_out      # 32
-            + 8                        # heightmap encoder out
             + cfg.parent_embed_dim     # 16
             + cfg.y_embed_dim          # 8
         )
@@ -529,7 +488,6 @@ class VoxyL0Model(nn.Module):
         self,
         noise_3d: torch.Tensor,
         biome_3d: torch.Tensor,
-        heightmap: torch.Tensor,
         y_position: torch.Tensor,
         parent_blocks: torch.Tensor,
     ) -> Dict[str, torch.Tensor]:
@@ -538,7 +496,6 @@ class VoxyL0Model(nn.Module):
         Args:
             noise_3d:      ``[B, 15, 8, 4, 8]``
             biome_3d:      ``[B, 8, 4, 8]``
-            heightmap:     ``[B, 5, 8, 8]``
             y_position:    ``[B]``
             parent_blocks: ``[B, 32, 32, 32]``
 
@@ -546,11 +503,10 @@ class VoxyL0Model(nn.Module):
             ``{'block_logits': [B, V, 32, 32, 32]}``
         """
         noise_feat = self.noise_encoder(noise_3d, biome_3d)   # [B, 32, 32, 32, 32]
-        hm_feat = self.heightmap_encoder(heightmap)            # [B, 8, 32, 32, 32]
         parent_feat = self.parent_encoder(parent_blocks)       # [B, 16, 32, 32, 32]
         y_feat = self.y_encoder(y_position)                    # [B, 8, 32, 32, 32]
 
-        x = torch.cat([noise_feat, hm_feat, parent_feat, y_feat], dim=1)
+        x = torch.cat([noise_feat, parent_feat, y_feat], dim=1)
         features, _bn = self.unet(x)
 
         return {"block_logits": self.block_head(features)}
@@ -567,7 +523,6 @@ class VoxyL1Model(nn.Module):
     Inputs:
         - ``noise_3d  [B, 15, 16, 8, 16]``
         - ``biome_3d  [B, 16, 8, 16]``
-        - ``heightmap [B, 5, 16, 16]``
         - ``y_position [B]``
         - ``parent_blocks [B, 32, 32, 32]`` — from L2
 
@@ -582,13 +537,11 @@ class VoxyL1Model(nn.Module):
         c0, c1, c2 = cfg.l1_channels
 
         self.noise_encoder = NoiseEncoder3D(cfg)
-        self.heightmap_encoder = HeightmapEncoder2D(cfg.height_channels, out_channels=8)
         self.parent_encoder = ParentEncoder(cfg.block_vocab_size, cfg.parent_embed_dim)
         self.y_encoder = YPositionEncoder(cfg.y_vocab_size, cfg.y_embed_dim)
 
         in_channels = (
             cfg.noise_encoder_out
-            + 8
             + cfg.parent_embed_dim
             + cfg.y_embed_dim
         )
@@ -600,16 +553,14 @@ class VoxyL1Model(nn.Module):
         self,
         noise_3d: torch.Tensor,
         biome_3d: torch.Tensor,
-        heightmap: torch.Tensor,
         y_position: torch.Tensor,
         parent_blocks: torch.Tensor,
     ) -> Dict[str, torch.Tensor]:
         noise_feat = self.noise_encoder(noise_3d, biome_3d)
-        hm_feat = self.heightmap_encoder(heightmap)
         parent_feat = self.parent_encoder(parent_blocks)
         y_feat = self.y_encoder(y_position)
 
-        x = torch.cat([noise_feat, hm_feat, parent_feat, y_feat], dim=1)
+        x = torch.cat([noise_feat, parent_feat, y_feat], dim=1)
         features, bn = self.unet(x)
 
         return {
@@ -637,7 +588,6 @@ class VoxyL2Model(nn.Module):
     Inputs:
         - ``climate_2d    [B, 7, 8, 8]``    — 6 climate + final_density, 2D
         - ``biome_2d      [B, 8, 8]``        — biome IDs at subsampled XZ
-        - ``heightmap     [B, 5, 8, 8]``     — 5-plane heightmap
         - ``y_position    [B]``              — section Y index
         - ``parent_blocks [B, 32, 32, 32]``  — from L3
 
@@ -654,13 +604,11 @@ class VoxyL2Model(nn.Module):
         self.climate_encoder = ClimateEncoder2D(
             cfg.l2_noise_ch, cfg, out_channels=cfg.climate_encoder_out,
         )
-        self.heightmap_encoder = HeightmapEncoder2D(cfg.height_channels, out_channels=8)
         self.parent_encoder = ParentEncoder(cfg.block_vocab_size, cfg.parent_embed_dim)
         self.y_encoder = YPositionEncoder(cfg.y_vocab_size, cfg.y_embed_dim)
 
         in_channels = (
             cfg.climate_encoder_out
-            + 8
             + cfg.parent_embed_dim
             + cfg.y_embed_dim
         )
@@ -672,16 +620,14 @@ class VoxyL2Model(nn.Module):
         self,
         climate_2d: torch.Tensor,
         biome_2d: torch.Tensor,
-        heightmap: torch.Tensor,
         y_position: torch.Tensor,
         parent_blocks: torch.Tensor,
     ) -> Dict[str, torch.Tensor]:
         climate_feat = self.climate_encoder(climate_2d, biome_2d)
-        hm_feat = self.heightmap_encoder(heightmap)
         parent_feat = self.parent_encoder(parent_blocks)
         y_feat = self.y_encoder(y_position)
 
-        x = torch.cat([climate_feat, hm_feat, parent_feat, y_feat], dim=1)
+        x = torch.cat([climate_feat, parent_feat, y_feat], dim=1)
         features, bn = self.unet(x)
 
         return {
@@ -708,7 +654,6 @@ class VoxyL3Model(nn.Module):
     Inputs:
         - ``climate_2d    [B, 6, 8, 8]``    — 6 climate channels, 2D
         - ``biome_2d      [B, 8, 8]``        — biome IDs at subsampled XZ
-        - ``heightmap     [B, 5, 8, 8]``     — 5-plane heightmap
         - ``y_position    [B]``              — section Y index
         - ``parent_blocks [B, 32, 32, 32]``  — from L4
 
@@ -725,13 +670,11 @@ class VoxyL3Model(nn.Module):
         self.climate_encoder = ClimateEncoder2D(
             cfg.l3_noise_ch, cfg, out_channels=cfg.climate_encoder_out,
         )
-        self.heightmap_encoder = HeightmapEncoder2D(cfg.height_channels, out_channels=8)
         self.parent_encoder = ParentEncoder(cfg.block_vocab_size, cfg.parent_embed_dim)
         self.y_encoder = YPositionEncoder(cfg.y_vocab_size, cfg.y_embed_dim)
 
         in_channels = (
             cfg.climate_encoder_out
-            + 8
             + cfg.parent_embed_dim
             + cfg.y_embed_dim
         )
@@ -743,16 +686,14 @@ class VoxyL3Model(nn.Module):
         self,
         climate_2d: torch.Tensor,
         biome_2d: torch.Tensor,
-        heightmap: torch.Tensor,
         y_position: torch.Tensor,
         parent_blocks: torch.Tensor,
     ) -> Dict[str, torch.Tensor]:
         climate_feat = self.climate_encoder(climate_2d, biome_2d)
-        hm_feat = self.heightmap_encoder(heightmap)
         parent_feat = self.parent_encoder(parent_blocks)
         y_feat = self.y_encoder(y_position)
 
-        x = torch.cat([climate_feat, hm_feat, parent_feat, y_feat], dim=1)
+        x = torch.cat([climate_feat, parent_feat, y_feat], dim=1)
         features, bn = self.unet(x)
 
         return {
@@ -774,16 +715,16 @@ class VoxyL4Model(nn.Module):
     (384 blocks = 24 voxels) does not fill the full 32-voxel section.
 
     Feature selection analysis determined that at L4 scale:
-    - Only 5 climate channels matter (drop depth — redundant with
-      heightmap + y_position at 16-block resolution).
+    - 6 climate channels matter (all 6: temp, veg, cont, eros, depth, ridges).
+      Depth was restored after heightmap removal — it carries 20% unique
+      variance about surface depth not captured by other channels.
     - All channels are 2D, subsampled to 8×8.
 
-    This reduces the noise input from 15,728,640 floats to 320 (49,152×).
+    This reduces the noise input from 15,728,640 floats to 384 (40,960×).
 
     Inputs:
-        - ``climate_2d [B, 5, 8, 8]``  — 5 climate channels, 2D
+        - ``climate_2d [B, 6, 8, 8]``  — 6 climate channels, 2D
         - ``biome_2d   [B, 8, 8]``      — biome IDs at subsampled XZ
-        - ``heightmap  [B, 5, 8, 8]``   — 5-plane heightmap
         - ``y_position [B]``            — section Y index
 
     Outputs:
@@ -799,13 +740,11 @@ class VoxyL4Model(nn.Module):
         self.climate_encoder = ClimateEncoder2D(
             cfg.l4_noise_ch, cfg, out_channels=cfg.climate_encoder_out,
         )
-        self.heightmap_encoder = HeightmapEncoder2D(cfg.height_channels, out_channels=8)
         self.y_encoder = YPositionEncoder(cfg.y_vocab_size, cfg.y_embed_dim)
 
         # No parent encoder — L4 is root
         in_channels = (
             cfg.climate_encoder_out
-            + 8
             + cfg.y_embed_dim
         )
         self.unet = UNet3D32(in_channels, cfg.l4_channels, cfg.l4_bottleneck_extra)
@@ -816,14 +755,12 @@ class VoxyL4Model(nn.Module):
         self,
         climate_2d: torch.Tensor,
         biome_2d: torch.Tensor,
-        heightmap: torch.Tensor,
         y_position: torch.Tensor,
     ) -> Dict[str, torch.Tensor]:
         climate_feat = self.climate_encoder(climate_2d, biome_2d)
-        hm_feat = self.heightmap_encoder(heightmap)
         y_feat = self.y_encoder(y_position)
 
-        x = torch.cat([climate_feat, hm_feat, y_feat], dim=1)
+        x = torch.cat([climate_feat, y_feat], dim=1)
         features, bn = self.unet(x)
 
         # Trim Y to 24 — MC world height at 16m/voxel
@@ -889,14 +826,6 @@ BIOME_SHAPES = {
     4: (8, 8),        # 2D: subsampled XZ
 }
 
-HEIGHTMAP_SHAPES = {
-    0: (5, 8, 8),
-    1: (5, 16, 16),
-    2: (5, 8, 8),     # subsampled to match climate grid
-    3: (5, 8, 8),
-    4: (5, 8, 8),
-}
-
 
 __all__ = [
     "VoxyModelConfig",
@@ -907,7 +836,6 @@ __all__ = [
     "VoxyL4Model",
     "NoiseEncoder3D",
     "ClimateEncoder2D",
-    "HeightmapEncoder2D",
     "UNet3D32",
     "OccupancyHead",
     "ParentEncoder",
@@ -916,7 +844,6 @@ __all__ = [
     "LEVEL_MODEL_CLASSES",
     "NOISE_SHAPES",
     "BIOME_SHAPES",
-    "HEIGHTMAP_SHAPES",
     "L2_NOISE_CHANNELS",
     "L3_NOISE_CHANNELS",
     "L4_NOISE_CHANNELS",

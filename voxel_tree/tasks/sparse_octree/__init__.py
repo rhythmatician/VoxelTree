@@ -13,7 +13,6 @@ from .sparse_octree_targets import (
 )
 from .voxy_models import (
     BIOME_SHAPES,
-    HEIGHTMAP_SHAPES,
     LEVEL_MODEL_CLASSES,
     NOISE_SHAPES,
     VoxyL0Model,
@@ -43,5 +42,4 @@ __all__ = [
     "LEVEL_MODEL_CLASSES",
     "NOISE_SHAPES",
     "BIOME_SHAPES",
-    "HEIGHTMAP_SHAPES",
 ]
