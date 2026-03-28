@@ -63,8 +63,8 @@ import torch.nn.functional as F
 
 # Channel indices kept at each level (RouterField ordinals)
 L2_NOISE_CHANNELS: List[int] = [0, 1, 2, 3, 4, 5, 7]  # 6 climate + final_density
-L3_NOISE_CHANNELS: List[int] = [0, 1, 2, 3, 4, 5]      # 6 climate
-L4_NOISE_CHANNELS: List[int] = [0, 1, 2, 3, 4, 5]       # 6 climate (all including depth)
+L3_NOISE_CHANNELS: List[int] = [0, 1, 2, 3, 4, 5]  # 6 climate
+L4_NOISE_CHANNELS: List[int] = [0, 1, 2, 3, 4, 5]  # 6 climate (all including depth)
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -107,9 +107,9 @@ class VoxyModelConfig:
     l4_channels: Tuple[int, int, int] = (24, 48, 96)
 
     # Feature-selected noise channel counts per level
-    l2_noise_ch: int = 7   # 6 climate + final_density
-    l3_noise_ch: int = 6   # 6 climate
-    l4_noise_ch: int = 6   # 6 climate (all including depth)
+    l2_noise_ch: int = 7  # 6 climate + final_density
+    l3_noise_ch: int = 6  # 6 climate
+    l4_noise_ch: int = 6  # 6 climate (all including depth)
 
     # Bottleneck extra depth (extra DoubleConv3d blocks at 8³)
     l0_bottleneck_extra: int = 1
@@ -130,8 +130,7 @@ class VoxyModelConfig:
 class Conv3dBlock(nn.Module):
     """Conv3d → BatchNorm → ReLU."""
 
-    def __init__(self, in_ch: int, out_ch: int, kernel_size: int = 3,
-                 padding: int = 1) -> None:
+    def __init__(self, in_ch: int, out_ch: int, kernel_size: int = 3, padding: int = 1) -> None:
         super().__init__()
         self.conv = nn.Conv3d(in_ch, out_ch, kernel_size, padding=padding)
         self.bn = nn.BatchNorm3d(out_ch)
@@ -183,6 +182,7 @@ class NoiseEncoder3D(nn.Module):
 
         # Surface-rule prior (Phase 4): biome → surface type → embedding
         from .biome_priors import NUM_SURFACE_TYPES, biome_to_surface_type_table
+
         self.register_buffer(
             "_biome_to_surface_type",
             biome_to_surface_type_table(cfg.biome_vocab_size),
@@ -260,6 +260,7 @@ class ClimateEncoder2D(nn.Module):
 
         # Surface-rule prior (Phase 4)
         from .biome_priors import NUM_SURFACE_TYPES, biome_to_surface_type_table
+
         self.register_buffer(
             "_biome_to_surface_type",
             biome_to_surface_type_table(cfg.biome_vocab_size),
@@ -398,9 +399,9 @@ class OccupancyHead(nn.Module):
         B, C = bottleneck.shape[:2]
         # Split: [B, C, 2, 4, 2, 4, 2, 4] — (Yh, Yl, Zh, Zl, Xh, Xl)
         x = bottleneck.reshape(B, C, 2, 4, 2, 4, 2, 4)
-        x = x.mean(dim=(3, 5, 7))          # pool local → [B, C, 2, 2, 2]
+        x = x.mean(dim=(3, 5, 7))  # pool local → [B, C, 2, 2, 2]
         x = x.reshape(B, C, 8).permute(0, 2, 1)  # [B, 8, C]
-        return self.mlp(x).squeeze(-1)      # [B, 8]
+        return self.mlp(x).squeeze(-1)  # [B, 8]
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -424,8 +425,8 @@ class ParentEncoder(nn.Module):
 
     def forward(self, parent_blocks: torch.Tensor) -> torch.Tensor:
         ids = parent_blocks.long().clamp(0, self.embedding.num_embeddings - 1)
-        emb = self.embedding(ids)                 # [B, 32, 32, 32, E]
-        return emb.permute(0, 4, 1, 2, 3)        # [B, E, 32, 32, 32]
+        emb = self.embedding(ids)  # [B, 32, 32, 32, E]
+        return emb.permute(0, 4, 1, 2, 3)  # [B, E, 32, 32, 32]
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -477,9 +478,7 @@ class VoxyL0Model(nn.Module):
 
         # U-Net input: noise_enc + parent_enc + y_enc
         in_channels = (
-            cfg.noise_encoder_out      # 32
-            + cfg.parent_embed_dim     # 16
-            + cfg.y_embed_dim          # 8
+            cfg.noise_encoder_out + cfg.parent_embed_dim + cfg.y_embed_dim  # 32  # 16  # 8
         )
         self.unet = UNet3D32(in_channels, cfg.l0_channels, cfg.l0_bottleneck_extra)
         self.block_head = nn.Conv3d(c0, cfg.block_vocab_size, kernel_size=1)
@@ -502,9 +501,9 @@ class VoxyL0Model(nn.Module):
         Returns:
             ``{'block_logits': [B, V, 32, 32, 32]}``
         """
-        noise_feat = self.noise_encoder(noise_3d, biome_3d)   # [B, 32, 32, 32, 32]
-        parent_feat = self.parent_encoder(parent_blocks)       # [B, 16, 32, 32, 32]
-        y_feat = self.y_encoder(y_position)                    # [B, 8, 32, 32, 32]
+        noise_feat = self.noise_encoder(noise_3d, biome_3d)  # [B, 32, 32, 32, 32]
+        parent_feat = self.parent_encoder(parent_blocks)  # [B, 16, 32, 32, 32]
+        y_feat = self.y_encoder(y_position)  # [B, 8, 32, 32, 32]
 
         x = torch.cat([noise_feat, parent_feat, y_feat], dim=1)
         features, _bn = self.unet(x)
@@ -540,11 +539,7 @@ class VoxyL1Model(nn.Module):
         self.parent_encoder = ParentEncoder(cfg.block_vocab_size, cfg.parent_embed_dim)
         self.y_encoder = YPositionEncoder(cfg.y_vocab_size, cfg.y_embed_dim)
 
-        in_channels = (
-            cfg.noise_encoder_out
-            + cfg.parent_embed_dim
-            + cfg.y_embed_dim
-        )
+        in_channels = cfg.noise_encoder_out + cfg.parent_embed_dim + cfg.y_embed_dim
         self.unet = UNet3D32(in_channels, cfg.l1_channels, cfg.l1_bottleneck_extra)
         self.block_head = nn.Conv3d(c0, cfg.block_vocab_size, kernel_size=1)
         self.occ_head = OccupancyHead(c2)
@@ -602,16 +597,14 @@ class VoxyL2Model(nn.Module):
         c0, c1, c2 = cfg.l2_channels
 
         self.climate_encoder = ClimateEncoder2D(
-            cfg.l2_noise_ch, cfg, out_channels=cfg.climate_encoder_out,
+            cfg.l2_noise_ch,
+            cfg,
+            out_channels=cfg.climate_encoder_out,
         )
         self.parent_encoder = ParentEncoder(cfg.block_vocab_size, cfg.parent_embed_dim)
         self.y_encoder = YPositionEncoder(cfg.y_vocab_size, cfg.y_embed_dim)
 
-        in_channels = (
-            cfg.climate_encoder_out
-            + cfg.parent_embed_dim
-            + cfg.y_embed_dim
-        )
+        in_channels = cfg.climate_encoder_out + cfg.parent_embed_dim + cfg.y_embed_dim
         self.unet = UNet3D32(in_channels, cfg.l2_channels, cfg.l2_bottleneck_extra)
         self.block_head = nn.Conv3d(c0, cfg.block_vocab_size, kernel_size=1)
         self.occ_head = OccupancyHead(c2)
@@ -668,16 +661,14 @@ class VoxyL3Model(nn.Module):
         c0, c1, c2 = cfg.l3_channels
 
         self.climate_encoder = ClimateEncoder2D(
-            cfg.l3_noise_ch, cfg, out_channels=cfg.climate_encoder_out,
+            cfg.l3_noise_ch,
+            cfg,
+            out_channels=cfg.climate_encoder_out,
         )
         self.parent_encoder = ParentEncoder(cfg.block_vocab_size, cfg.parent_embed_dim)
         self.y_encoder = YPositionEncoder(cfg.y_vocab_size, cfg.y_embed_dim)
 
-        in_channels = (
-            cfg.climate_encoder_out
-            + cfg.parent_embed_dim
-            + cfg.y_embed_dim
-        )
+        in_channels = cfg.climate_encoder_out + cfg.parent_embed_dim + cfg.y_embed_dim
         self.unet = UNet3D32(in_channels, cfg.l3_channels, cfg.l3_bottleneck_extra)
         self.block_head = nn.Conv3d(c0, cfg.block_vocab_size, kernel_size=1)
         self.occ_head = OccupancyHead(c2)
@@ -738,15 +729,14 @@ class VoxyL4Model(nn.Module):
         c0, c1, c2 = cfg.l4_channels
 
         self.climate_encoder = ClimateEncoder2D(
-            cfg.l4_noise_ch, cfg, out_channels=cfg.climate_encoder_out,
+            cfg.l4_noise_ch,
+            cfg,
+            out_channels=cfg.climate_encoder_out,
         )
         self.y_encoder = YPositionEncoder(cfg.y_vocab_size, cfg.y_embed_dim)
 
         # No parent encoder — L4 is root
-        in_channels = (
-            cfg.climate_encoder_out
-            + cfg.y_embed_dim
-        )
+        in_channels = cfg.climate_encoder_out + cfg.y_embed_dim
         self.unet = UNet3D32(in_channels, cfg.l4_channels, cfg.l4_bottleneck_extra)
         self.block_head = nn.Conv3d(c0, cfg.block_vocab_size, kernel_size=1)
         self.occ_head = OccupancyHead(c2)
@@ -811,19 +801,19 @@ def create_model(level: int, cfg: Optional[VoxyModelConfig] = None) -> nn.Module
 # L2-L4: 2D feature-selected climate at subsampled 8×8  (see FEATURE_SELECTION_RESULTS.md)
 
 NOISE_SHAPES = {
-    0: (15, 8, 4, 8),    # 3D: full native, 32 blk footprint
+    0: (15, 8, 4, 8),  # 3D: full native, 32 blk footprint
     1: (15, 16, 8, 16),  # 3D: full native, 64 blk footprint
-    2: (7, 8, 8),        # 2D: 6 climate + final_density, subsampled
-    3: (6, 8, 8),        # 2D: 6 climate, subsampled
-    4: (5, 8, 8),        # 2D: 5 climate (no depth), subsampled
+    2: (7, 8, 8),  # 2D: 6 climate + final_density, subsampled
+    3: (6, 8, 8),  # 2D: 6 climate, subsampled
+    4: (6, 8, 8),  # 2D: 6 climate (all including depth), subsampled
 }
 
 BIOME_SHAPES = {
-    0: (8, 4, 8),     # 3D: quart-cell resolution
-    1: (16, 8, 16),   # 3D: quart-cell resolution
-    2: (8, 8),        # 2D: subsampled XZ
-    3: (8, 8),        # 2D: subsampled XZ
-    4: (8, 8),        # 2D: subsampled XZ
+    0: (8, 4, 8),  # 3D: quart-cell resolution
+    1: (16, 8, 16),  # 3D: quart-cell resolution
+    2: (8, 8),  # 2D: subsampled XZ
+    3: (8, 8),  # 2D: subsampled XZ
+    4: (8, 8),  # 2D: subsampled XZ
 }
 
 
