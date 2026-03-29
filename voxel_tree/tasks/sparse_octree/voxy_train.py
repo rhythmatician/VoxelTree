@@ -87,6 +87,36 @@ def _compute_surface_weights(
     return weights
 
 
+def _compute_semantic_weights(
+    labels: torch.Tensor,
+    *,
+    air_id: int = 0,
+    stone_id: int = 1,
+    common_weight: float = 0.35,
+    non_common_weight: float = 2.0,
+) -> torch.Tensor:
+    """Compute per-voxel semantic weights to de-emphasize air/stone.
+
+    Air and stone dominate Minecraft volume statistics and can overwhelm
+    optimization. This weighting promotes learning visually salient classes
+    (grass, leaves, logs, etc.) by upweighting non-air/non-stone voxels.
+
+    Args:
+        labels: ``[B, Y, Z, X]`` int block IDs.
+        air_id: Block ID representing air.
+        stone_id: Block ID representing stone.
+        common_weight: Weight for air/stone voxels.
+        non_common_weight: Weight for all other block IDs.
+
+    Returns:
+        ``[B, Y, Z, X]`` float weight tensor.
+    """
+    is_common = (labels == air_id) | (labels == stone_id)
+    common = torch.full_like(labels, common_weight, dtype=torch.float32)
+    non_common = torch.full_like(labels, non_common_weight, dtype=torch.float32)
+    return torch.where(is_common, common, non_common)
+
+
 def _voxy_level_loss(
     block_logits: torch.Tensor,
     labels: torch.Tensor,
@@ -97,6 +127,10 @@ def _voxy_level_loss(
     label_smoothing: float = 0.02,
     occ_weight: float = 1.0,
     interior_weight: float = 1.0,
+    air_id: int = 0,
+    stone_id: int = 1,
+    common_weight: float = 0.35,
+    non_common_weight: float = 2.0,
 ) -> Dict[str, torch.Tensor]:
     """Compute per-level training loss.
 
@@ -110,6 +144,10 @@ def _voxy_level_loss(
         occ_weight: Weight for occupancy loss.
         interior_weight: Weight for non-visible (buried) blocks.  1.0 = equal
             weighting (default), 0.1 = 10× priority on visible blocks.
+        air_id: Block ID representing air.
+        stone_id: Block ID representing stone.
+        common_weight: Weight for air/stone voxels.
+        non_common_weight: Weight for non-air/non-stone voxels.
 
     Returns:
         Dict with 'loss', 'block_loss', 'occ_loss' (if applicable),
@@ -126,10 +164,26 @@ def _voxy_level_loss(
     logits_flat = block_logits.permute(0, 2, 3, 4, 1).reshape(-1, block_logits.shape[1])
     labels_flat = labels.reshape(-1)
 
-    if interior_weight < 1.0:
-        # Visibility-weighted loss: prioritise air-adjacent blocks
-        surface_w = _compute_surface_weights(labels, interior_weight)
-        weights_flat = surface_w.reshape(-1)
+    use_surface = interior_weight < 1.0
+    use_semantic = common_weight != 1.0 or non_common_weight != 1.0
+
+    if use_surface or use_semantic:
+        weights = torch.ones_like(labels, dtype=torch.float32)
+        if use_surface:
+            # Visibility-weighted loss: prioritise air-adjacent blocks
+            weights = weights * _compute_surface_weights(
+                labels, interior_weight, air_id=air_id
+            )
+        if use_semantic:
+            # Semantic weighting: de-emphasize air/stone, emphasize others
+            weights = weights * _compute_semantic_weights(
+                labels,
+                air_id=air_id,
+                stone_id=stone_id,
+                common_weight=common_weight,
+                non_common_weight=non_common_weight,
+            )
+        weights_flat = weights.reshape(-1)
 
         per_voxel = F.cross_entropy(
             logits_flat,
@@ -140,8 +194,17 @@ def _voxy_level_loss(
         )
         # Zero weight for ignored voxels
         valid_mask = labels_flat != ignore_index
-        block_loss = (per_voxel * weights_flat)[valid_mask].mean()
-        surface_frac = (weights_flat[valid_mask] == 1.0).float().mean().item()
+        valid_weights = weights_flat[valid_mask]
+        block_loss = ((per_voxel * weights_flat)[valid_mask]).sum() / valid_weights.sum().clamp_min(
+            1e-8
+        )
+        if use_surface:
+            surface_flat = _compute_surface_weights(labels, interior_weight, air_id=air_id).reshape(-1)
+            surface_frac = (surface_flat[valid_mask] == 1.0).float().mean().item()
+        else:
+            surface_frac = 1.0
+        non_common_flat = ((labels != air_id) & (labels != stone_id)).reshape(-1)
+        non_common_frac = non_common_flat[valid_mask].float().mean().item()
     else:
         block_loss = F.cross_entropy(
             logits_flat,
@@ -150,10 +213,14 @@ def _voxy_level_loss(
             label_smoothing=label_smoothing,
         )
         surface_frac = 1.0
+        valid_mask = labels_flat != ignore_index
+        non_common_flat = ((labels != air_id) & (labels != stone_id)).reshape(-1)
+        non_common_frac = non_common_flat[valid_mask].float().mean().item()
 
     result: Dict[str, torch.Tensor] = {
         "block_loss": block_loss,
         "surface_frac": torch.tensor(surface_frac),
+        "non_common_frac": torch.tensor(non_common_frac),
     }
 
     # ── Occupancy loss ────────────────────────────────────────────
@@ -216,6 +283,8 @@ def _compute_block_accuracy(
     block_logits: torch.Tensor,
     labels: torch.Tensor,
     ignore_index: int = -1,
+    air_id: int = 0,
+    stone_id: int = 1,
 ) -> Dict[str, float]:
     """Compute block-type prediction accuracy."""
     preds = block_logits.argmax(dim=1)  # [B, Y, Z, X]
@@ -226,9 +295,21 @@ def _compute_block_accuracy(
     valid = labels != ignore_index
     n_valid = valid.sum().item()
     if n_valid == 0:
-        return {"block_acc": 0.0, "n_valid": 0}
+        return {"block_acc": 0.0, "n_valid": 0, "non_common_acc": 0.0, "n_non_common": 0}
     correct = ((preds == labels) & valid).sum().item()
-    return {"block_acc": correct / n_valid, "n_valid": n_valid}
+    non_common = valid & (labels != air_id) & (labels != stone_id)
+    n_non_common = non_common.sum().item()
+    if n_non_common > 0:
+        non_common_correct = ((preds == labels) & non_common).sum().item()
+        non_common_acc = non_common_correct / n_non_common
+    else:
+        non_common_acc = 0.0
+    return {
+        "block_acc": correct / n_valid,
+        "n_valid": n_valid,
+        "non_common_acc": non_common_acc,
+        "n_non_common": n_non_common,
+    }
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -254,6 +335,10 @@ def train_voxy_level(
     channels_last: bool = True,
     cache_dataset: bool = True,
     interior_weight: float = 0.1,
+    air_id: int = 0,
+    stone_id: int = 1,
+    common_weight: float = 0.35,
+    non_common_weight: float = 2.0,
     progress_callback: Optional[Callable[[int, int, Dict[str, float]], None]] = None,
 ) -> Dict[str, Any]:
     """Train a single Voxy-level model.
@@ -279,6 +364,10 @@ def train_voxy_level(
             per-batch SQLite I/O overhead (~40% faster).  Default True.
         interior_weight: Weight for buried (non-visible) blocks.  0.1 means
             visible blocks get 10× priority.  Default 0.1.
+        air_id: Block ID representing air.
+        stone_id: Block ID representing stone.
+        common_weight: Weight for air/stone voxels.
+        non_common_weight: Weight for non-air/non-stone voxels.
         progress_callback: Called each epoch with (epoch, total, metrics).
 
     Returns:
@@ -387,8 +476,11 @@ def train_voxy_level(
         total_block_loss = 0.0
         total_occ_loss = 0.0
         total_surface_frac = 0.0
+        total_non_common_frac = 0.0
         total_acc = 0.0
+        total_non_common_acc = 0.0
         total_valid = 0
+        total_non_common = 0
         total_batches = 0
         epoch_t0 = time.monotonic()
 
@@ -427,6 +519,10 @@ def train_voxy_level(
                 label_smoothing=label_smoothing,
                 occ_weight=occ_weight,
                 interior_weight=interior_weight,
+                air_id=air_id,
+                stone_id=stone_id,
+                common_weight=common_weight,
+                non_common_weight=non_common_weight,
             )
 
             loss = losses["loss"]
@@ -438,13 +534,18 @@ def train_voxy_level(
             total_block_loss += losses["block_loss"].item()
             total_occ_loss += losses["occ_loss"].item()
             total_surface_frac += losses["surface_frac"].item()
+            total_non_common_frac += losses["non_common_frac"].item()
             total_batches += 1
 
             # Accuracy (no grad needed)
             with torch.no_grad():
-                acc = _compute_block_accuracy(preds["block_logits"], labels32)
+                acc = _compute_block_accuracy(
+                    preds["block_logits"], labels32, air_id=air_id, stone_id=stone_id
+                )
                 total_acc += acc["block_acc"] * acc["n_valid"]
                 total_valid += acc["n_valid"]
+                total_non_common_acc += acc["non_common_acc"] * acc["n_non_common"]
+                total_non_common += acc["n_non_common"]
 
             # Progress logging
             if total_batches % _log_interval == 0 or total_batches == n_batches:
@@ -470,6 +571,8 @@ def train_voxy_level(
         avg_occ = total_occ_loss / max(total_batches, 1)
         avg_surface = total_surface_frac / max(total_batches, 1)
         avg_acc = total_acc / max(total_valid, 1)
+        avg_non_common_acc = total_non_common_acc / max(total_non_common, 1)
+        avg_non_common_frac = total_non_common_frac / max(total_batches, 1)
 
         row = {
             "epoch": float(epoch),
@@ -477,13 +580,16 @@ def train_voxy_level(
             "block_loss": avg_block,
             "occ_loss": avg_occ,
             "block_acc": avg_acc,
+            "non_common_acc": avg_non_common_acc,
+            "non_common_frac": avg_non_common_frac,
             "surface_frac": avg_surface,
         }
         history.append(row)
         sfrac_str = f" surface={avg_surface:.1%}" if interior_weight < 1.0 else ""
+        nc_str = f" non_common_acc={avg_non_common_acc:.3f} non_common_frac={avg_non_common_frac:.1%}"
         print(
             f"  [L{level}] E{epoch}: loss={avg_loss:.4f} block={avg_block:.4f} "
-            f"occ={avg_occ:.4f} acc={avg_acc:.3f}{sfrac_str}"
+            f"occ={avg_occ:.4f} acc={avg_acc:.3f}{nc_str}{sfrac_str}"
         )
 
         if avg_loss < best_loss:
@@ -557,6 +663,20 @@ def main() -> None:
         help="Loss weight for buried (non-visible) blocks. 0.1 = 10x priority on "
         "air-adjacent blocks. 1.0 = equal weighting (default: 0.1)",
     )
+    parser.add_argument("--air-id", type=int, default=0, help="Block ID used for air")
+    parser.add_argument("--stone-id", type=int, default=1, help="Block ID used for stone")
+    parser.add_argument(
+        "--common-weight",
+        type=float,
+        default=0.35,
+        help="Loss weight for common classes (air/stone)",
+    )
+    parser.add_argument(
+        "--non-common-weight",
+        type=float,
+        default=2.0,
+        help="Loss weight for all non-air/non-stone classes",
+    )
     args = parser.parse_args()
 
     out = args.out or Path(f"checkpoints/voxy_L{args.level}.pt")
@@ -578,6 +698,10 @@ def main() -> None:
         channels_last=not args.no_channels_last,
         cache_dataset=not args.no_cache,
         interior_weight=args.interior_weight,
+        air_id=args.air_id,
+        stone_id=args.stone_id,
+        common_weight=args.common_weight,
+        non_common_weight=args.non_common_weight,
     )
 
 
