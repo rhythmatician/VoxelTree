@@ -23,7 +23,7 @@ import json
 import logging
 import subprocess
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Tuple
 
 import numpy as np
 import torch
@@ -156,11 +156,11 @@ class VoxyL0Adapter(nn.Module):
 
 
 class VoxyL1Adapter(nn.Module):
-    """ONNX adapter for L1 (3D noise, with occupancy).
+    """ONNX adapter for L1 (3D noise).
 
     Inputs:  noise_3d[B,15,16,8,16], biome_3d[B,16,8,16],
              y_position[B], parent_blocks[B,32,32,32]
-    Outputs: block_logits[B,V,32,32,32], occ_logits[B,8]
+    Outputs: block_logits[B,V,32,32,32]
     """
 
     def __init__(self, model: VoxyL1Model) -> None:
@@ -173,17 +173,17 @@ class VoxyL1Adapter(nn.Module):
         biome_3d: torch.Tensor,
         y_position: torch.Tensor,
         parent_blocks: torch.Tensor,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+    ) -> torch.Tensor:
         out = self.model(noise_3d, biome_3d, y_position, parent_blocks)
-        return out["block_logits"], out["occ_logits"]
+        return out["block_logits"]
 
 
 class VoxyL2Adapter(nn.Module):
-    """ONNX adapter for L2 (2D climate, 7ch, with occupancy).
+    """ONNX adapter for L2 (2D climate, 7ch).
 
     Inputs:  climate_2d[B,7,8,8], biome_2d[B,8,8],
              y_position[B], parent_blocks[B,32,32,32]
-    Outputs: block_logits[B,V,32,32,32], occ_logits[B,8]
+    Outputs: block_logits[B,V,32,32,32]
     """
 
     def __init__(self, model: VoxyL2Model) -> None:
@@ -196,17 +196,17 @@ class VoxyL2Adapter(nn.Module):
         biome_2d: torch.Tensor,
         y_position: torch.Tensor,
         parent_blocks: torch.Tensor,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+    ) -> torch.Tensor:
         out = self.model(climate_2d, biome_2d, y_position, parent_blocks)
-        return out["block_logits"], out["occ_logits"]
+        return out["block_logits"]
 
 
 class VoxyL3Adapter(nn.Module):
-    """ONNX adapter for L3 (2D climate, 6ch, with occupancy).
+    """ONNX adapter for L3 (2D climate, 6ch).
 
     Inputs:  climate_2d[B,6,8,8], biome_2d[B,8,8],
              y_position[B], parent_blocks[B,32,32,32]
-    Outputs: block_logits[B,V,32,32,32], occ_logits[B,8]
+    Outputs: block_logits[B,V,32,32,32]
     """
 
     def __init__(self, model: VoxyL3Model) -> None:
@@ -219,16 +219,16 @@ class VoxyL3Adapter(nn.Module):
         biome_2d: torch.Tensor,
         y_position: torch.Tensor,
         parent_blocks: torch.Tensor,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+    ) -> torch.Tensor:
         out = self.model(climate_2d, biome_2d, y_position, parent_blocks)
-        return out["block_logits"], out["occ_logits"]
+        return out["block_logits"]
 
 
 class VoxyL4Adapter(nn.Module):
     """ONNX adapter for L4 (root level, 2D climate, 6ch, no parent).
 
     Inputs:  climate_2d[B,6,8,8], biome_2d[B,8,8], y_position[B]
-    Outputs: block_logits[B,V,24,32,32], occ_logits[B,8]
+    Outputs: block_logits[B,V,24,32,32]
     """
 
     def __init__(self, model: VoxyL4Model) -> None:
@@ -240,9 +240,9 @@ class VoxyL4Adapter(nn.Module):
         climate_2d: torch.Tensor,
         biome_2d: torch.Tensor,
         y_position: torch.Tensor,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+    ) -> torch.Tensor:
         out = self.model(climate_2d, biome_2d, y_position)
-        return out["block_logits"], out["occ_logits"]
+        return out["block_logits"]
 
 
 ADAPTER_CLASSES = {
@@ -339,8 +339,7 @@ def export_level(
     dummy, input_names, input_dtypes = _make_dummy_inputs(level, cfg)
 
     # Determine output names
-    has_occ = level > 0
-    output_names = ["block_logits", "occ_logits"] if has_occ else ["block_logits"]
+    output_names = ["block_logits"]
 
     # Dynamic batch axes
     dynamic_axes: Dict[str, Dict[int, str]] = {}
@@ -367,13 +366,9 @@ def export_level(
 
     # Run adapter to get reference outputs for test vectors and shape discovery
     with torch.no_grad():
-        raw_out = adapter(*dummy)
+        block_logits = adapter(*dummy)
 
-    if has_occ:
-        block_logits, occ_logits = raw_out
-    else:
-        block_logits = raw_out
-        occ_logits = None
+    occ_logits = None
 
     # ── Sidecar config ────────────────────────────────────────────
     V = cfg.block_vocab_size
@@ -400,7 +395,7 @@ def export_level(
         "noise_channels": noise_channels,
         "noise_channel_names": [ROUTER_FIELD_NAMES[i] for i in noise_channels],
         "has_parent": level < 4,
-        "has_occupancy": has_occ,
+        "has_occupancy": False,
         # I/O contract
         "inputs": input_shapes,
         "input_dtypes": input_dtypes,

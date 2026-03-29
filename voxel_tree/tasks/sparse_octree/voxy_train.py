@@ -39,7 +39,6 @@ from .voxy_dataset import (
 )
 from .voxy_models import VoxyModelConfig, create_model
 
-
 # ══════════════════════════════════════════════════════════════════════
 #  Loss
 # ══════════════════════════════════════════════════════════════════════
@@ -255,9 +254,7 @@ def _voxy_level_loss(
         weights = torch.ones_like(labels, dtype=torch.float32)
         if use_surface:
             # Visibility-weighted loss: prioritise air-adjacent blocks
-            weights = weights * _compute_surface_weights(
-                labels, interior_weight, air_id=0
-            )
+            weights = weights * _compute_surface_weights(labels, interior_weight, air_id=0)
         if use_semantic:
             # Semantic weighting: category-aware priorities from class weights
             weights = weights * _compute_semantic_weights(
@@ -552,9 +549,25 @@ def train_voxy_level(
     if resume_from is not None and Path(resume_from).exists():
         ckpt = torch.load(resume_from, map_location=_device, weights_only=False)
         if isinstance(ckpt, dict) and "model_state_dict" in ckpt:
-            model.load_state_dict(ckpt["model_state_dict"])
-            if "optimizer_state_dict" in ckpt:
-                optimizer.load_state_dict(ckpt["optimizer_state_dict"])
+            missing, unexpected = model.load_state_dict(ckpt["model_state_dict"], strict=False)
+            if unexpected:
+                print(
+                    f"[L{level}] Checkpoint: dropped {len(unexpected)} unexpected keys "
+                    f"(e.g. {unexpected[0]})"
+                )
+            if missing:
+                print(
+                    f"[L{level}] Checkpoint: {len(missing)} keys not in checkpoint "
+                    f"(new params will be randomly initialised)"
+                )
+            try:
+                if "optimizer_state_dict" in ckpt:
+                    optimizer.load_state_dict(ckpt["optimizer_state_dict"])
+            except (ValueError, KeyError):
+                print(
+                    f"[L{level}] Optimizer state incompatible with new architecture; "
+                    f"starting fresh optimizer."
+                )
             start_epoch = ckpt.get("epoch", 0) + 1
             best_loss = ckpt.get("best_loss", float("inf"))
             print(f"[L{level}] Resumed from epoch {start_epoch - 1}, best_loss={best_loss:.4f}")
@@ -568,7 +581,6 @@ def train_voxy_level(
     n_batches = (len(ds) + batch_size - 1) // batch_size
     _log_interval = max(1, min(n_batches // 10, 50))
     has_parent = level < 4
-    has_occ = level > 0
 
     for epoch in range(start_epoch, epochs + 1):
         model.train()
@@ -606,16 +618,10 @@ def train_voxy_level(
                 else:
                     preds = model(noise_3d, biome_3d, y_position)
 
-            # Occupancy targets
-            occ_target = None
-            if has_occ:
-                occ_target = compute_occ_target(labels32)
-
+            # Occupancy loss is removed from this architecture.
             losses = _voxy_level_loss(
                 preds["block_logits"],
                 labels32,
-                occ_logits=preds.get("occ_logits"),
-                occ_target=occ_target,
                 label_smoothing=label_smoothing,
                 occ_weight=occ_weight,
                 interior_weight=interior_weight,
@@ -818,5 +824,6 @@ def main() -> None:
 
 if __name__ == "__main__":
     import logging
+
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     main()

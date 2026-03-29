@@ -49,7 +49,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-
 # ══════════════════════════════════════════════════════════════════════
 #  Feature selection constants (from feature_selection_analysis.py)
 # ══════════════════════════════════════════════════════════════════════
@@ -378,32 +377,6 @@ class UNet3D32(nn.Module):
 # ══════════════════════════════════════════════════════════════════════
 
 
-class OccupancyHead(nn.Module):
-    """Spatial octant pooling → shared MLP → 8 child-octant logits.
-
-    Splits the 8³ bottleneck into 2×2×2 octants (4³ sub-volumes each),
-    pools each independently, then a shared MLP predicts occupancy.
-    Bit convention: ``bit0=X, bit1=Z, bit2=Y`` (Voxy standard).
-    """
-
-    def __init__(self, in_channels: int) -> None:
-        super().__init__()
-        self.mlp = nn.Sequential(
-            nn.Linear(in_channels, 32),
-            nn.ReLU(inplace=True),
-            nn.Linear(32, 1),
-        )
-
-    def forward(self, bottleneck: torch.Tensor) -> torch.Tensor:
-        """``[B, C, 8, 8, 8]`` → ``[B, 8]``."""
-        B, C = bottleneck.shape[:2]
-        # Split: [B, C, 2, 4, 2, 4, 2, 4] — (Yh, Yl, Zh, Zl, Xh, Xl)
-        x = bottleneck.reshape(B, C, 2, 4, 2, 4, 2, 4)
-        x = x.mean(dim=(3, 5, 7))  # pool local → [B, C, 2, 2, 2]
-        x = x.reshape(B, C, 8).permute(0, 2, 1)  # [B, 8, C]
-        return self.mlp(x).squeeze(-1)  # [B, 8]
-
-
 # ══════════════════════════════════════════════════════════════════════
 #  Parent context encoder
 # ══════════════════════════════════════════════════════════════════════
@@ -512,7 +485,7 @@ class VoxyL0Model(nn.Module):
 
 
 # ══════════════════════════════════════════════════════════════════════
-#  VoxyL1Model — with occupancy head
+#  VoxyL1Model
 # ══════════════════════════════════════════════════════════════════════
 
 
@@ -525,9 +498,8 @@ class VoxyL1Model(nn.Module):
         - ``y_position [B]``
         - ``parent_blocks [B, 32, 32, 32]`` — from L2
 
-    Outputs:
+    Output:
         - ``block_logits [B, V, 32, 32, 32]``
-        - ``occ_logits   [B, 8]``
     """
 
     def __init__(self, cfg: VoxyModelConfig) -> None:
@@ -542,7 +514,6 @@ class VoxyL1Model(nn.Module):
         in_channels = cfg.noise_encoder_out + cfg.parent_embed_dim + cfg.y_embed_dim
         self.unet = UNet3D32(in_channels, cfg.l1_channels, cfg.l1_bottleneck_extra)
         self.block_head = nn.Conv3d(c0, cfg.block_vocab_size, kernel_size=1)
-        self.occ_head = OccupancyHead(c2)
 
     def forward(
         self,
@@ -556,12 +527,9 @@ class VoxyL1Model(nn.Module):
         y_feat = self.y_encoder(y_position)
 
         x = torch.cat([noise_feat, parent_feat, y_feat], dim=1)
-        features, bn = self.unet(x)
+        features, _ = self.unet(x)
 
-        return {
-            "block_logits": self.block_head(features),
-            "occ_logits": self.occ_head(bn),
-        }
+        return {"block_logits": self.block_head(features)}
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -586,9 +554,8 @@ class VoxyL2Model(nn.Module):
         - ``y_position    [B]``              — section Y index
         - ``parent_blocks [B, 32, 32, 32]``  — from L3
 
-    Outputs:
+    Output:
         - ``block_logits [B, V, 32, 32, 32]``
-        - ``occ_logits   [B, 8]``
     """
 
     def __init__(self, cfg: VoxyModelConfig) -> None:
@@ -607,7 +574,6 @@ class VoxyL2Model(nn.Module):
         in_channels = cfg.climate_encoder_out + cfg.parent_embed_dim + cfg.y_embed_dim
         self.unet = UNet3D32(in_channels, cfg.l2_channels, cfg.l2_bottleneck_extra)
         self.block_head = nn.Conv3d(c0, cfg.block_vocab_size, kernel_size=1)
-        self.occ_head = OccupancyHead(c2)
 
     def forward(
         self,
@@ -621,12 +587,9 @@ class VoxyL2Model(nn.Module):
         y_feat = self.y_encoder(y_position)
 
         x = torch.cat([climate_feat, parent_feat, y_feat], dim=1)
-        features, bn = self.unet(x)
+        features, _ = self.unet(x)
 
-        return {
-            "block_logits": self.block_head(features),
-            "occ_logits": self.occ_head(bn),
-        }
+        return {"block_logits": self.block_head(features)}
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -650,9 +613,8 @@ class VoxyL3Model(nn.Module):
         - ``y_position    [B]``              — section Y index
         - ``parent_blocks [B, 32, 32, 32]``  — from L4
 
-    Outputs:
+    Output:
         - ``block_logits [B, V, 32, 32, 32]``
-        - ``occ_logits   [B, 8]``
     """
 
     def __init__(self, cfg: VoxyModelConfig) -> None:
@@ -671,7 +633,6 @@ class VoxyL3Model(nn.Module):
         in_channels = cfg.climate_encoder_out + cfg.parent_embed_dim + cfg.y_embed_dim
         self.unet = UNet3D32(in_channels, cfg.l3_channels, cfg.l3_bottleneck_extra)
         self.block_head = nn.Conv3d(c0, cfg.block_vocab_size, kernel_size=1)
-        self.occ_head = OccupancyHead(c2)
 
     def forward(
         self,
@@ -685,12 +646,9 @@ class VoxyL3Model(nn.Module):
         y_feat = self.y_encoder(y_position)
 
         x = torch.cat([climate_feat, parent_feat, y_feat], dim=1)
-        features, bn = self.unet(x)
+        features, _ = self.unet(x)
 
-        return {
-            "block_logits": self.block_head(features),
-            "occ_logits": self.occ_head(bn),
-        }
+        return {"block_logits": self.block_head(features)}
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -718,9 +676,8 @@ class VoxyL4Model(nn.Module):
         - ``biome_2d   [B, 8, 8]``      — biome IDs at subsampled XZ
         - ``y_position [B]``            — section Y index
 
-    Outputs:
+    Output:
         - ``block_logits [B, V, 32, 32, 24]``
-        - ``occ_logits   [B, 8]``
     """
 
     def __init__(self, cfg: VoxyModelConfig) -> None:
@@ -739,7 +696,6 @@ class VoxyL4Model(nn.Module):
         in_channels = cfg.climate_encoder_out + cfg.y_embed_dim
         self.unet = UNet3D32(in_channels, cfg.l4_channels, cfg.l4_bottleneck_extra)
         self.block_head = nn.Conv3d(c0, cfg.block_vocab_size, kernel_size=1)
-        self.occ_head = OccupancyHead(c2)
 
     def forward(
         self,
@@ -751,16 +707,11 @@ class VoxyL4Model(nn.Module):
         y_feat = self.y_encoder(y_position)
 
         x = torch.cat([climate_feat, y_feat], dim=1)
-        features, bn = self.unet(x)
+        features, _ = self.unet(x)
 
         # Trim Y to 24 — MC world height at 16m/voxel
         # Volume convention: [B, V, Y, Z, X] — Y is dim 2
-        block_logits = self.block_head(features)[:, :, :24, :, :]
-
-        return {
-            "block_logits": block_logits,
-            "occ_logits": self.occ_head(bn),
-        }
+        return {"block_logits": self.block_head(features)[:, :, :24, :, :]}
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -827,7 +778,6 @@ __all__ = [
     "NoiseEncoder3D",
     "ClimateEncoder2D",
     "UNet3D32",
-    "OccupancyHead",
     "ParentEncoder",
     "YPositionEncoder",
     "create_model",
