@@ -130,6 +130,57 @@ def test_detailpanel_parses_voxy_epoch_log_and_refreshes_parent():
     assert parent.calls == [("p", step_id)]
 
 
+def test_detailpanel_parses_voxy_epoch_summary_style_log():
+    reg = RunRegistry("p")
+    panel = DetailPanel()
+    panel.load_profile("p", reg)
+
+    from PySide6.QtWidgets import QWidget
+
+    class Parent(QWidget):
+        def __init__(self):
+            super().__init__()
+            self.calls: List[Any] = []
+
+        def on_step_progress(self, profile, step):
+            self.calls.append((profile, step))
+
+    parent = Parent()
+    panel.setParent(parent)
+
+    step_id = "train_voxy_l1"
+    reg.mark_started(step_id)
+    panel._on_log_line(step_id, "  [L1] E7: loss=0.1234 block=0.1000 occ=0.0234 acc=0.95")
+
+    assert reg.get_metadata(step_id, "epochs_completed") == 7
+    assert parent.calls == [("p", step_id)]
+
+
+def test_detailpanel_continue_training_routes_epochs_to_level_node():
+    reg = RunRegistry("p")
+    panel = DetailPanel()
+    panel.load_profile("p", reg)
+
+    from PySide6.QtWidgets import QWidget
+
+    class Parent(QWidget):
+        def __init__(self):
+            super().__init__()
+            self.calls: List[Any] = []
+
+        def on_step_progress(self, profile, step):
+            self.calls.append((profile, step))
+
+    parent = Parent()
+    panel.setParent(parent)
+
+    reg.mark_started("continue_train_voxy")
+    panel._on_log_line("continue_train_voxy", "  [L2] E9/40 [50/100] 50.0%  loss=0.9876  ETA 2m")
+
+    assert reg.get_metadata("train_voxy_l2", "epochs_completed") == 9
+    assert parent.calls == [("p", "train_voxy_l2")]
+
+
 def test_profilerow_refresh_shows_progress():
     # create a dummy registry with a fake progress value
     reg = RunRegistry("x")

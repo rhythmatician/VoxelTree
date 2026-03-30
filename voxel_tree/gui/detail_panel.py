@@ -415,17 +415,39 @@ class DetailPanel(QDockWidget):
         if self._registry and self._registry.get_status(step_id) == "running":
             import re
 
+            target_step_id = step_id
+            # continue_train_voxy emits interleaved logs for multiple levels.
+            # Route each "[Lx]" epoch update to the corresponding node.
+            if step_id == "continue_train_voxy":
+                m_level = re.search(r"\[L(\d+)\]", line)
+                if m_level:
+                    target_step_id = f"train_voxy_l{int(m_level.group(1))}"
+
+            epoch: int | None = None
+
+            # Common verbose form: "Epoch 3/40"
             m = re.search(r"Epoch\s+(\d+)[/\\](\d+)", line)
-            if m is None:
-                # Voxy trainers log compact progress as "E3/40".
-                m = re.search(r"\bE(\d+)[/\\](\d+)\b", line)
-            if m:
+            if m is not None:
                 epoch = int(m.group(1))
-                self._registry.set_metadata(step_id, "epochs_completed", epoch)
+
+            # Compact progress form: "E3/40"
+            if epoch is None:
+                m = re.search(r"\bE(\d+)[/\\](\d+)\b", line)
+                if m is not None:
+                    epoch = int(m.group(1))
+
+            # Epoch-summary form often printed once per epoch: "E3: loss=..."
+            if epoch is None:
+                m = re.search(r"\bE(\d+):", line)
+                if m is not None:
+                    epoch = int(m.group(1))
+
+            if epoch is not None:
+                self._registry.set_metadata(target_step_id, "epochs_completed", epoch)
                 parent = cast(_ParentInterface, self.parent())
                 assert self._profile_name is not None
                 if hasattr(parent, "on_step_progress"):
-                    parent.on_step_progress(self._profile_name, step_id)
+                    parent.on_step_progress(self._profile_name, target_step_id)
                 elif hasattr(parent, "_dashboard"):
                     parent._dashboard.refresh_profile(self._profile_name)
 
