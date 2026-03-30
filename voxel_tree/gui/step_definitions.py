@@ -53,6 +53,9 @@
 
 from __future__ import annotations
 
+import importlib
+import sys
+import types
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
@@ -251,6 +254,29 @@ class ModelTrack:
 def _stub_run(_p: dict[str, Any]) -> None:
     """Placeholder for steps not yet implemented."""
     raise NotImplementedError("step not yet implemented")
+
+
+def _install_legacy_sparse_octree_aliases() -> None:
+    """Install module aliases so pre-rename checkpoints can be unpickled."""
+    pkg_name = "voxel_tree.tasks.sparse_octree"
+    if pkg_name not in sys.modules:
+        pkg = types.ModuleType(pkg_name)
+        pkg.__path__ = []
+        sys.modules[pkg_name] = pkg
+
+    alias_targets = {
+        f"{pkg_name}.voxy_models": "voxel_tree.tasks.voxy.voxy_models",
+        f"{pkg_name}.voxy_train": "voxel_tree.tasks.voxy.voxy_train",
+        f"{pkg_name}.voxy_dataset": "voxel_tree.tasks.voxy.voxy_dataset",
+        f"{pkg_name}.voxy_targets": "voxel_tree.tasks.voxy.voxy_targets",
+    }
+    for old_name, new_name in alias_targets.items():
+        if old_name in sys.modules:
+            continue
+        try:
+            sys.modules[old_name] = importlib.import_module(new_name)
+        except Exception:
+            continue
 
 
 def _wire_prereqs(steps: list[StepDef]) -> None:
@@ -770,7 +796,13 @@ def _continue_train_voxy_run(p: dict[str, Any]) -> None:
             continue
 
         # Determine how many epochs we've already run
-        ckpt = torch.load(str(out_path), map_location="cpu", weights_only=False)
+        try:
+            ckpt = torch.load(str(out_path), map_location="cpu", weights_only=False)
+        except ModuleNotFoundError as exc:
+            if "voxel_tree.tasks.sparse_octree" not in str(exc):
+                raise
+            _install_legacy_sparse_octree_aliases()
+            ckpt = torch.load(str(out_path), map_location="cpu", weights_only=False)
         current_epoch: int = ckpt.get("epoch", 0)
         target_epoch = current_epoch + additional
 

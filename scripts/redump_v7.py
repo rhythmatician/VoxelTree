@@ -189,7 +189,7 @@ def run_v7_dump(radius: int) -> None:
 
 
 def rebuild_npz() -> None:
-    """Run build_sparse_octree_pairs on the v7 dumps."""
+    """Run build_voxy_pairs on the v7 dumps."""
     print(f"\n{'='*60}")
     print("  Rebuilding NPZ from v7 dumps")
     print(f"{'='*60}")
@@ -198,7 +198,7 @@ def rebuild_npz() -> None:
     print(f"  v7 dumps: {n_dumps:,} files in {V7_DUMPS_DIR}")
 
     sys.path.insert(0, str(REPO))
-    from voxel_tree.tasks.voxy.build_sparse_octree_pairs import build_pairs
+    from voxel_tree.tasks.voxy.build_voxy_pairs import build_pairs
 
     # Back up existing NPZ
     if NPZ_OUTPUT.exists():
