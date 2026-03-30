@@ -58,10 +58,16 @@ class ContinueTrainingDialog(QDialog):
     levels to continue and how many additional epochs to run.
     """
 
-    def __init__(self, profile_dict: dict[str, Any], parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        profile_dict: dict[str, Any],
+        preselected_levels: list[int] | None = None,
+        parent: QWidget | None = None,
+    ) -> None:
         super().__init__(parent)
         self.setWindowTitle("Continue Training")
         self.setMinimumWidth(560)
+        self._preselected_levels = preselected_levels
 
         train_cfg = profile_dict.get("train", {})
         self._out_dir = Path(train_cfg.get("output_dir", "."))
@@ -94,7 +100,8 @@ class ContinueTrainingDialog(QDialog):
         )
         self._table.verticalHeader().setVisible(False)
         self._table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
-        self._table.setSelectionMode(QTableWidget.SelectionMode.MultiSelection)
+        # ExtendedSelection: single click selects one row; Ctrl/Shift can add.
+        self._table.setSelectionMode(QTableWidget.SelectionMode.ExtendedSelection)
         self._table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self._table.setAlternatingRowColors(True)
         self._table.setStyleSheet(
@@ -145,8 +152,16 @@ class ContinueTrainingDialog(QDialog):
                 for col in range(5):
                     self._table.item(lv, col).setFlags(Qt.ItemFlag.ItemIsEnabled)
 
-        # Pre-select levels that have checkpoints
-        for lv in self._selectable_levels:
+        # Pre-select requested levels when provided; otherwise select all levels
+        # with checkpoints for backward compatibility.
+        default_rows = self._selectable_levels
+        if self._preselected_levels is not None:
+            requested = [lv for lv in self._preselected_levels if lv in self._selectable_levels]
+            if requested:
+                default_rows = requested
+
+        self._table.clearSelection()
+        for lv in default_rows:
             self._table.selectRow(lv)
 
         self._table.itemSelectionChanged.connect(self._on_selection_changed)

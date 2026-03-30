@@ -289,7 +289,18 @@ class MainWindow(QMainWindow):
         if not profile_dict:
             return
 
-        dlg = ContinueTrainingDialog(profile_dict, parent=self)
+        preselected_levels: list[int] | None = None
+        if step_id.startswith("train_voxy_l"):
+            try:
+                preselected_levels = [int(step_id.removeprefix("train_voxy_l"))]
+            except ValueError:
+                preselected_levels = None
+
+        dlg = ContinueTrainingDialog(
+            profile_dict,
+            preselected_levels=preselected_levels,
+            parent=self,
+        )
         if not dlg.exec():
             return
 
