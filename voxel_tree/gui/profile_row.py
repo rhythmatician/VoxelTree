@@ -213,6 +213,7 @@ class ProfileRow(QWidget):
     # Context menu actions
     run_from_requested: Signal = Signal(str, str)
     cancel_requested: Signal = Signal(str, str)
+    continue_training_requested: Signal = Signal(str, str)  # (profile_name, step_id)
 
     def __init__(
         self,
@@ -319,6 +320,7 @@ class ProfileRow(QWidget):
         # compute enablement
         can_run = False
         is_running = False
+        status = "not_run"
         if self.registry:
             can_run = self.registry.can_run(step_id)
             status = self.registry.get_status(step_id)
@@ -327,6 +329,14 @@ class ProfileRow(QWidget):
         from_act.setEnabled(can_run)
         cancel_act.setEnabled(is_running)
 
+        # "Continue training" — only on the sparse_octree train step when a
+        # checkpoint is likely present (success or failed after at least one run).
+        continue_act = None
+        if step_id == "train_sparse_octree":
+            menu.addSeparator()
+            continue_act = menu.addAction("Continue training...")
+            continue_act.setEnabled(status in ("success", "failed"))
+
         chosen = menu.exec_(global_pos)
         if chosen is run_act and run_act.isEnabled():
             self.node_clicked.emit(self.profile_name, step_id)
@@ -334,6 +344,8 @@ class ProfileRow(QWidget):
             self.run_from_requested.emit(self.profile_name, step_id)
         elif chosen is cancel_act and cancel_act.isEnabled():
             self.cancel_requested.emit(self.profile_name, step_id)
+        elif continue_act is not None and chosen is continue_act:
+            self.continue_training_requested.emit(self.profile_name, step_id)
 
     # ------------------------------------------------------------------
     # Public

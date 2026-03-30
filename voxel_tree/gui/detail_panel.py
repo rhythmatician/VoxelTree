@@ -291,6 +291,23 @@ class DetailPanel(QDockWidget):
         """Public method to run a single step (if prerequisites are met)."""
         self._run_step(step_id)
 
+    def run_step_with_profile(self, step_id: str, profile: dict) -> None:
+        """Run *step_id* using an explicitly provided profile dict.
+
+        Unlike :meth:`run_step`, this bypasses ``_get_profile_dict()`` so
+        callers can inject extra keys (e.g. ``_continue_levels``) without
+        mutating the stored profile.  The step does **not** need to pass the
+        normal ``can_run()`` check — it is launched unconditionally.
+        """
+        if not self._registry:
+            return
+        if step_id in self._running_step_ids():
+            return  # already running
+        step = STEP_BY_ID.get(step_id)
+        if not step:
+            return
+        self._launch_worker(step_id, profile)
+
     def run_from_step(self, step_id: str) -> None:
         """Public wrapper for the internal _run_from method.
 
@@ -430,7 +447,9 @@ class DetailPanel(QDockWidget):
         assert self._registry is not None
         step = STEP_BY_ID.get(step_id)
         training_summary: dict[str, str] | None = None
-        if step and exit_code == 0 and step.phase == "train":
+        if step and exit_code == 0 and (
+            step.phase == "train" or step_id == "continue_train_sparse_octree"
+        ):
             training_summary = summarize_training_run(
                 step,
                 self._step_log_buffers.get(step_id, []),

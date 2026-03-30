@@ -31,7 +31,7 @@ data:
   min_solid: 0.02
 
 train:
-  output_dir: models/phase7_multilevel
+  output_dir: checkpoints
   batch_size: 64
   device: auto
   epochs: 10

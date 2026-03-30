@@ -715,6 +715,7 @@ def train_voxy_level(
         avg_priority_acc = total_priority_acc / max(total_priority, 1)
         avg_priority_frac = total_priority_frac / max(total_batches, 1)
 
+        epoch_elapsed = time.monotonic() - epoch_t0
         row = {
             "epoch": float(epoch),
             "loss": avg_loss,
@@ -724,6 +725,7 @@ def train_voxy_level(
             "important_acc": avg_priority_acc,
             "important_frac": avg_priority_frac,
             "surface_frac": avg_surface,
+            "elapsed_seconds": epoch_elapsed,
         }
 
         if holdout_loader is not None:

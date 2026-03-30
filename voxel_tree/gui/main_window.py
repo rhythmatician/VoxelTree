@@ -23,6 +23,7 @@ from voxel_tree.gui.run_registry import RunRegistry
 from voxel_tree.gui.server_manager import ServerManager
 from voxel_tree.gui.server_status_bar import ServerStatusBar
 from voxel_tree.gui.training_popup import TrainingResultsPopup
+from voxel_tree.gui.continue_training_dialog import ContinueTrainingDialog
 
 # same logic as profile_editor: we want the workspace/project root, not the
 # interior Python package folder.  ``parents[2]`` handles both development and
@@ -82,6 +83,7 @@ class MainWindow(QMainWindow):
         self._dashboard.node_clicked.connect(self._on_node_clicked)
         self._dashboard.node_run_from.connect(self._on_node_run_from)
         self._dashboard.node_cancel.connect(self._on_node_cancel)
+        self._dashboard.continue_training_requested.connect(self._on_continue_training)
         self._server_bar.run_server_session_requested.connect(self._on_run_server_session)
 
         print("[MW.init.7] Setting central widget...", flush=True)
@@ -245,6 +247,31 @@ class MainWindow(QMainWindow):
         self._on_details_clicked(profile_name)
         if hasattr(self, "_detail") and self._detail:
             self._detail.cancel()
+
+    @Slot(str, str)
+    def _on_continue_training(self, profile_name: str, step_id: str) -> None:
+        """Handle 'Continue training...' context-menu action."""
+        profile_dict = self._profiles.get(profile_name)
+        if not profile_dict:
+            return
+
+        dlg = ContinueTrainingDialog(profile_dict, parent=self)
+        if not dlg.exec():
+            return
+
+        levels = dlg.selected_levels()
+        additional = dlg.additional_epochs()
+        if not levels:
+            return
+
+        # Shallow-copy so we don't mutate the stored profile
+        augmented = dict(profile_dict)
+        augmented["_continue_levels"] = levels
+        augmented["_continue_epochs"] = additional
+
+        self._on_details_clicked(profile_name)
+        if hasattr(self, "_detail") and self._detail:
+            self._detail.run_step_with_profile("continue_train_sparse_octree", augmented)
 
     def _queue_append(self, profile_name: str, step_id: str) -> None:
         if step_id not in {"cancel", "run"}:

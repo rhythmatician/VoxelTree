@@ -707,6 +707,94 @@ def _deploy_sparse_octree_run(p: dict[str, Any]) -> None:
     raise NotImplementedError("Per-level deployment is not yet implemented.")
 
 
+def _continue_train_sparse_octree_run(p: dict[str, Any]) -> None:
+    """Continue training one or more Voxy levels from an existing checkpoint.
+
+    Injected parameters (not part of the YAML profile):
+      p["_continue_levels"]  : list[int]  — levels to resume (e.g. [3, 4])
+      p["_continue_epochs"]  : int        — additional epochs to run
+    """
+    import json  # noqa: PLC0415
+    import sqlite3  # noqa: PLC0415
+
+    import torch  # noqa: PLC0415
+
+    from voxel_tree.tasks.sparse_octree.voxy_train import train_voxy_level  # noqa: PLC0415
+    from voxel_tree.utils.progress import report as _report_progress  # noqa: PLC0415
+
+    data = p.get("data", {})
+    train = p.get("train", {})
+
+    # ── Required: training DB ──────────────────────────────────────────────
+    dumps_db_str = data.get("v7_dumps_db")
+    if not dumps_db_str or not Path(dumps_db_str).exists():
+        raise FileNotFoundError(
+            "v7_dumps_db is required for training. Set data.v7_dumps_db in your profile YAML."
+        )
+
+    # ── Optional: holdout DB (same validation as main train step) ─────────
+    holdout_db_str = data.get("holdout_v7_dumps_db")
+    holdout_db_path: Path | None = None
+    if holdout_db_str:
+        holdout_db_path = Path(holdout_db_str)
+        if not holdout_db_path.exists():
+            raise FileNotFoundError(
+                "holdout_v7_dumps_db is configured but missing. "
+                "Build the validation-world DB first or remove holdout_v7_dumps_db."
+            )
+        with sqlite3.connect(str(holdout_db_path)) as conn:
+            has_sections = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='sections'"
+            ).fetchone()
+            has_voxy = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='voxy_sections'"
+            ).fetchone()
+            if not has_sections or not has_voxy:
+                raise RuntimeError(
+                    "holdout_v7_dumps_db must contain sections and voxy_sections tables."
+                )
+
+    # ── Injected parameters ────────────────────────────────────────────────
+    levels: list[int] = p.get("_continue_levels", [])
+    additional: int = int(p.get("_continue_epochs", 5))
+    if not levels:
+        raise ValueError("No levels selected for continuation. _continue_levels is empty.")
+
+    out_dir = Path(train.get("output_dir", "."))
+
+    last_result: dict = {}
+    for level in sorted(levels, reverse=True):  # high → low, same convention as main train
+        out_path = out_dir / f"voxy_L{level}.pt"
+        if not out_path.exists():
+            print(f"[L{level}] No checkpoint at {out_path} — skipping.")
+            continue
+
+        # Determine how many epochs we've already run
+        ckpt = torch.load(str(out_path), map_location="cpu", weights_only=False)
+        current_epoch: int = ckpt.get("epoch", 0)
+        target_epoch = current_epoch + additional
+
+        print(
+            f"[L{level}] Resuming from epoch {current_epoch} → {target_epoch} "
+            f"({additional} additional epochs)"
+        )
+
+        result = train_voxy_level(
+            db_path=Path(dumps_db_str),
+            out_path=out_path,
+            level=level,
+            epochs=target_epoch,
+            batch_size=train.get("batch_size", 16),
+            lr=train.get("lr", 1e-3),
+            device=_resolve_device(train.get("device", "auto")),
+            num_workers=train.get("num_workers", None),
+            holdout_db_path=holdout_db_path,
+            progress_callback=lambda epoch, total, _m: _report_progress(epoch, total),
+        )
+        last_result = result
+        print(f"[STEP_RESULT]{json.dumps(result, sort_keys=True)}")
+
+
 def _import_voxy_run(p: dict[str, Any]) -> None:
     """Import Voxy NPZ ground-truth grids into the dumps SQLite database.
 
@@ -1152,6 +1240,22 @@ _DATA_ACQ_STEPS: list[StepDef] = [
 PIPELINE_STEPS: list[StepDef] = _DATA_ACQ_STEPS + [
     step for track in MODEL_TRACKS for step in track.to_steps()
 ]
+
+# ── Hidden "continue training" step ──────────────────────────────────────────
+# enabled=False → invisible in the visual DAG, but registered in STEP_BY_ID
+# so that step_runner.py can invoke it when the context-menu dialog requests it.
+_CONTINUE_TRAIN_STEP = StepDef(
+    id="continue_train_sparse_octree",
+    label="Cont.",
+    prereqs=[],
+    run_fn=_continue_train_sparse_octree_run,
+    enabled=False,
+    track="sparse_octree",
+    phase="loopback",  # exempt from artifact-graph coverage rules; updates checkpoints in-place
+    produces=frozenset(),
+    consumes=frozenset(),
+)
+PIPELINE_STEPS.append(_CONTINUE_TRAIN_STEP)
 
 # Auto-wire prereqs from the produces/consumes artifact graph.
 _wire_prereqs(PIPELINE_STEPS)
