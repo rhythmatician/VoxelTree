@@ -10,7 +10,7 @@ Usage (CLI)::
 
 Or programmatically::
 
-    from voxel_tree.tasks.sparse_octree.import_voxy_to_db import import_voxy
+    from voxel_tree.tasks.voxy.import_voxy_to_db import import_voxy
     import_voxy(
         dumps_db_path=Path("v7_dumps.db"),
         voxy_dir=Path("data/voxy_octree"),

@@ -9,9 +9,21 @@ dag:
     - id: dumpnoise
     - id: import_voxy # import Voxy NPZ -> voxy_sections table (replaces build_v7_pairs)
     # - id: build_v7_pairs     # legacy — superseded by import_voxy + JoinDataset
-    - id: train_sparse_octree
-    - id: export_sparse_octree
-    - id: deploy_sparse_octree
+    - id: train_voxy_l4
+    - id: train_voxy_l3
+    - id: train_voxy_l2
+    - id: train_voxy_l1
+    - id: train_voxy_l0
+    - id: export_voxy_l4
+    - id: export_voxy_l3
+    - id: export_voxy_l2
+    - id: export_voxy_l1
+    - id: export_voxy_l0
+    - id: deploy_voxy_l4
+    - id: deploy_voxy_l3
+    - id: deploy_voxy_l2
+    - id: deploy_voxy_l1
+    - id: deploy_voxy_l0
 
 world:
   seed: 8675309
@@ -24,8 +36,8 @@ data:
   v7_dumps_db: tools/fabric-server/runtime/v7_dumps.db
   holdout_v7_dumps_db: data/validation/seed_3141592/v7_dumps_seed3141592.db
   v7_dumps_dir: tools/fabric-server/runtime/v7_dumps
-  v7_pairs_npz: noise_training_data/sparse_octree_pairs_v7.npz
-  v7_pairs_db: noise_training_data/sparse_octree_pairs_v7.db
+  v7_pairs_npz: noise_training_data/voxy_pairs_v7.npz
+  v7_pairs_db: noise_training_data/voxy_pairs_v7.db
   val_split: 0.1
   max_sections: null
   min_solid: 0.02
@@ -37,11 +49,11 @@ train:
   epochs: 10
   epochs_l0: 3 # L0 has 165K samples — 3 epochs for first pass
   lr: 0.001
-  sparse_octree_hidden: 72
-  sparse_octree_variant: fast
+  voxy_hidden: 72
+  voxy_variant: fast
   num_classes: 513
   pruning_boost: 4.0
-  # resume_from: models/phase7_multilevel/sparse_octree_model.pt  # disabled: input dim changed (2272->1072)
+  # resume_from: models/phase7_multilevel/voxy_model.pt  # disabled: input dim changed (2272->1072)
 
 export:
   output_dir: production/phase7_multilevel
@@ -54,3 +66,4 @@ rcon:
   port: 25575
   password: voxeltree
   timeout: 3600
+

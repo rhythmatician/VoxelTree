@@ -69,7 +69,7 @@ profile YAML under ``data.v7_dumps_db`` / ``data.v7_dumps_dir``,
 The public API is :func:`build_pairs`, which can also be imported directly
 for use in tests or notebooks::
 
-  from voxel_tree.tasks.sparse_octree.build_sparse_octree_pairs import (
+  from voxel_tree.tasks.voxy.build_voxy_pairs import (
       _DumpSourceSQLite,
       build_pairs,
   )

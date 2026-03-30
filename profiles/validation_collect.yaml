@@ -17,8 +17,8 @@ data:
   noise_dump_dir: data/validation/seed_3141592/20260330_015148/stage1_dumps
   v7_dumps_dir: data/validation/seed_3141592/20260330_013429/sparse_root_dumps
   v7_dumps_db: data/validation/seed_3141592/v7_dumps_seed3141592.db
-  v7_pairs_npz: data/validation/seed_3141592/sparse_octree_pairs_v7_seed3141592.npz
-  v7_pairs_db: data/validation/seed_3141592/sparse_octree_pairs_v7_seed3141592.db
+  v7_pairs_npz: data/validation/seed_3141592/voxy_pairs_v7_seed3141592.npz
+  v7_pairs_db: data/validation/seed_3141592/voxy_pairs_v7_seed3141592.db
 
 world:
   name: validate
@@ -41,3 +41,4 @@ export:
 
 deploy:
   target_dir: ../LODiffusion/run/config/lodiffusion
+

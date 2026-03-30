@@ -17,10 +17,10 @@ Two independent validation checks against real Voxy data:
 
 Usage::
 
-    pytest voxel_tree/tasks/sparse_octree/tests/test_voxy_alignment.py -v
+    pytest voxel_tree/tasks/voxy/tests/test_voxy_alignment.py -v
 
     # Or standalone:
-    python -m voxel_tree.tasks.sparse_octree.tests.test_voxy_alignment
+    python -m voxel_tree.tasks.voxy.tests.test_voxy_alignment
 """
 
 from __future__ import annotations
@@ -37,7 +37,7 @@ from voxel_tree.utils.coords import (
     section_to_world_section,
     world_section_to_block_min,
 )
-from voxel_tree.tasks.sparse_octree.build_sparse_octree_pairs import (
+from voxel_tree.tasks.voxy.build_voxy_pairs import (
     build_voxy_indices,
     extract_section_subcube,
 )

@@ -271,7 +271,7 @@ class MainWindow(QMainWindow):
 
         self._on_details_clicked(profile_name)
         if hasattr(self, "_detail") and self._detail:
-            self._detail.run_step_with_profile("continue_train_sparse_octree", augmented)
+            self._detail.run_step_with_profile("continue_train_voxy", augmented)
 
     def _queue_append(self, profile_name: str, step_id: str) -> None:
         if step_id not in {"cancel", "run"}:

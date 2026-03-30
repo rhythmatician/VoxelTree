@@ -73,7 +73,7 @@ _register(
         description="Density MLP: 6 climate → (preliminary_surface_level, final_density)",
         changelog="6 raw climate fields → 2 density outputs. "
         "Replaced legacy 12-feature terrain-shaper approach.",
-        build_pairs_fn="voxel_tree.tasks.sparse_octree.build_sparse_octree_pairs:main",
+        build_pairs_fn="voxel_tree.tasks.voxy.build_voxy_pairs:main",
         train_fn="voxel_tree.tasks.density.train_density:main",
         export_fn="voxel_tree.tasks.density.export_density:main",
     )
@@ -117,7 +117,7 @@ _register(
         onnx_opset=18,
         description="BiomeClassifier: 6 climate → 54-class biome logits",
         changelog="Initial tracked revision.",
-        build_pairs_fn="voxel_tree.tasks.sparse_octree.build_sparse_octree_pairs:main",
+        build_pairs_fn="voxel_tree.tasks.voxy.build_voxy_pairs:main",
         train_fn="voxel_tree.tasks.biome.train_biome_classifier:main",
         export_fn="voxel_tree.tasks.biome.export_biome:main",
         extra={"num_classes": 54},
@@ -161,7 +161,7 @@ _register(
         onnx_opset=18,
         description="HeightmapPredictor: 96 climate grid → 32 height values",
         changelog="Initial tracked revision.",
-        build_pairs_fn="voxel_tree.tasks.sparse_octree.build_sparse_octree_pairs:main",
+        build_pairs_fn="voxel_tree.tasks.voxy.build_voxy_pairs:main",
         train_fn="voxel_tree.tasks.heightmap.train_heightmap:main",
         export_fn="voxel_tree.tasks.heightmap.export_heightmap:main",
     )
@@ -175,9 +175,9 @@ _register(
 # ── revision 0 (legacy 13ch / 4×2×4 spatial) ─────────────────────────────
 _register(
     ModelContract(
-        model_name="sparse_octree",
+        model_name="voxy",
         revision=0,
-        contract_id="lodiffusion.v6.sparse_octree",
+        contract_id="lodiffusion.v6.voxy",
         inputs=(
             TensorSpec(
                 name="noise_3d",
@@ -206,17 +206,17 @@ _register(
         description="Sparse octree v6: 13ch/4×2×4 → 5-level block hierarchy",
         changelog="Initial tracked revision (retroactive).",
         build_pairs_fn="voxel_tree.tasks.octree.build_pairs:main",
-        train_fn="voxel_tree.tasks.sparse_octree.train:train_sparse_octree",
-        export_fn="voxel_tree.tasks.sparse_octree.export_sparse_octree:export_sparse_octree",
+        train_fn="voxel_tree.tasks.voxy.train:train_voxy",
+        export_fn="voxel_tree.tasks.voxy.export_voxy:export_voxy",
     )
 )
 
 # ── revision 1 (v7: 15ch / 4×4×4 spatial) ────────────────────────────────
 _register(
     ModelContract(
-        model_name="sparse_octree",
+        model_name="voxy",
         revision=1,
-        contract_id="lodiffusion.v7.sparse_octree",
+        contract_id="lodiffusion.v7.voxy",
         inputs=(
             TensorSpec(
                 name="noise_3d",
@@ -263,9 +263,9 @@ _register(
         description="Sparse octree v7: 15ch/4×4×4 → 5-level block hierarchy",
         changelog="Expanded from 13 to 15 RouterField channels. "
         "Spatial Y dimension expanded from 2 to 4.",
-        build_pairs_fn="voxel_tree.tasks.sparse_octree.build_sparse_octree_pairs:main",
-        train_fn="voxel_tree.tasks.sparse_octree.train:train_sparse_octree",
-        export_fn="voxel_tree.tasks.sparse_octree.export_sparse_octree:export_sparse_octree",
+        build_pairs_fn="voxel_tree.tasks.voxy.build_voxy_pairs:main",
+        train_fn="voxel_tree.tasks.voxy.train:train_voxy",
+        export_fn="voxel_tree.tasks.voxy.export_voxy:export_voxy",
     )
 )
 
@@ -275,9 +275,9 @@ _register(
 # extract_octree + build_v7_pairs pipeline actually produces.
 _register(
     ModelContract(
-        model_name="sparse_octree",
+        model_name="voxy",
         revision=2,
-        contract_id="lodiffusion.v7.sparse_octree_v2",
+        contract_id="lodiffusion.v7.voxy_v2",
         inputs=(
             TensorSpec(
                 name="noise_3d",
@@ -323,21 +323,21 @@ _register(
         changelog="Corrected channel count from 15 to 13 (actual DataHarvester output). "
         "Corrected spatial_y from 4 to 2 (actual NPZ shape from build_v7_pairs). "
         "Rev 1 was a speculative spec never matched by real data.",
-        build_pairs_fn="voxel_tree.tasks.sparse_octree.build_sparse_octree_pairs:main",
-        train_fn="voxel_tree.tasks.sparse_octree.train:train_sparse_octree",
-        export_fn="voxel_tree.tasks.sparse_octree.export_sparse_octree:export_sparse_octree",
+        build_pairs_fn="voxel_tree.tasks.voxy.build_voxy_pairs:main",
+        train_fn="voxel_tree.tasks.voxy.train:train_voxy",
+        export_fn="voxel_tree.tasks.voxy.export_voxy:export_voxy",
     )
 )
 
 # ── revision 3 (v7 final: 15 RouterField ch / 4×2×4 spatial) ─────────────
-# Phase 3 migration: build_sparse_octree_pairs now reads all 15 v7 RouterField
+# Phase 3 migration: build_voxy_pairs now reads all 15 v7 RouterField
 # channels from the data-harvester JSON dumps.  This is the canonical
 # production spec matching RouterField.java ordinals 0-14.
 _register(
     ModelContract(
-        model_name="sparse_octree",
+        model_name="voxy",
         revision=3,
-        contract_id="lodiffusion.v7.sparse_octree_v3",
+        contract_id="lodiffusion.v7.voxy_v3",
         inputs=(
             TensorSpec(
                 name="noise_3d",
@@ -382,12 +382,14 @@ _register(
         ),
         onnx_opset=18,
         description="Sparse octree v7: 15 RouterField channels / 4×2×4 spatial → 5-level block hierarchy",
-        changelog="Phase 3: build_sparse_octree_pairs now reads v7 RouterField dumps "
+        changelog="Phase 3: build_voxy_pairs now reads v7 RouterField dumps "
         "(15 channels) instead of legacy cave-noise dumps (13 channels). "
         "Spatial layout remains 4×2×4 (vanilla cellHeight=8). "
         "Backward-compat: legacy 13ch dumps auto-detected and still loadable.",
-        build_pairs_fn="voxel_tree.tasks.sparse_octree.build_sparse_octree_pairs:main",
-        train_fn="voxel_tree.tasks.sparse_octree.voxy_train:train_voxy_level",
-        export_fn="voxel_tree.tasks.sparse_octree.voxy_train:train_voxy_level",  # TODO: add per-level ONNX export
+        build_pairs_fn="voxel_tree.tasks.voxy.build_voxy_pairs:main",
+        train_fn="voxel_tree.tasks.voxy.voxy_train:train_voxy_level",
+        export_fn="voxel_tree.tasks.voxy.voxy_train:train_voxy_level",  # TODO: add per-level ONNX export
     )
 )
+
+

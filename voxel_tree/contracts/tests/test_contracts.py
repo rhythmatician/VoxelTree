@@ -170,7 +170,7 @@ class TestRegistry:
         assert "density" in models
         assert "biome" in models
         assert "heightmap" in models
-        assert "sparse_octree" in models
+        assert "voxy" in models
 
     def test_latest_revision_density(self):
         rev = latest_revision("density")
@@ -183,9 +183,9 @@ class TestRegistry:
     def test_get_contract_specific_revision(self):
         c1 = get_contract("density", revision=1)
         assert c1.revision == 1
-        # sparse_octree has two revisions we can test
-        s0 = get_contract("sparse_octree", revision=0)
-        s1 = get_contract("sparse_octree", revision=1)
+        # voxy has two revisions we can test
+        s0 = get_contract("voxy", revision=0)
+        s1 = get_contract("voxy", revision=1)
         assert s0.revision == 0
         assert s1.revision == 1
         assert s0.fingerprint != s1.fingerprint
@@ -236,9 +236,9 @@ class TestCheckpointValidation:
             validate_checkpoint_contract(ckpt, contract)
 
     def test_newer_revision_rejected(self):
-        # sparse_octree has rev 0 and rev 1; load rev 0 as target
-        contract = get_contract("sparse_octree", revision=0)
-        rev1 = get_contract("sparse_octree", revision=1)
+        # voxy has rev 0 and rev 1; load rev 0 as target
+        contract = get_contract("voxy", revision=0)
+        rev1 = get_contract("voxy", revision=1)
         ckpt = {"contract_meta": rev1.to_checkpoint_meta()}
         with pytest.raises(ContractViolation, match="revision 1"):
             validate_checkpoint_contract(ckpt, contract, strict=False)
@@ -269,35 +269,35 @@ class TestCatalogContracts:
         assert c.inputs[0].shape == ("batch", 96)
         assert c.outputs[0].shape == ("batch", 32)
 
-    def test_sparse_octree_rev0_input(self):
-        c = get_contract("sparse_octree", revision=0)
+    def test_voxy_rev0_input(self):
+        c = get_contract("voxy", revision=0)
         assert c.inputs[0].shape == (1, 13, 4, 2, 4)
 
-    def test_sparse_octree_rev1_input(self):
-        c = get_contract("sparse_octree", revision=1)
+    def test_voxy_rev1_input(self):
+        c = get_contract("voxy", revision=1)
         assert c.inputs[0].shape == (1, 15, 4, 4, 4)
         assert len(c.inputs[0].channels) == 15
 
-    def test_sparse_octree_rev2_shapes(self):
+    def test_voxy_rev2_shapes(self):
         """Revision 2 reflects the actual v7 DataHarvester output: 13ch / 4×2×4."""
-        c = get_contract("sparse_octree", revision=2)
+        c = get_contract("voxy", revision=2)
         assert c.inputs[0].shape == (1, 13, 4, 2, 4)
         assert c.inputs[0].channels is not None
         assert len(c.inputs[0].channels) == 13
         assert c.inputs[0].channels[0] == "offset"
         assert c.inputs[0].channels[-1] == "final_density"
 
-    def test_sparse_octree_rev3_shapes(self):
+    def test_voxy_rev3_shapes(self):
         """Revision 3: v7 RouterField 15ch / 4×2×4 — canonical production spec."""
-        c = get_contract("sparse_octree", revision=3)
+        c = get_contract("voxy", revision=3)
         assert c.inputs[0].shape == (1, 15, 4, 2, 4)
         assert c.inputs[0].channels is not None
         assert len(c.inputs[0].channels) == 15
         assert c.inputs[0].channels[0] == "temperature"
         assert c.inputs[0].channels[-1] == "vein_gap"
 
-    def test_sparse_octree_rev1_has_10_outputs(self):
-        c = get_contract("sparse_octree", revision=1)
+    def test_voxy_rev1_has_10_outputs(self):
+        c = get_contract("voxy", revision=1)
         assert len(c.outputs) == 10  # 5 levels × 2 (split + label)
 
     def test_all_contracts_have_fingerprints(self):
@@ -348,8 +348,8 @@ class TestTrackAlignment:
     def test_stale_track_detected(self, _fake_track):
         from voxel_tree.contracts.registry import check_track_alignment
 
-        # sparse_octree has rev 0, 1, 2, 3; pinning to 0 → stale (latest is 3)
-        tracks = [_fake_track("old_octree", "sparse_octree", 0)]
+        # voxy has rev 0, 1, 2, 3; pinning to 0 → stale (latest is 3)
+        tracks = [_fake_track("old_octree", "voxy", 0)]
         issues = check_track_alignment(tracks)
         assert len(issues) >= 1
         stale_issues = [i for i in issues if i.severity == "stale"]
@@ -410,3 +410,4 @@ class TestTrackAlignment:
         assert errors == [], f"Broken track bindings: {errors}"
         # No stale tracks — all tracks are pinned to current revisions
         assert stale == [], f"Stale tracks (update contract_revision): {stale}"
+

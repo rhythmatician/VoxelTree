@@ -11,7 +11,7 @@
 
 ### Current status (March 2026)
 
-- The active pipeline is now centered around a **sparse-octree model** ("sparse_octree") that replaces the legacy init/refine/leaf octree training strategy.
+- The active pipeline is now centered around a **sparse-octree model** ("voxy") that replaces the legacy init/refine/leaf octree training strategy.
 - The system supports a **GPU "shadow router" compute path** (GLSL + SSBO + Voxy request queue) for fast LOD generation, while retaining the option for CPU ONNX inference.
 - The data pipeline is now: **dumpnoise → NPZ cache → training/distillation → ONNX export → runtime inference**. This flow is implemented between `LODiffusion` and `VoxelTree` via the new `dumpnoise sparse_octree` exporter, Python training scripts, and the ONNX runtime decoder.
 
@@ -967,3 +967,4 @@ Day 3
 | [TRAINING-OVERVIEW.md](TRAINING-OVERVIEW.md) | Progressive octree refinement training loop |
 | [TRAINING-DATA-PIPELINE-PLAN.md](TRAINING-DATA-PIPELINE-PLAN.md) | Server bootstrap + Voxy LOD extraction |
 | [PROJECT-OUTLINE.md](PROJECT-OUTLINE.md) | Full project architecture and dependency matrix |
+

@@ -12,7 +12,7 @@ ModelContract(model_name='density', revision=2, ...)
 >>> latest_revision("density")
 2
 >>> list_models()
-['biome', 'density', 'heightmap', 'sparse_octree']
+['biome', 'density', 'heightmap', 'voxy']
 """
 
 from __future__ import annotations
@@ -374,3 +374,4 @@ def _ensure_catalog_loaded() -> None:
 
 # Eagerly load on module import so CONTRACTS is always populated.
 _ensure_catalog_loaded()
+

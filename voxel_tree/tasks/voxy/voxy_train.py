@@ -8,11 +8,11 @@ Usage
 ::
 
     # Train L0
-    python -m voxel_tree.tasks.sparse_octree.voxy_train \\
+    python -m voxel_tree.tasks.voxy.voxy_train \\
         --db data/v7_dumps.db --level 0 --epochs 40 --batch-size 16
 
     # Resume from checkpoint
-    python -m voxel_tree.tasks.sparse_octree.voxy_train \\
+    python -m voxel_tree.tasks.voxy.voxy_train \\
         --db data/v7_dumps.db --level 0 --epochs 40 --resume checkpoints/voxy_L0.pt
 
 The training data is assembled on the fly from the noise-dumps DB +

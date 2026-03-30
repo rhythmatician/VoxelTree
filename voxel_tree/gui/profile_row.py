@@ -11,7 +11,7 @@ from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QMenu, QPushButton, QSizePolicy, QWidget
 
 from voxel_tree.gui.run_registry import RunRegistry
-from voxel_tree.gui.step_definitions import PIPELINE_STEPS, TRACK_BY_ID, TRACK_ORDER, StepDef
+from voxel_tree.gui.step_definitions import PIPELINE_STEPS, STEP_BY_ID, TRACK_BY_ID, TRACK_ORDER, StepDef
 from voxel_tree.gui.step_node_widget import StepNodeWidget
 
 _NODE_W = 52
@@ -329,14 +329,14 @@ class ProfileRow(QWidget):
         from_act.setEnabled(can_run)
         cancel_act.setEnabled(is_running)
 
-        # "Continue training" — only on the sparse_octree train step when a
+        # "Continue training" — only on the voxy train step when a
         # checkpoint is likely present (success or failed after at least one run).
         continue_act = None
-        if step_id == "train_sparse_octree":
+        voxy_train_step = STEP_BY_ID.get(step_id)
+        if voxy_train_step and voxy_train_step.track == "voxy" and voxy_train_step.phase == "train":
             menu.addSeparator()
             continue_act = menu.addAction("Continue training...")
             continue_act.setEnabled(status in ("success", "failed"))
-
         chosen = menu.exec_(global_pos)
         if chosen is run_act and run_act.isEnabled():
             self.node_clicked.emit(self.profile_name, step_id)

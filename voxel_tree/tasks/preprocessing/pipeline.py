@@ -179,7 +179,7 @@ def phase3_export(
         print("ERROR: Checkpoint directory not found: %s" % checkpoint_dir)
         return False
 
-    from voxel_tree.tasks.octree.export import main as _export_main
+    from voxel_tree.tasks.voxy.voxy_export import main as _export_main
 
     try:
         args_list: list[str] = ["--out-dir", str(export_dir)]
@@ -231,7 +231,7 @@ def phase4_deploy(
         models = ["init", "refine", "leaf"]
 
     def _deploy_model(model_name: str) -> None:
-        module_name = f"voxel_tree.tasks.octree.deploy_{model_name}"
+        module_name = f"voxel_tree.tasks.voxy.voxy_deploy_{model_name}"
         module = __import__(module_name, fromlist=["main"])
         deploy_main = getattr(module, "main")
 

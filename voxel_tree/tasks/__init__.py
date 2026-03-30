@@ -7,18 +7,18 @@ importing a heavy optional dependency at package load time. Import it
 directly: ``from voxel_tree.tasks.voxy_reader import VoxyReader``
 """
 
-from .sparse_octree import (
-    SparseOctreeLevel,
-    SparseOctreeNode,
-    build_sparse_octree_targets,
+from .voxy.voxy_targets import (
+    VoxyLevelTargets,
+    VoxyNode,
+    build_voxy_targets,
     child_occupancy_mask,
-    iter_sparse_octree_nodes,
+    iter_voxy_nodes,
 )
 
 __all__ = [
-    "SparseOctreeLevel",
-    "SparseOctreeNode",
-    "build_sparse_octree_targets",
+    "VoxyLevelTargets",
+    "VoxyNode",
+    "build_voxy_targets",
     "child_occupancy_mask",
-    "iter_sparse_octree_nodes",
+    "iter_voxy_nodes",
 ]

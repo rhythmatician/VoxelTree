@@ -34,7 +34,7 @@ SERVER_RUNTIME = REPO / "tools" / "fabric-server" / "runtime"
 SERVER_JAR = next((REPO / "tools" / "fabric-server").glob("fabric-server-mc.*.jar"), None)
 V7_DUMPS_DIR = SERVER_RUNTIME / "v7_dumps"
 VOXY_DIR = REPO / "data" / "voxy_octree"
-NPZ_OUTPUT = REPO / "noise_training_data" / "sparse_octree_pairs_v7.npz"
+NPZ_OUTPUT = REPO / "noise_training_data" / "voxy_pairs_v7.npz"
 
 # RCON defaults (from server.properties)
 RCON_HOST = "localhost"
@@ -198,7 +198,7 @@ def rebuild_npz() -> None:
     print(f"  v7 dumps: {n_dumps:,} files in {V7_DUMPS_DIR}")
 
     sys.path.insert(0, str(REPO))
-    from voxel_tree.tasks.sparse_octree.build_sparse_octree_pairs import build_pairs
+    from voxel_tree.tasks.voxy.build_sparse_octree_pairs import build_pairs
 
     # Back up existing NPZ
     if NPZ_OUTPUT.exists():
@@ -291,3 +291,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+

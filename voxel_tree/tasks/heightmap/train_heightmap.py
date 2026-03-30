@@ -16,7 +16,7 @@ both surface and ocean floor.
 
 Training data
 -------------
-  Reads ``sparse_octree_pairs_v7.npz`` produced by ``build_sparse_octree_pairs.py``.
+  Reads ``voxy_pairs_v7.npz`` produced by ``build_voxy_pairs.py``.
     noise_3d             : (N, C, qx, qy, qz) float32   (C >= 6)
     heightmap_surface    : (N, 16, 16)       int32
     heightmap_ocean_floor: (N, 16, 16)       int32
@@ -34,7 +34,7 @@ Model output
 Usage
 -----
   python -m voxel_tree.tasks.heightmap.train_heightmap \\
-      --data noise_training_data/sparse_octree_pairs_v7.npz \\
+      --data noise_training_data/voxy_pairs_v7.npz \
       --epochs 200 --batch-size 512 --lr 1e-3 \\
       --out-dir models/heightmap
 """
@@ -297,7 +297,7 @@ def main(argv: list[str] | None = None) -> None:
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("--data", type=Path,
-                        default=Path("noise_training_data/sparse_octree_pairs_v7.npz"),
+                        default=Path("noise_training_data/voxy_pairs_v7.npz"),
                         help="v7 training data NPZ file")
     parser.add_argument("--epochs", type=int, default=200)
     parser.add_argument("--batch-size", type=int, default=512)

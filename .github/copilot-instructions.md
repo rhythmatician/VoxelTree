@@ -47,7 +47,7 @@ The **shared contract** lives at `../router_field_contract.yaml` (workspace root
 ```bash
 pip install -e .                                    # Install package
 voxel-tree                                          # Launch PySide6 GUI (no args)
-voxel-tree --step train_sparse_octree --run --profile phase6  # Run step via CLI
+voxel-tree --step train_voxy --run --profile phase6  # Run step via CLI
 voxel-tree contracts sparse_octree                  # Inspect contracts
 pytest voxel_tree/                                  # Run tests
 ```

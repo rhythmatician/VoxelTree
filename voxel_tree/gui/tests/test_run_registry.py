@@ -39,10 +39,10 @@ def test_run_registry_persistence(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
         assert reg.get_status(step.id) == "not_run"
     # sanity: ensure core track steps are present
     assert "extract_octree" in run_registry.STEP_BY_ID
-    assert "build_pairs_sparse_octree" in run_registry.STEP_BY_ID
-    assert "train_sparse_octree" in run_registry.STEP_BY_ID
-    assert "export_sparse_octree" in run_registry.STEP_BY_ID
-    assert "deploy_sparse_octree" in run_registry.STEP_BY_ID
+    assert "build_pairs_voxy" in run_registry.STEP_BY_ID
+    assert "train_voxy" in run_registry.STEP_BY_ID
+    assert "export_voxy" in run_registry.STEP_BY_ID
+    assert "deploy_voxy" in run_registry.STEP_BY_ID
 
     # mark a couple of steps and check persistence
     reg.mark_success("pregen")
@@ -73,8 +73,8 @@ def test_phase_export_and_deploy_args(monkeypatch, tmp_path):
 
     # patch the underlying script entrypoints that phase3_export/phase4_deploy
     # import dynamically
-    monkeypatch.setattr("voxel_tree.tasks.octree.export.main", fake_export_main)
-    monkeypatch.setattr("voxel_tree.tasks.octree.deploy_refine.main", fake_deploy_main)
+    monkeypatch.setattr("voxel_tree.tasks.voxy.voxy_export.main", fake_export_main)
+    monkeypatch.setattr("voxel_tree.tasks.voxy.voxy_deploy_refine.main", fake_deploy_main)
 
     phase3 = __import__(
         "voxel_tree.preprocessing.pipeline", fromlist=["phase3_export"]

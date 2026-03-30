@@ -11,7 +11,7 @@
 #   build_pairs → train → export → deploy
 #
 # Step IDs follow the convention ``{phase}_{track_id}``
-# (e.g. ``train_sparse_octree``, ``deploy_init``).
+# (e.g. ``train_voxy``, ``deploy_init``).
 #
 # ## Artifact-based prerequisite wiring
 #
@@ -43,7 +43,7 @@
 #
 # ## Track IDs in use (add new tracks to this list when you create them)
 #
-#   "sparse_octree"       — Sparse Octree hierarchy classifier (15ch/4×2×4 RouterField → 5-level octree)
+#   "voxy"                — Voxy hierarchy classifier (15ch/4×2×4 RouterField → 5-level octree)
 #   "density"             — Density predictor (6 climate → 2 density fields)
 #   "biome_classifier"    — v7 Biome classifier (6 climate → 54 biome classes)
 #   "heightmap_predictor" — v7 Heightmap predictor (96 climate → 32 height values)
@@ -78,7 +78,7 @@ class StepDef:
     enabled      : False → faded stub node; not runnable.
     server_required : True → step sends RCON commands; needs Fabric server up.
     client_required : True → step needs a Minecraft client (DataHarvester bot).
-    track        : Which ModelTrack owns this step (e.g. "init", "sparse_octree").
+    track        : Which ModelTrack owns this step (e.g. "init", "voxy").
                    None for data-acquisition and loopback steps.
     phase        : Which canonical phase this is within its track.
                    One of: "build_pairs", "train", "export", "deploy",
@@ -115,8 +115,8 @@ class ModelTrack:
 
     Parameters
     ----------
-    track_id   : Snake-case identifier, e.g. "sparse_octree".
-                 Auto-generates step IDs like ``build_pairs_sparse_octree``.
+    track_id   : Snake-case identifier, e.g. "voxy".
+                 Auto-generates step IDs like ``build_pairs_voxy``.
     label      : Human-readable name shown in swim-lane headers.
     swim_lane_color : Hex background tint for the model's DAG row.
     build_pairs_factory / train_factory / export_factory / deploy_factory :
@@ -575,7 +575,7 @@ def _deploy_leaf_cmd(profile: dict[str, Any]) -> list[str]:
 _DENSITY_CHECKPOINT = "density_best.pt"
 _BIOME_CHECKPOINT = "biome_classifier.pt"
 _HEIGHTMAP_CHECKPOINT = "heightmap_predictor.pt"
-_SPARSE_OCTREE_CHECKPOINT = "sparse_octree_model.pt"
+_VOXY_CHECKPOINT = "voxy_model.pt"
 
 
 # ---------------------------------------------------------------------------
@@ -583,7 +583,7 @@ _SPARSE_OCTREE_CHECKPOINT = "sparse_octree_model.pt"
 # ---------------------------------------------------------------------------
 
 
-def _build_pairs_sparse_octree_run(p: dict[str, Any]) -> None:
+def _build_pairs_voxy_run(p: dict[str, Any]) -> None:
     from voxel_tree.tasks.octree.build_pairs import (
         main as pairs_main,
     )  # noqa: PLC0415
@@ -604,11 +604,11 @@ def _resolve_device(raw: str) -> str:
     return raw
 
 
-def _train_sparse_octree_run(p: dict[str, Any]) -> None:
+def _train_voxy_run(p: dict[str, Any]) -> None:
     import json  # noqa: PLC0415
     import sqlite3  # noqa: PLC0415
 
-    from voxel_tree.tasks.sparse_octree.voxy_train import train_voxy_level  # noqa: PLC0415
+    from voxel_tree.tasks.voxy.voxy_train import train_voxy_level  # noqa: PLC0415
     from voxel_tree.utils.progress import report as _report_progress  # noqa: PLC0415
 
     data = p.get("data", {})
@@ -694,7 +694,7 @@ def _train_sparse_octree_run(p: dict[str, Any]) -> None:
         print(f"[STEP_RESULT]{json.dumps(result, sort_keys=True)}")
 
 
-def _export_sparse_octree_run(p: dict[str, Any]) -> None:
+def _export_voxy_run(p: dict[str, Any]) -> None:
     # TODO: Implement per-level ONNX export for Voxy models
     raise NotImplementedError(
         "Per-level ONNX export is not yet implemented. "
@@ -702,12 +702,12 @@ def _export_sparse_octree_run(p: dict[str, Any]) -> None:
     )
 
 
-def _deploy_sparse_octree_run(p: dict[str, Any]) -> None:
+def _deploy_voxy_run(p: dict[str, Any]) -> None:
     # TODO: Implement per-level deployment to LODiffusion
     raise NotImplementedError("Per-level deployment is not yet implemented.")
 
 
-def _continue_train_sparse_octree_run(p: dict[str, Any]) -> None:
+def _continue_train_voxy_run(p: dict[str, Any]) -> None:
     """Continue training one or more Voxy levels from an existing checkpoint.
 
     Injected parameters (not part of the YAML profile):
@@ -719,7 +719,7 @@ def _continue_train_sparse_octree_run(p: dict[str, Any]) -> None:
 
     import torch  # noqa: PLC0415
 
-    from voxel_tree.tasks.sparse_octree.voxy_train import train_voxy_level  # noqa: PLC0415
+    from voxel_tree.tasks.voxy.voxy_train import train_voxy_level  # noqa: PLC0415
     from voxel_tree.utils.progress import report as _report_progress  # noqa: PLC0415
 
     data = p.get("data", {})
@@ -795,13 +795,108 @@ def _continue_train_sparse_octree_run(p: dict[str, Any]) -> None:
         print(f"[STEP_RESULT]{json.dumps(result, sort_keys=True)}")
 
 
+
+# ---------------------------------------------------------------------------
+# Step runners - Voxy per-level (one DAG node per octree level)
+# ---------------------------------------------------------------------------
+
+
+def _make_train_voxy_l_run(level: int) -> Callable[[dict[str, Any]], None]:
+    """Return a runner that trains exactly one Voxy level."""
+
+    def _run(p: dict[str, Any]) -> None:
+        import json  # noqa: PLC0415
+        import sqlite3  # noqa: PLC0415
+
+        from voxel_tree.tasks.voxy.voxy_train import train_voxy_level  # noqa: PLC0415
+        from voxel_tree.utils.progress import report as _report_progress  # noqa: PLC0415
+
+        data = p.get("data", {})
+        train = p.get("train", {})
+
+        dumps_db_str = data.get("v7_dumps_db")
+        if not dumps_db_str or not Path(dumps_db_str).exists():
+            raise FileNotFoundError(
+                "v7_dumps_db is required for Voxy training. "
+                "Set data.v7_dumps_db in your profile YAML."
+            )
+
+        holdout_db_str = data.get("holdout_v7_dumps_db")
+        holdout_db_path: Path | None = None
+        if holdout_db_str:
+            holdout_db_path = Path(holdout_db_str)
+            if not holdout_db_path.exists():
+                raise FileNotFoundError(
+                    "holdout_v7_dumps_db is configured but missing. "
+                    "Build the validation-world DB first or remove holdout_v7_dumps_db."
+                )
+            with sqlite3.connect(str(holdout_db_path)) as conn:
+                has_sections = conn.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='sections'"
+                ).fetchone()
+                has_voxy = conn.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='voxy_sections'"
+                ).fetchone()
+                if not has_sections or not has_voxy:
+                    raise RuntimeError(
+                        "holdout_v7_dumps_db must contain sections and voxy_sections tables."
+                    )
+
+        out_dir = Path(train.get("output_dir", "."))
+        out_path = out_dir / ("voxy_L" + str(level) + ".pt")
+        ep = int(train.get(("epochs_l" + str(level)), train.get("epochs", 40)))
+
+        if out_path.exists() and not train.get("force_retrain", False):
+            print("[L" + str(level) + "] Checkpoint exists — skipping (set force_retrain: true to override)")
+            return
+
+        result = train_voxy_level(
+            db_path=Path(dumps_db_str),
+            out_path=out_path,
+            level=level,
+            epochs=ep,
+            batch_size=train.get("batch_size", 16),
+            lr=train.get("lr", 1e-3),
+            device=_resolve_device(train.get("device", "auto")),
+            num_workers=train.get("num_workers", None),
+            holdout_db_path=holdout_db_path,
+            progress_callback=lambda epoch, total, _m: _report_progress(epoch, total),
+        )
+        import json as _json_  # noqa: PLC0415
+        print("[STEP_RESULT]" + _json_.dumps(result, sort_keys=True))
+
+    return _run
+
+
+def _make_export_voxy_l_run(level: int) -> Callable[[dict[str, Any]], None]:
+    """Return a runner that exports Voxy L{level} to ONNX (not yet implemented)."""
+
+    def _run(_p: dict[str, Any]) -> None:
+        raise NotImplementedError(
+            "Per-level ONNX export for Voxy L" + str(level) + " is not yet implemented."
+        )
+
+    return _run
+
+
+def _make_deploy_voxy_l_run(level: int) -> Callable[[dict[str, Any]], None]:
+    """Return a runner that deploys Voxy L{level} to LODiffusion (not yet implemented)."""
+
+    def _run(_p: dict[str, Any]) -> None:
+        raise NotImplementedError(
+            "Voxy L" + str(level) + " deployment is not yet implemented."
+        )
+
+    return _run
+
+
 def _import_voxy_run(p: dict[str, Any]) -> None:
     """Import Voxy NPZ ground-truth grids into the dumps SQLite database.
 
     Creates a ``voxy_sections`` table so that training data can be assembled
     via a single SQL JOIN — no ``build_v7_pairs`` step needed.
     """
-    from voxel_tree.tasks.sparse_octree.import_voxy_to_db import import_voxy  # noqa: PLC0415
+    from voxel_tree.tasks.voxy.import_voxy_to_db import import_voxy  # noqa: PLC0415
 
     data = p.get("data", {})
     db_path = data.get("v7_dumps_db")
@@ -843,7 +938,7 @@ def _build_v7_pairs_run(p: dict[str, Any]) -> None:
     """
     import json  # noqa: PLC0415
 
-    from voxel_tree.tasks.sparse_octree.build_sparse_octree_pairs import (  # noqa: PLC0415
+    from voxel_tree.tasks.voxy.build_voxy_pairs import (  # noqa: PLC0415
         _DumpSourceJSON,
         _DumpSourceSQLite,
         _build_remap_lut,
@@ -866,7 +961,7 @@ def _build_v7_pairs_run(p: dict[str, Any]) -> None:
         output_db = Path(
             data.get("v7_pairs_db")
             or data.get("v7_pairs_output", "").replace(".npz", ".db")
-            or "noise_training_data/sparse_octree_pairs_v7.db"
+            or "noise_training_data/voxy_pairs_v7.db"
         )
 
         print("=" * 62)
@@ -890,7 +985,7 @@ def _build_v7_pairs_run(p: dict[str, Any]) -> None:
         source_label = str(dumps_dir)
 
         output_npz = Path(
-            data.get("v7_pairs_npz") or data.get("v7_pairs_output") or "sparse_octree_pairs_v7.npz"
+            data.get("v7_pairs_npz") or data.get("v7_pairs_output") or "voxy_pairs_v7.npz"
         )
 
         print("=" * 62)
@@ -923,7 +1018,7 @@ def _build_v7_pairs_run(p: dict[str, Any]) -> None:
 def _build_pairs_density_run(p: dict[str, Any]) -> None:
     """Validate v7 pairs NPZ exists (pairs built by shared build_v7_pairs)."""
     data = p.get("data", {})
-    npz = Path(data.get("v7_pairs_npz", "sparse_octree_pairs_v7.npz"))
+    npz = Path(data.get("v7_pairs_npz", "voxy_pairs_v7.npz"))
     if not npz.exists():
         raise FileNotFoundError(f"v7 pairs NPZ not found: {npz}")
     print(f"[density] v7 pairs validated: {npz}")
@@ -935,7 +1030,7 @@ def _train_density_run(p: dict[str, Any]) -> None:
     data = p.get("data", {})
     train = p.get("train", {})
     argv: list[str] = []
-    npz = data.get("v7_pairs_npz", "sparse_octree_pairs_v7.npz")
+    npz = data.get("v7_pairs_npz", "voxy_pairs_v7.npz")
     argv += ["--data", str(npz)]
     if train.get("output_dir"):
         argv += ["--out-dir", str(train["output_dir"])]
@@ -981,7 +1076,7 @@ def _deploy_density_run(p: dict[str, Any]) -> None:
 def _build_pairs_biome_run(p: dict[str, Any]) -> None:
     """Validate v7 pairs NPZ exists (pairs built by shared build_v7_pairs)."""
     data = p.get("data", {})
-    npz = Path(data.get("v7_pairs_npz", "sparse_octree_pairs_v7.npz"))
+    npz = Path(data.get("v7_pairs_npz", "voxy_pairs_v7.npz"))
     if not npz.exists():
         raise FileNotFoundError(f"v7 pairs NPZ not found: {npz}")
     print(f"[biome_classifier] v7 pairs validated: {npz}")
@@ -993,7 +1088,7 @@ def _train_biome_classifier_run(p: dict[str, Any]) -> None:
     data = p.get("data", {})
     train = p.get("train", {})
     argv: list[str] = []
-    npz = data.get("v7_pairs_npz", "sparse_octree_pairs_v7.npz")
+    npz = data.get("v7_pairs_npz", "voxy_pairs_v7.npz")
     argv += ["--data", str(npz)]
     if train.get("output_dir"):
         argv += ["--out-dir", str(train["output_dir"])]
@@ -1039,7 +1134,7 @@ def _deploy_biome_classifier_run(p: dict[str, Any]) -> None:
 def _build_pairs_heightmap_run(p: dict[str, Any]) -> None:
     """Validate v7 pairs NPZ exists (pairs built by shared build_v7_pairs)."""
     data = p.get("data", {})
-    npz = Path(data.get("v7_pairs_npz", "sparse_octree_pairs_v7.npz"))
+    npz = Path(data.get("v7_pairs_npz", "voxy_pairs_v7.npz"))
     if not npz.exists():
         raise FileNotFoundError(f"v7 pairs NPZ not found: {npz}")
     print(f"[heightmap_predictor] v7 pairs validated: {npz}")
@@ -1051,7 +1146,7 @@ def _train_heightmap_run(p: dict[str, Any]) -> None:
     data = p.get("data", {})
     train = p.get("train", {})
     argv: list[str] = []
-    npz = data.get("v7_pairs_npz", "sparse_octree_pairs_v7.npz")
+    npz = data.get("v7_pairs_npz", "voxy_pairs_v7.npz")
     argv += ["--data", str(npz)]
     if train.get("output_dir"):
         argv += ["--out-dir", str(train["output_dir"])]
@@ -1102,20 +1197,70 @@ def _deploy_heightmap_run(p: dict[str, Any]) -> None:
 #
 # ═══════════════════════════════════════════════════════════════════════════
 
+
+# -- Per-level Voxy StepDefs (L4 -> L0) ---------------------------------------
+# L4 is the root level (no parent conditioning) -- always trains first.
+# Each lower level consumes its parent-level checkpoint as a prerequisite,
+# enforcing the correct L4 -> L3 -> L2 -> L1 -> L0 training order.
+_VOXY_LEVEL_STEPS: list[StepDef] = []
+for _lv in range(4, -1, -1):
+    _train_consumes: frozenset[str] = (
+        frozenset({"voxy_db_imported"})
+        if _lv == 4
+        else frozenset({"voxy_l" + str(_lv + 1) + "_checkpoint"})
+    )
+    _VOXY_LEVEL_STEPS.extend(
+        [
+            StepDef(
+                id="train_voxy_l" + str(_lv),
+                label="T·L" + str(_lv),
+                prereqs=[],
+                run_fn=_make_train_voxy_l_run(_lv),
+                track="voxy",
+                phase="train",
+                produces=frozenset({"voxy_l" + str(_lv) + "_checkpoint"}),
+                consumes=_train_consumes,
+            ),
+            StepDef(
+                id="export_voxy_l" + str(_lv),
+                label="E·L" + str(_lv),
+                prereqs=[],
+                run_fn=_make_export_voxy_l_run(_lv),
+                track="voxy",
+                phase="export",
+                produces=frozenset({"voxy_l" + str(_lv) + "_exported"}),
+                consumes=frozenset({"voxy_l" + str(_lv) + "_checkpoint"}),
+            ),
+            StepDef(
+                id="deploy_voxy_l" + str(_lv),
+                label="D·L" + str(_lv),
+                prereqs=[],
+                run_fn=_make_deploy_voxy_l_run(_lv),
+                track="voxy",
+                phase="deploy",
+                produces=frozenset({"voxy_l" + str(_lv) + "_deployed"}),
+                consumes=frozenset({"voxy_l" + str(_lv) + "_exported"}),
+            ),
+        ]
+    )
+del _lv, _train_consumes  # clean up module-level loop variables
+
+
 MODEL_TRACKS: list[ModelTrack] = [
-    # ── Sparse Root ───────────────────────────────────────────────────────
+    # ── Voxy ──────────────────────────────────────────────────────────────
     ModelTrack(
-        track_id="sparse_octree",
-        label="SparseOctree",
+        track_id="voxy",
+        label="Voxy",
         swim_lane_color="#2a1500",
-        build_pairs_factory=_build_pairs_sparse_octree_run,
-        train_factory=_train_sparse_octree_run,
-        export_factory=_export_sparse_octree_run,
-        deploy_factory=_deploy_sparse_octree_run,
+        build_pairs_factory=_build_pairs_voxy_run,
+        train_factory=None,    # replaced by per-level steps in extra_steps
+        export_factory=None,   # replaced by per-level steps in extra_steps
+        deploy_factory=None,   # replaced by per-level steps in extra_steps
         build_pairs_consumes=frozenset({"voxy_db", "noise_dumps"}),
-        checkpoint_filename=_SPARSE_OCTREE_CHECKPOINT,
-        contract_name="sparse_octree",
+        checkpoint_filename=_VOXY_CHECKPOINT,
+        contract_name="voxy",
         contract_revision=3,
+        extra_steps=_VOXY_LEVEL_STEPS,
     ),
     # ── Density (climate → density prediction) ────────────────────────
     ModelTrack(
@@ -1245,12 +1390,12 @@ PIPELINE_STEPS: list[StepDef] = _DATA_ACQ_STEPS + [
 # enabled=False → invisible in the visual DAG, but registered in STEP_BY_ID
 # so that step_runner.py can invoke it when the context-menu dialog requests it.
 _CONTINUE_TRAIN_STEP = StepDef(
-    id="continue_train_sparse_octree",
+    id="continue_train_voxy",
     label="Cont.",
     prereqs=[],
-    run_fn=_continue_train_sparse_octree_run,
+    run_fn=_continue_train_voxy_run,
     enabled=False,
-    track="sparse_octree",
+    track="voxy",
     phase="loopback",  # exempt from artifact-graph coverage rules; updates checkpoints in-place
     produces=frozenset(),
     consumes=frozenset(),

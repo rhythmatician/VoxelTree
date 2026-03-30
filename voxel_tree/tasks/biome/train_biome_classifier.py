@@ -13,7 +13,7 @@ The model operates **per quart cell** — each sample is one (field_0 … field_
 
 Training data
 -------------
-  Reads ``sparse_octree_pairs_v7.npz`` produced by ``build_sparse_octree_pairs.py``.
+  Reads ``voxy_pairs_v7.npz`` produced by ``build_voxy_pairs.py``.
     noise_3d   : (N, C, qx, qy, qz) float32   (C >= 6)
     biome_ids  : (N, qx, qy, qz)     int32
 
@@ -29,7 +29,7 @@ Model output
 Usage
 -----
   python -m voxel_tree.tasks.biome.train_biome_classifier \\
-      --data noise_training_data/sparse_octree_pairs_v7.npz \\
+      --data noise_training_data/voxy_pairs_v7.npz \
       --epochs 200 --batch-size 4096 --lr 1e-3 \\
       --out-dir models/biome
 """
@@ -293,7 +293,7 @@ def main(argv: list[str] | None = None) -> None:
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("--data", type=Path,
-                        default=Path("noise_training_data/sparse_octree_pairs_v7.npz"),
+                        default=Path("noise_training_data/voxy_pairs_v7.npz"),
                         help="v7 training data NPZ file")
     parser.add_argument("--epochs", type=int, default=200)
     parser.add_argument("--batch-size", type=int, default=4096)

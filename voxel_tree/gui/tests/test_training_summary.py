@@ -46,12 +46,12 @@ def test_heightmap_summary_includes_rmse() -> None:
     assert "Best validation MSE: 4.00" in summary["text"]
 
 
-def test_sparse_octree_summary_uses_last_history_row() -> None:
+def test_voxy_summary_uses_last_history_row() -> None:
     summary = summarize_training_run(
-        _step("sparse_octree"),
+        _step("voxy"),
         [
             "Training complete",
-            "{'checkpoint': 'models/sparse_octree_model.pt', 'best_loss': 0.1234, 'history': [{'epoch': 1.0, 'loss': 0.5, 'split_f1': 0.4, 'leaf_acc': 0.5, 'leaf_node_ratio': 0.9}, {'epoch': 2.0, 'loss': 0.3, 'split_f1': 0.75, 'leaf_acc': 0.8, 'leaf_node_ratio': 1.1}], 'model_variant': 'fast', 'hidden': 80}",
+            "{'checkpoint': 'models/voxy_model.pt', 'best_loss': 0.1234, 'history': [{'epoch': 1.0, 'loss': 0.5, 'split_f1': 0.4, 'leaf_acc': 0.5, 'leaf_node_ratio': 0.9}, {'epoch': 2.0, 'loss': 0.3, 'split_f1': 0.75, 'leaf_acc': 0.8, 'leaf_node_ratio': 1.1}], 'model_variant': 'fast', 'hidden': 80}",
         ],
     )
 
@@ -62,9 +62,9 @@ def test_sparse_octree_summary_uses_last_history_row() -> None:
     assert "Final epoch: 2" in summary["text"]
 
 
-def test_sparse_octree_summary_parses_step_result_marker() -> None:
+def test_voxy_summary_parses_step_result_marker() -> None:
     summary = summarize_training_run(
-        _step("sparse_octree"),
+        _step("voxy"),
         [
             "[PROGRESS] 50%",
             '[STEP_RESULT]{"best_loss": 0.2222, "checkpoint": "models/sparse.pt", "hidden": 80, "history": [{"epoch": 2.0, "leaf_acc": 0.91, "leaf_node_ratio": 1.03, "loss": 0.3, "split_f1": 0.88}], "model_variant": "fast"}',

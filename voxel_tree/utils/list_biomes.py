@@ -11,10 +11,10 @@ except ImportError:
     print("Could not import BIOME_ID_TO_NAME from biome_mapping.py")
     sys.exit(1)
 
-# Path to the sparse_octree_dumps directory
+# Path to the v7 dumps directory
 DUMPS_DIR = os.path.abspath(
     os.path.join(
-        os.path.dirname(__file__), "../../tools/fabric-server/runtime/sparse_octree_dumps"
+        os.path.dirname(__file__), "../../tools/fabric-server/runtime/v7_dumps"
     )  # Dumps dir location
 )
 

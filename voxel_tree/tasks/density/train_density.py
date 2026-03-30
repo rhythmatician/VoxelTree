@@ -13,7 +13,7 @@ The model operates **per quart cell** — each sample is one (field_0 … field_
 
 Training data
 -------------
-  Reads ``sparse_octree_pairs_v7.npz`` produced by ``build_sparse_octree_pairs.py``.
+  Reads ``voxy_pairs_v7.npz`` produced by ``build_voxy_pairs.py``.
   ``noise_3d`` has shape (N, C, qx, qy, qz).  C >= 8 channels.
   We extract:
     - Input  channels 0–5  (first 6)             → flatten to (N*S, 6)
@@ -28,7 +28,7 @@ Model output
 Usage
 -----
   python -m voxel_tree.tasks.density.train_density \\
-      --data noise_training_data/sparse_octree_pairs_v7.npz \\
+      --data noise_training_data/voxy_pairs_v7.npz \
       --epochs 200 --batch-size 4096 --lr 1e-3 \\
       --out-dir models/density
 """
@@ -292,7 +292,7 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument(
         "--data",
         type=Path,
-        default=Path("noise_training_data/sparse_octree_pairs_v7.npz"),
+        default=Path("noise_training_data/voxy_pairs_v7.npz"),
         help="v7 training data NPZ file",
     )
     parser.add_argument("--epochs", type=int, default=200)

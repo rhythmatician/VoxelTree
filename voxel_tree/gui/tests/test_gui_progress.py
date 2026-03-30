@@ -108,7 +108,7 @@ def test_profilerow_refresh_shows_progress():
     # create a dummy registry with a fake progress value
     reg = RunRegistry("x")
     # pick a real step id so the ProfileRow will create a node for it
-    real_step = "train_sparse_octree"
+    real_step = "train_voxy"
     reg.set_progress(real_step, 0.33)
     from voxel_tree.gui.profile_row import ProfileRow
 
@@ -129,8 +129,8 @@ def test_profilerow_contains_new_export_deploy_nodes():
     row = ProfileRow("y", reg)
     row.refresh()
     for step in (
-        "export_sparse_octree",
-        "deploy_sparse_octree",
+        "export_voxy",
+        "deploy_voxy",
         "export_density",
         "deploy_density",
     ):
@@ -256,12 +256,12 @@ def test_main_window_handles_dashboard_run_from_and_cancel(monkeypatch):
     )
     monkeypatch.setattr(window._detail, "cancel", lambda: events.append(("cancel", None)))
 
-    window._dashboard.node_run_from.emit("p", "export_sparse_octree")
-    window._dashboard.node_cancel.emit("p", "export_sparse_octree")
+    window._dashboard.node_run_from.emit("p", "export_voxy")
+    window._dashboard.node_cancel.emit("p", "export_voxy")
 
     assert events == [
         ("details", "p"),
-        ("from", "export_sparse_octree"),
+        ("from", "export_voxy"),
         ("queue_clear", None),
         ("details", "p"),
         ("cancel", None),
@@ -327,7 +327,7 @@ def test_run_from_aborts_chain_on_failure(monkeypatch):
 
 def test_run_from_scoped_to_profile_dag(monkeypatch):
     """_run_from must only walk the per-profile step list, not the global
-    ACTIVE_STEPS.  Steps outside the profile's DAG (like distill_sparse_octree)
+    ACTIVE_STEPS.  Steps outside the profile's DAG (like distill_voxy)
     should never appear in the reachable set."""
     from voxel_tree.gui.step_definitions import STEP_BY_ID
 
@@ -351,10 +351,10 @@ def test_run_from_scoped_to_profile_dag(monkeypatch):
     from dataclasses import replace as dc_replace
 
     profile_step_ids = [
-        "build_pairs_sparse_octree",
-        "train_sparse_octree",
-        "export_sparse_octree",
-        "deploy_sparse_octree",
+        "build_pairs_voxy",
+        "train_voxy",
+        "export_voxy",
+        "deploy_voxy",
     ]
     # Build a step list stripped of prereqs outside the set (mimics resolve_steps)
     id_set = set(profile_step_ids)
@@ -372,15 +372,15 @@ def test_run_from_scoped_to_profile_dag(monkeypatch):
     monkeypatch.setattr(panel, "_run_step", lambda sid: launched.append(sid))
 
     # Mark build_pairs and train as already succeeded so downstream steps are runnable
-    reg.mark_started("build_pairs_sparse_octree")
-    reg.mark_success("build_pairs_sparse_octree")
-    reg.mark_started("train_sparse_octree")
-    reg.mark_success("train_sparse_octree")
+    reg.mark_started("build_pairs_voxy")
+    reg.mark_success("build_pairs_voxy")
+    reg.mark_started("train_voxy")
+    reg.mark_success("train_voxy")
 
     # Run from build_pairs
-    panel._run_from("build_pairs_sparse_octree")
+    panel._run_from("build_pairs_voxy")
 
-    # distill_sparse_octree must NOT be in the reachable set
-    assert "distill_sparse_octree" not in panel._run_from_targets
+    # distill_voxy must NOT be in the reachable set
+    assert "distill_voxy" not in panel._run_from_targets
     # Only profile-scoped steps should be reachable
     assert panel._run_from_targets <= id_set

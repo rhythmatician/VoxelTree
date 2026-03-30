@@ -3,11 +3,11 @@
 Usage
 -----
     # Export all 5 levels
-    python -m voxel_tree.tasks.sparse_octree.voxy_export \\
+    python -m voxel_tree.tasks.voxy.voxy_export \\
         --checkpoint-dir checkpoints --out-dir production
 
     # Export just L4 and L3
-    python -m voxel_tree.tasks.sparse_octree.voxy_export \\
+    python -m voxel_tree.tasks.voxy.voxy_export \\
         --checkpoint-dir checkpoints --out-dir production --levels 4 3
 
 Each level produces three artefacts:
@@ -29,7 +29,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from voxel_tree.tasks.sparse_octree.voxy_models import (
+from voxel_tree.tasks.voxy.voxy_models import (
     BIOME_SHAPES,
     L2_NOISE_CHANNELS,
     L3_NOISE_CHANNELS,

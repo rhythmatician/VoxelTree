@@ -183,7 +183,7 @@ VoxelTree/
 │           ├── sparse_octree_train.py    # Dataset + loss + training loop
 │           ├── sparse_octree_targets.py  # Build octree supervision targets
 │           ├── build_sparse_octree_pairs.py
-│           ├── export_sparse_octree.py   # → sparse_octree.onnx (527 lines)
+│           ├── export_voxy.py   # → sparse_octree.onnx (527 lines)
 │           ├── train.py / distill.py / calibrate.py / diagnose.py
 │           └── tests/
 2. Key Classes & Purposes
@@ -212,7 +212,7 @@ train_density.py	DensityMLP: 6 climate → 2 density outputs
 train_biome_classifier.py	BiomeClassifier MLP: 6 climate → 54 biome logits
 train_heightmap.py	Heightmap predictor: 96 → 128 → 64 → 32
 train_terrain_shaper.py	Stage 0: 4→32→32→3 spline approximator (done, MSE 0.00067)
-export_sparse_octree.py	Checkpoint → ONNX export with sidecar config
+export_voxy.py	Checkpoint → ONNX export with sidecar config
 3. Current Octree Implementation
 Sparse Octree (v7 — active)
 Node structure: 5 levels (L4=root, 1 node → L0=leaf, 4096 nodes = 16³)
@@ -342,4 +342,5 @@ Carving stage — new model/module needed
 Per-stage validation harnesses — only final-output tests exist today
 Residual/correction architecture — current models predict absolute outputs, not residuals
 Uncertainty gating — no confidence/entropy measurement in current inference code
+
 

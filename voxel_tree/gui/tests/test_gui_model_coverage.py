@@ -34,7 +34,7 @@ class TestModelTrackCoverage:
 
         # Current architecture handles models via ModelTrack registration.
         # We check for the core models currently in active development.
-        required_tracks = {"sparse_octree", "density"}
+        required_tracks = {"voxy", "density"}
         found_tracks = set(track_ids)
         assert required_tracks.issubset(
             found_tracks
@@ -144,16 +144,16 @@ class TestArtifactGraph:
         Review the diff to confirm the new edges are correct, then update
         this snapshot.
         """
-        # Note: core DAG structure for Sparse Root and Stage 1.
-        # build_v7_pairs produces the NPZ; build_pairs_sparse_octree validates it.
+        # Note: core DAG structure for Voxy and Stage 1.
+        # build_v7_pairs produces the NPZ; build_pairs_voxy validates it.
         important_steps = {
             "extract_octree": ["harvest"],
             "column_heights": ["extract_octree", "dumpnoise"],
-            "build_pairs_sparse_octree": ["dumpnoise", "harvest"],
+            "build_pairs_voxy": ["dumpnoise", "harvest"],
             "import_voxy": ["dumpnoise", "extract_octree"],
-            "train_sparse_octree": ["build_pairs_sparse_octree"],
-            "export_sparse_octree": ["train_sparse_octree"],
-            "deploy_sparse_octree": ["export_sparse_octree"],
+            "train_voxy": ["build_pairs_voxy"],
+            "export_voxy": ["train_voxy"],
+            "deploy_voxy": ["export_voxy"],
         }
 
         actual = {s.id: s.prereqs for s in PIPELINE_STEPS}
@@ -220,7 +220,7 @@ class TestCheckpointFilenames:
         from voxel_tree.gui.step_definitions import TRACK_BY_ID
 
         expected = {
-            "sparse_octree": "sparse_octree_model.pt",
+            "voxy": "voxy_model.pt",
             "density": "density_best.pt",
             "biome_classifier": "biome_classifier.pt",
             "heightmap_predictor": "heightmap_predictor.pt",

@@ -39,7 +39,7 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset
 
-from .build_sparse_octree_pairs import (
+from .build_voxy_pairs import (
     N_FIELDS,
     _unpack_biome_blob,
     _unpack_noise_blob,

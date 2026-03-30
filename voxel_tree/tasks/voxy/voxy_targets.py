@@ -1,7 +1,7 @@
-"""Sparse-octree target builders for Voxy-aligned subchunks.
+"""voxy-hierarchy target builders for Voxy-aligned subchunks.
 
 This module converts a dense voxel cube (typically a 16×16×16 Voxy subchunk)
-into explicit top-down sparse-octree supervision.
+into explicit top-down voxy-hierarchy supervision.
 
 For a 16³ subchunk, the resulting hierarchy is:
 
@@ -32,8 +32,8 @@ import numpy.typing as npt
 
 
 @dataclass(frozen=True)
-class SparseOctreeLevel:
-    """Per-level sparse-octree targets.
+class VoxyLevelTargets:
+    """Per-level voxy-hierarchy targets.
 
     Attributes:
         labels: ``int32[size, size, size]`` node labels.  For split nodes,
@@ -50,7 +50,7 @@ class SparseOctreeLevel:
 
 
 @dataclass(frozen=True)
-class SparseOctreeNode:
+class VoxyNode:
     """Flattened node view useful for inspection and runtime-style traversal."""
 
     level: int
@@ -117,13 +117,13 @@ def child_occupancy_mask(cube: npt.NDArray[np.int32], air_id: int = 0) -> np.uin
     return np.uint8(mask)
 
 
-def build_sparse_octree_targets(
+def build_voxy_targets(
     blocks: npt.NDArray[np.int32],
     *,
     air_id: int = 0,
     split_label: int = -1,
-) -> Dict[int, SparseOctreeLevel]:
-    """Build sparse-octree supervision from a dense voxel cube.
+) -> Dict[int, VoxyLevelTargets]:
+    """Build voxy-hierarchy supervision from a dense voxel cube.
 
     .. note::
 
@@ -139,17 +139,17 @@ def build_sparse_octree_targets(
         split_label: Sentinel stored in ``labels`` for internal split nodes.
 
     Returns:
-        Dict mapping octree level → :class:`SparseOctreeLevel`.
+        Dict mapping octree level → :class:`VoxyLevelTargets`.
         For a 16³ input, levels are ``4, 3, 2, 1, 0``.
     """
 
     size = _require_power_of_two_cube(blocks)
     max_level = int(np.log2(size))
 
-    result: Dict[int, SparseOctreeLevel] = {}
+    result: Dict[int, VoxyLevelTargets] = {}
     for level in range(max_level, -1, -1):
         side = 2 ** (max_level - level)
-        result[level] = SparseOctreeLevel(
+        result[level] = VoxyLevelTargets(
             labels=np.full((side, side, side), np.int32(split_label), dtype=np.int32),
             is_leaf=np.zeros((side, side, side), dtype=np.bool_),
             child_mask=np.zeros((side, side, side), dtype=np.uint8),
@@ -196,10 +196,10 @@ def build_multilevel_voxy_targets(
     *,
     air_id: int = 0,
     split_label: int = -1,
-) -> Dict[int, SparseOctreeLevel]:
-    """Build sparse-octree targets using multi-level Voxy ground truth.
+) -> Dict[int, VoxyLevelTargets]:
+    """Build voxy-hierarchy targets using multi-level Voxy ground truth.
 
-    Unlike :func:`build_sparse_octree_targets` which recursively subdivides a
+    Unlike :func:`build_voxy_targets` which recursively subdivides a
     single 16³ grid to derive coarser levels, this function uses Voxy's actual
     labels at each LOD level as ground truth.  ``is_leaf`` and ``child_mask``
     are computed by comparing adjacent Voxy levels.
@@ -217,10 +217,10 @@ def build_multilevel_voxy_targets(
         split_label: Sentinel stored in ``labels`` for internal split nodes.
 
     Returns:
-        Dict mapping level → :class:`SparseOctreeLevel`.
+        Dict mapping level → :class:`VoxyLevelTargets`.
         Only levels present in *level_grids* are included.
     """
-    result: Dict[int, SparseOctreeLevel] = {}
+    result: Dict[int, VoxyLevelTargets] = {}
     available = sorted(level_grids.keys(), reverse=True)  # e.g. [4, 3, 2, 1, 0]
     if not available:
         return result
@@ -268,7 +268,7 @@ def build_multilevel_voxy_targets(
             ).sum(axis=-1).astype(np.uint8)
             child_mask = np.where(homogeneous, np.uint8(0), mask)
 
-        result[level] = SparseOctreeLevel(
+        result[level] = VoxyLevelTargets(
             labels=labels,
             is_leaf=is_leaf,
             child_mask=child_mask,
@@ -277,13 +277,13 @@ def build_multilevel_voxy_targets(
     return result
 
 
-def iter_sparse_octree_nodes(
-    targets: Dict[int, SparseOctreeLevel],
+def iter_voxy_nodes(
+    targets: Dict[int, VoxyLevelTargets],
     *,
     skip_empty_leaves: bool = True,
     air_id: int = 0,
-) -> Iterator[SparseOctreeNode]:
-    """Yield flattened nodes from :func:`build_sparse_octree_targets` output."""
+) -> Iterator[VoxyNode]:
+    """Yield flattened nodes from :func:`build_voxy_targets` output."""
 
     for level in sorted(targets.keys(), reverse=True):
         data = targets[level]
@@ -296,7 +296,7 @@ def iter_sparse_octree_nodes(
                     child_mask = int(data.child_mask[y, z, x])
                     if skip_empty_leaves and is_leaf and label == air_id:
                         continue
-                    yield SparseOctreeNode(
+                    yield VoxyNode(
                         level=level,
                         y=y,
                         z=z,
@@ -305,3 +305,4 @@ def iter_sparse_octree_nodes(
                         is_leaf=is_leaf,
                         child_mask=child_mask,
                     )
+

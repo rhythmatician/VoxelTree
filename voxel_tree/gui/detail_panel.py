@@ -146,7 +146,7 @@ class DetailPanel(QDockWidget):
             "init": ("Init Model", "#4a80d0"),
             "refine": ("Refine Model", "#9060d0"),
             "leaf": ("Leaf Model", "#40b060"),
-            "sparse_octree": ("Sparse Root", "#d07030"),
+            "voxy": ("Voxy", "#d07030"),
             "terrain_shaper": ("Stage 1 Density", "#20b2aa"),
             "loopback": ("Loopback (Future)", "#666666"),
         }
@@ -447,9 +447,7 @@ class DetailPanel(QDockWidget):
         assert self._registry is not None
         step = STEP_BY_ID.get(step_id)
         training_summary: dict[str, str] | None = None
-        if step and exit_code == 0 and (
-            step.phase == "train" or step_id == "continue_train_sparse_octree"
-        ):
+        if step and exit_code == 0 and (step.phase == "train" or step_id == "continue_train_voxy"):
             training_summary = summarize_training_run(
                 step,
                 self._step_log_buffers.get(step_id, []),

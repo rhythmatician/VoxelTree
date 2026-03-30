@@ -8,7 +8,7 @@ column-height enrichment, and octree pair cache building.
 Canonical pipeline steps (run all, or start from any step):
   1) pregen              — RCON: freeze world + Chunky chunk generation
   2) voxy-import         — MANUAL: connect Modrinth client; Voxy auto-populates server LOD DB
-  3) dumpnoise           — RCON: /dumpnoise terrain_shaper + sparse_octree → all training formats
+  3) dumpnoise           — RCON: /dumpnoise terrain_shaper + voxy → all training formats
   4) extract-octree      — Voxy RocksDB → data/voxy_octree/level_N/*.npz
   5) column-heights-octree — Merge vanilla heightmaps from dumpnoise JSON into NPZs
   6) build-octree-pairs  — NPZ → octree training pair caches (*_octree_pairs.npz)
@@ -19,7 +19,7 @@ Steps logically group into three phases:
 
   WORLD & NOISE GENERATION (Steps 1–3):
     └─ RCON commands: freeze/pregen/dumpnoise
-    └─ Outputs: Voxy RocksDB + terrain_shaper_dumps/*.json + sparse_octree_dumps/*.json
+    └─ Outputs: Voxy RocksDB + terrain_shaper_dumps/*.json + voxy_dumps/*.json
     └─ Only needed if regenerating data or switching world seeds
 
   DATA EXTRACTION (Step 4):
@@ -1039,7 +1039,7 @@ def build_parser() -> argparse.ArgumentParser:
             Pipeline steps:
               pregen                 RCON — freeze world + Chunky pregeneration
               voxy-import            RCON — /voxy import world <name>
-              dumpnoise              RCON — /dumpnoise terrain_shaper + /dumpnoise sparse_octree → all formats
+              dumpnoise              RCON — /dumpnoise terrain_shaper + /dumpnoise voxy → all formats
               extract-octree         Voxy RocksDB → data/voxy_octree/level_N/*.npz (all LOD levels)
               column-heights-octree  Merge 5-plane heightmaps (32×32) into octree NPZs
               build-octree-pairs     Build parent/child octree training pairs
@@ -1168,3 +1168,4 @@ def main(argv: list[str] | None = None) -> None:
 
 if __name__ == "__main__":
     main()
+

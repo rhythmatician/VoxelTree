@@ -115,7 +115,7 @@ class ModelContract:
 
     Parameters
     ----------
-    model_name : Stable model family name (e.g. ``'density'``, ``'sparse_octree'``).
+    model_name : Stable model family name (e.g. ``'density'``, ``'voxy'``).
                  This is the *semantic* name — it never changes when you bump
                  the I/O contract.
     revision   : Monotonically increasing integer.  Bump whenever any input
@@ -357,3 +357,4 @@ def compare_specs(
 
 class ContractViolation(Exception):
     """Raised when live tensors don't match the declared contract."""
+

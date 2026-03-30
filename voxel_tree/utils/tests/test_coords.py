@@ -351,7 +351,7 @@ def test_trace_block_contains_all_levels() -> None:
 
 # ══════════════════════════════════════════════════════════════════════════
 #  Cross-validation: noise section → Voxy L4 key mapping
-#  This is the exact mapping fix in build_sparse_octree_pairs.py
+#  This is the exact mapping fix in build_voxy_pairs.py
 # ══════════════════════════════════════════════════════════════════════════
 
 
@@ -379,6 +379,6 @@ def test_noise_section_to_voxy_l4(noise_sy: int, expected_voxy_y: int) -> None:
     """Noise dump sy → Voxy L4 WorldSection Y mapping.
 
     This is the critical mapping that was WRONG (raw key equality) in
-    build_sparse_octree_pairs.py before the fix.
+    build_voxy_pairs.py before the fix.
     """
     assert section_to_world_section(noise_sy, 4) == expected_voxy_y

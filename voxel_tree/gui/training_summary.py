@@ -14,7 +14,7 @@ _DISPLAY_NAMES = {
     "biome_classifier": "Biome Classifier",
     "density": "Density MLP",
     "heightmap_predictor": "Heightmap Predictor",
-    "sparse_octree": "Sparse Octree",
+    "voxy": "Voxy",
 }
 
 
@@ -40,10 +40,10 @@ def summarize_training_run(
         "text": "\n".join(text_lines),
     }
 
-    # Attach history for sparse_octree and similar models
+    # Attach history for voxy and similar models
     track = step.track or ""
-    if track == "sparse_octree":
-        parsed_result = _parse_last_sparse_result(log_lines)
+    if track == "voxy":
+        parsed_result = _parse_last_voxy_result(log_lines)
         if parsed_result and isinstance(parsed_result.get("history"), list):
             result["history"] = parsed_result["history"]
             result["metric_key"] = "loss"
@@ -56,7 +56,7 @@ def summarize_build_pairs_run(
 ) -> dict[str, Any] | None:
     """Build a popup summary for a completed build_pairs step.
 
-    Parses the ``[STEP_RESULT]`` JSON emitted by build_sparse_octree_pairs.main()
+    Parses the ``[STEP_RESULT]`` JSON emitted by build_voxy_pairs.main()
     and returns a dict with ``title`` and ``text`` keys (same shape as the
     dict returned by :func:`summarize_training_run`).
     """
@@ -125,8 +125,8 @@ def _summary_lines_for_step(step: StepDef, log_lines: Sequence[str]) -> list[str
         return _summarize_density(log_lines)
     if track == "heightmap_predictor":
         return _summarize_heightmap(log_lines)
-    if track == "sparse_octree":
-        return _summarize_sparse_octree(log_lines)
+    if track == "voxy":
+        return _summarize_voxy(log_lines)
     return _summarize_octree_style(log_lines)
 
 
@@ -193,8 +193,8 @@ def _summarize_heightmap(lines: Sequence[str]) -> list[str]:
     ]
 
 
-def _summarize_sparse_octree(lines: Sequence[str]) -> list[str]:
-    result = _parse_last_sparse_result(lines)
+def _summarize_voxy(lines: Sequence[str]) -> list[str]:
+    result = _parse_last_voxy_result(lines)
     if not result:
         return []
 
@@ -215,7 +215,7 @@ def _summarize_sparse_octree(lines: Sequence[str]) -> list[str]:
     return summary
 
 
-def _parse_last_sparse_result(lines: Sequence[str]) -> dict[str, Any] | None:
+def _parse_last_voxy_result(lines: Sequence[str]) -> dict[str, Any] | None:
     for line in reversed(lines):
         stripped = line.strip()
         try:
@@ -267,3 +267,4 @@ def _summarize_octree_style(lines: Sequence[str]) -> list[str]:
 
 def _format_float(value: Any, precision: int = 4) -> str:
     return f"{float(value):.{precision}f}"
+
