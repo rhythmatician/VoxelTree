@@ -19,6 +19,9 @@ Schema:
 from __future__ import annotations
 
 import json
+import sys
+import types
+import importlib
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
@@ -50,6 +53,59 @@ _RUNS_ROOT = _find_project_root(Path(__file__).resolve().parent) / "runs"
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _read_checkpoint_epoch(checkpoint_path: Path) -> int | None:
+    """Best-effort checkpoint epoch extraction.
+
+    Returns None if torch is unavailable, the file is unreadable, or the
+    checkpoint does not contain an integer-like ``epoch`` field.
+    """
+    try:
+        import torch  # noqa: PLC0415
+    except Exception:
+        return None
+
+    # Backward-compat: older checkpoints were pickled with
+    # voxel_tree.tasks.sparse_octree.* module paths.
+    _install_legacy_sparse_octree_aliases()
+
+    try:
+        ckpt = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+    except Exception:
+        return None
+
+    if isinstance(ckpt, dict):
+        epoch = ckpt.get("epoch")
+        try:
+            return int(epoch) if epoch is not None else None
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
+def _install_legacy_sparse_octree_aliases() -> None:
+    """Install sys.modules aliases for pre-rename sparse_octree paths."""
+    pkg_name = "voxel_tree.tasks.sparse_octree"
+    if pkg_name not in sys.modules:
+        pkg = types.ModuleType(pkg_name)
+        pkg.__path__ = []  # mark as package-like for import machinery
+        sys.modules[pkg_name] = pkg
+
+    alias_targets = {
+        f"{pkg_name}.voxy_models": "voxel_tree.tasks.voxy.voxy_models",
+        f"{pkg_name}.voxy_train": "voxel_tree.tasks.voxy.voxy_train",
+        f"{pkg_name}.voxy_dataset": "voxel_tree.tasks.voxy.voxy_dataset",
+        f"{pkg_name}.voxy_targets": "voxel_tree.tasks.voxy.voxy_targets",
+    }
+    for old_name, new_name in alias_targets.items():
+        if old_name in sys.modules:
+            continue
+        try:
+            sys.modules[old_name] = importlib.import_module(new_name)
+        except Exception:
+            # Best-effort only; unresolved aliases simply won't be used.
+            continue
 
 
 class RunRegistry:
@@ -129,8 +185,10 @@ class RunRegistry:
         markers when the underlying data is still present.  It only nudges the
         early pipeline steps (pregen/voxy_import/dumpnoise/extract) which are
         easy to detect, plus column_heights if ``heightmap32`` planes exist.
-        Other steps are left unchanged since verifying them would require
-        parsing model checkpoints, pair caches, etc.
+
+        For Voxy per-level training, existing checkpoint files are also treated
+        as evidence that corresponding train steps completed successfully; when
+        possible, ``epochs_completed`` is restored from checkpoint metadata.
 
         The method is idempotent and will save the state file if any changes are
         made.
@@ -194,6 +252,31 @@ class RunRegistry:
         if changed:
             # ``mark_success`` already saved, but ensure overall registry persists
             self.save()
+
+        # Voxy train checkpoint recovery: restore historical train statuses and
+        # epoch counters so the dashboard reflects prior runs.
+        train_cfg = profile.get("train", {})
+        output_dir = Path(train_cfg.get("output_dir", "checkpoints"))
+        found_voxy_checkpoint = False
+        for level in range(4, -1, -1):
+            step_id = f"train_voxy_l{level}"
+            ckpt_path = output_dir / f"voxy_L{level}.pt"
+            if not ckpt_path.exists():
+                continue
+
+            found_voxy_checkpoint = True
+            _set_success(step_id)
+
+            epoch = _read_checkpoint_epoch(ckpt_path)
+            if epoch is not None and self.get_metadata(step_id, "epochs_completed") != epoch:
+                self.set_metadata(step_id, "epochs_completed", epoch)
+
+        if found_voxy_checkpoint:
+            # If we can see Voxy train checkpoints, upstream data-acquisition
+            # must have completed at least once. Mark these done to avoid
+            # stale propagation that would otherwise hide green train nodes.
+            for sid in ("pregen", "harvest", "extract_octree", "dumpnoise", "import_voxy"):
+                _set_success(sid)
 
     # ------------------------------------------------------------------
     # Accessors
@@ -279,12 +362,17 @@ class RunRegistry:
     # ------------------------------------------------------------------
 
     def mark_started(self, step_id: str) -> None:
-        self._state[step_id] = {
+        prev = self._state.get(step_id, {})
+        entry: dict[str, Any] = {
             "status": "running",
             "started_at": _now_iso(),
             "completed_at": None,
             "exit_code": None,
         }
+        metadata = prev.get("metadata")
+        if isinstance(metadata, dict) and metadata:
+            entry["metadata"] = dict(metadata)
+        self._state[step_id] = entry
         self.save()
 
     def mark_success(self, step_id: str) -> None:
@@ -304,12 +392,20 @@ class RunRegistry:
         self.save()
 
     def reset_step(self, step_id: str) -> None:
-        self._state[step_id] = {
+        prev = self._state.get(step_id, {})
+        entry: dict[str, Any] = {
             "status": "not_run",
             "started_at": None,
             "completed_at": None,
             "exit_code": None,
         }
+        # Keep configured epoch targets visible in the dashboard after reset.
+        metadata = prev.get("metadata")
+        if isinstance(metadata, dict):
+            target = metadata.get("epochs_target")
+            if target is not None:
+                entry["metadata"] = {"epochs_target": target}
+        self._state[step_id] = entry
         self.save()
 
     # ------------------------------------------------------------------

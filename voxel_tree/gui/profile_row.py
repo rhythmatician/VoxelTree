@@ -382,7 +382,15 @@ class ProfileRow(QWidget):
             # Show epoch count for any train step
             if step_id.startswith("train_"):
                 epochs = self.registry.get_metadata(step_id, "epochs_completed")
-                node.set_metadata(f"{epochs}e" if epochs is not None else None)
+                target = self.registry.get_metadata(step_id, "epochs_target")
+                if epochs is not None and target is not None:
+                    node.set_metadata(f"{epochs}/{target}")
+                elif epochs is not None:
+                    node.set_metadata(f"{epochs}e")
+                elif target is not None:
+                    node.set_metadata(f"{target}e")
+                else:
+                    node.set_metadata(None)
             else:
                 node.set_metadata(None)
 

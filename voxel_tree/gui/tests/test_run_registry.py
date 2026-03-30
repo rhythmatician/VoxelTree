@@ -269,5 +269,52 @@ def test_server_session_queues_stale(tmp_path: Path, monkeypatch: pytest.MonkeyP
         s for s in _SERVER_SESSION_STEPS if reg.get_status(s) != "success" or reg.is_stale(s)
     ]
     assert server_step in pending
-    assert server_step in pending
-    assert server_step in pending
+
+
+def test_mark_started_preserves_epoch_target(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    reg = RunRegistry("keep_target")
+    step_id = "train_voxy_l0"
+    reg.set_metadata(step_id, "epochs_target", 3)
+
+    reg.mark_started(step_id)
+
+    assert reg.get_status(step_id) == "running"
+    assert reg.get_metadata(step_id, "epochs_target") == 3
+
+
+def test_reset_step_keeps_epoch_target_only(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    reg = RunRegistry("keep_target_reset")
+    step_id = "train_voxy_l1"
+    reg.set_metadata(step_id, "epochs_target", 10)
+    reg.set_metadata(step_id, "epochs_completed", 2)
+
+    reg.reset_step(step_id)
+
+    assert reg.get_status(step_id) == "not_run"
+    assert reg.get_metadata(step_id, "epochs_target") == 10
+    assert reg.get_metadata(step_id, "epochs_completed") is None
+
+
+def test_reconcile_restores_voxy_train_status_and_epochs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(run_registry, "_RUNS_ROOT", tmp_path / "runs")
+    monkeypatch.setattr(run_registry, "_read_checkpoint_epoch", lambda _p: 41)
+
+    ckpt_dir = tmp_path / "checkpoints"
+    ckpt_dir.mkdir(parents=True)
+    (ckpt_dir / "voxy_L4.pt").write_text("x")
+    (ckpt_dir / "voxy_L3.pt").write_text("x")
+
+    reg = RunRegistry("phase7_multilevel")
+    profile = {"train": {"output_dir": str(ckpt_dir)}}
+    reg.reconcile_with_profile(profile)
+
+    assert reg.get_status("train_voxy_l4") == "success"
+    assert reg.get_status("train_voxy_l3") == "success"
+    assert reg.get_metadata("train_voxy_l4", "epochs_completed") == 41
+    assert reg.get_metadata("train_voxy_l3", "epochs_completed") == 41
+    # Upstream steps should also be marked to avoid stale propagation.
+    assert reg.get_status("import_voxy") == "success"

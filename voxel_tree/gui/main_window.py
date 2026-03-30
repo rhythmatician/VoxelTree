@@ -22,6 +22,7 @@ from voxel_tree.gui.profile_editor import (
 from voxel_tree.gui.run_registry import RunRegistry
 from voxel_tree.gui.server_manager import ServerManager
 from voxel_tree.gui.server_status_bar import ServerStatusBar
+from voxel_tree.gui.step_definitions import PIPELINE_STEPS, StepDef
 from voxel_tree.gui.training_popup import TrainingResultsPopup
 from voxel_tree.gui.continue_training_dialog import ContinueTrainingDialog
 
@@ -146,7 +147,39 @@ class MainWindow(QMainWindow):
         # Resolve per-profile DAG if present, else pass None (→ global default)
         dag = ProfileDag.from_profile_dict(data)
         steps = dag.resolve_steps() if dag is not None else None
+        self._sync_epoch_targets(self._registries[name], data, steps)
         self._dashboard.add_profile(name, self._registries[name], steps=steps)
+
+    def _sync_epoch_targets(
+        self,
+        registry: RunRegistry,
+        profile: dict[str, Any],
+        steps: list[StepDef] | None,
+    ) -> None:
+        """Store configured epoch targets per train step for dashboard badges."""
+        train_cfg = profile.get("train", {})
+        default_epochs = train_cfg.get("epochs")
+        step_list = steps if steps is not None else list(PIPELINE_STEPS)
+        for step in step_list:
+            sid = step.id
+            if not sid.startswith("train_"):
+                continue
+            target = None
+            if sid.startswith("train_voxy_l"):
+                try:
+                    level = int(sid.removeprefix("train_voxy_l"))
+                except ValueError:
+                    level = None
+                if level is not None:
+                    target = train_cfg.get(f"epochs_l{level}", default_epochs)
+            else:
+                target = default_epochs
+
+            try:
+                target_int = int(target) if target is not None else None
+            except (TypeError, ValueError):
+                target_int = None
+            registry.set_metadata(sid, "epochs_target", target_int)
 
     def get_profile_dict(self, profile_name: str) -> dict[str, Any] | None:
         """Called by DetailPanel to get CLI arguments for a step."""
@@ -196,6 +229,7 @@ class MainWindow(QMainWindow):
                 data = self._profiles[profile_name]
                 dag = ProfileDag.from_profile_dict(data)
                 steps = dag.resolve_steps() if dag is not None else None
+                self._sync_epoch_targets(self._registries[profile_name], data, steps)
                 self._dashboard.update_profile_steps(profile_name, steps)
                 self._dashboard.refresh_profile(profile_name)
 

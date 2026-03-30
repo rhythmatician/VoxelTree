@@ -214,6 +214,24 @@ def test_profilerow_contains_new_export_deploy_nodes():
         assert step in row._nodes, f"missing node {step}"
 
 
+def test_profilerow_shows_target_and_completed_target_epochs():
+    reg = RunRegistry("epochs_badges")
+    reg.set_metadata("train_voxy_l0", "epochs_target", 3)
+    reg.set_metadata("train_voxy_l1", "epochs_target", 10)
+    reg.set_metadata("train_voxy_l1", "epochs_completed", 2)
+
+    from voxel_tree.gui.profile_row import ProfileRow
+
+    row = ProfileRow("epochs_badges", reg)
+    row.refresh()
+
+    n0 = row._nodes.get("train_voxy_l0")
+    n1 = row._nodes.get("train_voxy_l1")
+    assert n0 is not None and n1 is not None
+    assert n0._icon() == "3e"
+    assert n1._icon() == "2/10"
+
+
 def test_stepnode_rightclick_emits_signal():
     widget = StepNodeWidget("s2", "S2")
     events: list[tuple[str, object]] = []
