@@ -349,23 +349,17 @@ def _dumpnoise_run(p: dict[str, Any]) -> None:
         if e.code != 0:
             raise RuntimeError(f"Dumpnoise failed with exit code {e.code}") from e
 
-    # The DataHarvester mod writes section_*.json to the server's
-    # sparse_root_dumps/ directory.  Move them into the profile-configured
-    # v7_dumps_dir so that build_v7_pairs can find them.
-    server_sparse_root = DEFAULT_SERVER_DIR / "sparse_root_dumps"
-    v7_dumps_dir = Path(data.get("v7_dumps_dir", "data/v7_dumps"))
-    if server_sparse_root.is_dir() and server_sparse_root != v7_dumps_dir.resolve():
-        section_files = list(server_sparse_root.glob("section_*.json"))
-        if section_files:
-            v7_dumps_dir.mkdir(parents=True, exist_ok=True)
-            print(
-                f"\n  Moving {len(section_files):,} section_*.json files"
-                f"\n    from {server_sparse_root}"
-                f"\n    to   {v7_dumps_dir}"
-            )
-            for f in section_files:
-                shutil.move(str(f), v7_dumps_dir / f.name)
-            print("  Done.")
+    # /dumpnoise v7 writes a consolidated DB file at the server runtime root.
+    # Copy it into the profile-configured path so train/holdout datasets stay isolated.
+    server_db = DEFAULT_SERVER_DIR / "v7_dumps.db"
+    target_db = Path(data.get("v7_dumps_db", "tools/fabric-server/runtime/v7_dumps.db"))
+    if not server_db.exists():
+        raise FileNotFoundError(f"Expected v7 dump DB not found: {server_db}")
+
+    target_db.parent.mkdir(parents=True, exist_ok=True)
+    if server_db.resolve() != target_db.resolve():
+        shutil.copy2(server_db, target_db)
+        print(f"\n  Copied v7_dumps.db to profile path: {target_db}")
 
 
 def _extract_octree_run(p: dict[str, Any]) -> None:
@@ -612,6 +606,7 @@ def _resolve_device(raw: str) -> str:
 
 def _train_sparse_octree_run(p: dict[str, Any]) -> None:
     import json  # noqa: PLC0415
+    import sqlite3  # noqa: PLC0415
 
     from voxel_tree.tasks.sparse_octree.voxy_train import train_voxy_level  # noqa: PLC0415
     from voxel_tree.utils.progress import report as _report_progress  # noqa: PLC0415
@@ -626,6 +621,33 @@ def _train_sparse_octree_run(p: dict[str, Any]) -> None:
             "v7_dumps_db is required for per-level Voxy training. "
             "Set data.v7_dumps_db in your profile YAML."
         )
+
+    holdout_db_str = data.get("holdout_v7_dumps_db")
+    holdout_db_path: Path | None = None
+    if holdout_db_str:
+        holdout_db_path = Path(holdout_db_str)
+        if not holdout_db_path.exists():
+            raise FileNotFoundError(
+                "holdout_v7_dumps_db is configured but missing. "
+                "Build the validation-world DB first or remove holdout_v7_dumps_db."
+            )
+        with sqlite3.connect(str(holdout_db_path)) as conn:
+            has_sections = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='sections'"
+            ).fetchone()
+            has_voxy = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='voxy_sections'"
+            ).fetchone()
+            if not has_sections or not has_voxy:
+                raise RuntimeError(
+                    "holdout_v7_dumps_db must contain sections and voxy_sections tables."
+                )
+            (n_sections,) = conn.execute("SELECT COUNT(*) FROM sections").fetchone()
+            (n_voxy,) = conn.execute("SELECT COUNT(*) FROM voxy_sections").fetchone()
+            if n_sections == 0 or n_voxy == 0:
+                raise RuntimeError(
+                    "holdout_v7_dumps_db is empty. Populate validation holdout data first."
+                )
 
     # Train each level sequentially (L4 → L0)
     out_dir = Path(train.get("output_dir", "."))
@@ -666,6 +688,7 @@ def _train_sparse_octree_run(p: dict[str, Any]) -> None:
             lr=train.get("lr", 1e-3),
             device=_resolve_device(train.get("device", "auto")),
             num_workers=train.get("num_workers", None),
+            holdout_db_path=holdout_db_path,
             progress_callback=lambda epoch, total, _m: _report_progress(epoch, total),
         )
         print(f"[STEP_RESULT]{json.dumps(result, sort_keys=True)}")

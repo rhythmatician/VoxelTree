@@ -9,16 +9,16 @@ dag:
     - id: import_voxy
 
 data:
-  data_dir: data/voxy_octree
-  voxy_dir: null
+  data_dir: data/validation/voxy_octree_seed3141592
+  voxy_dir: C:/Users/JeffHall/AppData/Roaming/ModrinthApp/profiles/LODiffusion dependencies/.voxy/saves/localhost_25566
   max_sections: null
   min_solid: 0.02
   val_split: 0.1
-  noise_dump_dir: tools/fabric-server/runtime/noise_dumps
-  v7_dumps_dir: tools/fabric-server/runtime/sparse_root_dumps
-  v7_dumps_db: tools/fabric-server/runtime/v7_dumps.db
-  v7_pairs_npz: noise_training_data/sparse_octree_pairs_v7.npz
-  v7_pairs_db: noise_training_data/sparse_octree_pairs_v7.db
+  noise_dump_dir: data/validation/seed_3141592/20260330_015148/stage1_dumps
+  v7_dumps_dir: data/validation/seed_3141592/20260330_013429/sparse_root_dumps
+  v7_dumps_db: data/validation/seed_3141592/v7_dumps_seed3141592.db
+  v7_pairs_npz: data/validation/seed_3141592/sparse_octree_pairs_v7_seed3141592.npz
+  v7_pairs_db: data/validation/seed_3141592/sparse_octree_pairs_v7_seed3141592.db
 
 world:
   name: validate

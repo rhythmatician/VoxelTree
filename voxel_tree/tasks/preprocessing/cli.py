@@ -329,14 +329,14 @@ def _check_rcon_error(response: str, cmd: str) -> None:
 def cmd_dumpnoise(cfg: PipelineConfig) -> None:
     """Consolidate all training noise dumps via single /dumpnoise command.
 
-    Sends both /dumpnoise stage1 and /dumpnoise sparse_root in sequence,
+        Sends both /dumpnoise stage1 and /dumpnoise v7 in sequence,
     generating all noise data needed for the full training pipeline:
     - stage1 format (4×48×4 cells): 12 input features + final_density per chunk
-    - sparse_root format (4×2×4 cells): 13 noise channels + biome_ids per section
+        - v7 format (4×2×4 cells): 15 RouterField channels + biome_ids + heightmaps per section
 
     Output:
       <game_dir>/stage1_dumps/chunk_<cx>_<cz>.json
-      <game_dir>/sparse_root_dumps/section_<cx>_<sy>_<cz>.json
+            <game_dir>/v7_dumps.db
     """
     # Convert block-radius to chunk-radius (round up to cover the requested area)
     chunk_radius = max(1, (cfg.radius + 15) // 16)
@@ -346,7 +346,7 @@ def cmd_dumpnoise(cfg: PipelineConfig) -> None:
         print("    (freeze commands — see 'freeze' subcommand for full list)")
         print("    /kill @e[type=!player]  # clear spawn-bloat mobs before dump")
         print(f"    /dumpnoise stage1 {chunk_radius}")
-        print(f"    /dumpnoise sparse_root {chunk_radius}")
+        print(f"    /dumpnoise v7 {chunk_radius}")
         print(f"  (block radius {cfg.radius} -> chunk radius {chunk_radius})")
         return
 
@@ -363,12 +363,14 @@ def cmd_dumpnoise(cfg: PipelineConfig) -> None:
     total_sections = total_chunks * 24  # 24 sections per chunk column
     print("\n  Consolidating training noise dumps:")
     print(f"    TerrainShaper:    {total_chunks:,} chunks @ 4×48×4 resolution")
-    print(f"    SparseOctree: {total_sections:,} sections @ 4×2×4 resolution + biome_ids")
+    print(
+        f"    RouterField v7:  {total_sections:,} sections @ 4×2×4 + biome_ids + heightmaps"
+    )
 
     timeout = cfg.voxy_import_timeout
     interval = 5
 
-    with RconClient(cfg.host, cfg.port, cfg.password) as rcon:
+    with RconClient(cfg.host, cfg.port, cfg.password, timeout=max(float(timeout), 30.0)) as rcon:
         # Kill all non-player entities before dumping.
         #
         # Chunky pregen loads 128 K+ chunks, each of which auto-spawns mobs.
@@ -418,9 +420,9 @@ def cmd_dumpnoise(cfg: PipelineConfig) -> None:
                 f"(~{int(estimate - elapsed)}s remaining)..."
             )
 
-        # ── SparseRoot dump ──────────────────────────────────────────────────
-        print("\n  [2/2] Dumping SparseRoot noise...")
-        cmd_str = f"dumpnoise sparse_root {chunk_radius}"
+        # ── V7 RouterField dump ───────────────────────────────────────────────
+        print("\n  [2/2] Dumping V7 RouterField DB...")
+        cmd_str = f"dumpnoise v7 {chunk_radius}"
         resp = rcon.command(cmd_str)
         resp_text = resp.strip() or "(no response)"
         try:
@@ -435,7 +437,7 @@ def cmd_dumpnoise(cfg: PipelineConfig) -> None:
         while time.time() - start < timeout:
             time.sleep(interval)
             elapsed = time.time() - start
-            # Heuristic: ~400 sections/sec is typical for SparseOctree (more fine-grained, smaller writes)
+            # Heuristic: v7 dump writes a DB row per section; allow similar throughput.
             estimate = total_sections / 400.0 + 5.0
             if elapsed >= estimate:
                 break
@@ -447,7 +449,7 @@ def cmd_dumpnoise(cfg: PipelineConfig) -> None:
     # ── Summary ─────────────────────────────────────────────────────────
     print("\n  Noise consolidation complete:")
     print(f"    [OK] Stage1:       <game_dir>/stage1_dumps/ ({total_chunks:,} files)")
-    print(f"    [OK] SparseRoot:   <game_dir>/sparse_root_dumps/ ({total_sections:,} files)")
+    print("    [OK] RouterField:  <game_dir>/v7_dumps.db")
 
 
 # ---------------------------------------------------------------------------

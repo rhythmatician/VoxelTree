@@ -422,6 +422,7 @@ def train_voxy_level(
     air_water_weight: float = 1.7,
     surface_veg_weight: float = 3.0,
     stone_ore_weight: float = 0.35,
+    holdout_db_path: Optional[Path] = None,
     progress_callback: Optional[Callable[[int, int, Dict[str, float]], None]] = None,
 ) -> Dict[str, Any]:
     """Train a single Voxy-level model.
@@ -452,6 +453,9 @@ def train_voxy_level(
         air_water_weight: Weight for air/water classes.
         surface_veg_weight: Weight for visible surface/vegetation classes.
         stone_ore_weight: Weight for stone/ore classes.
+        holdout_db_path: Optional path to a separate validation-world dumps DB.
+            When provided, per-epoch holdout loss/accuracy are computed from
+            this DB and reported separately from training metrics.
         progress_callback: Called each epoch with (epoch, total, metrics).
 
     Returns:
@@ -540,6 +544,36 @@ def train_voxy_level(
         prefetch_factor=2 if _nw > 0 else None,
     )
     print(f"[L{level}] DataLoader: num_workers={_nw}")
+
+    # ── Optional holdout loader (separate world/seed) ─────────────────
+    holdout_loader: Optional[DataLoader] = None
+    if holdout_db_path is not None and Path(holdout_db_path).exists():
+        holdout_db_path = Path(holdout_db_path)
+        if level == 4:
+            holdout_ds: VoxyLevelDataset | VoxyLevelWithParentDataset = VoxyLevelDataset(
+                holdout_db_path, level, min_coverage, vocab_remap=_vocab_remap, cache=cache_dataset
+            )
+        else:
+            holdout_ds = VoxyLevelWithParentDataset(
+                holdout_db_path, level, min_coverage, vocab_remap=_vocab_remap, cache=cache_dataset
+            )
+        if len(holdout_ds) > 0:
+            holdout_loader = DataLoader(
+                holdout_ds,
+                batch_size=batch_size,
+                shuffle=False,
+                collate_fn=voxy_level_collate,
+                num_workers=_nw,
+                persistent_workers=_nw > 0,
+                prefetch_factor=2 if _nw > 0 else None,
+            )
+            print(
+                f"[L{level}] Holdout: {len(holdout_ds)} samples from {holdout_db_path}"
+            )
+        else:
+            print(
+                f"[L{level}] Holdout DB has zero samples at this level: {holdout_db_path}"
+            )
 
     # ── Resume ────────────────────────────────────────────────────
     start_epoch = 1
@@ -691,6 +725,70 @@ def train_voxy_level(
             "important_frac": avg_priority_frac,
             "surface_frac": avg_surface,
         }
+
+        if holdout_loader is not None:
+            model.eval()
+            h_loss = 0.0
+            h_block_loss = 0.0
+            h_occ_loss = 0.0
+            h_acc_weighted = 0.0
+            h_acc_n = 0
+            h_priority_acc_weighted = 0.0
+            h_priority_n = 0
+            h_batches = 0
+
+            with torch.no_grad():
+                for batch in holdout_loader:
+                    y_position = batch["y_position"].to(_device)
+                    labels32 = batch["labels32"].to(_device)
+
+                    if level >= 2:
+                        climate_2d = batch["climate_2d"].to(_device)
+                        biome_2d = batch["biome_2d"].to(_device)
+                        if has_parent:
+                            parent_blocks = batch["parent_blocks"].to(_device)
+                            preds = model(climate_2d, biome_2d, y_position, parent_blocks)
+                        else:
+                            preds = model(climate_2d, biome_2d, y_position)
+                    else:
+                        noise_3d = batch["noise_3d"].to(_device)
+                        biome_3d = batch["biome_3d"].to(_device)
+                        if has_parent:
+                            parent_blocks = batch["parent_blocks"].to(_device)
+                            preds = model(noise_3d, biome_3d, y_position, parent_blocks)
+                        else:
+                            preds = model(noise_3d, biome_3d, y_position)
+
+                    losses = _voxy_level_loss(
+                        preds["block_logits"],
+                        labels32,
+                        label_smoothing=label_smoothing,
+                        occ_weight=occ_weight,
+                        interior_weight=interior_weight,
+                        semantic_class_weights=semantic_class_weights,
+                        priority_threshold=default_block_weight,
+                    )
+                    h_loss += losses["loss"].item()
+                    h_block_loss += losses["block_loss"].item()
+                    h_occ_loss += losses["occ_loss"].item()
+                    h_batches += 1
+
+                    acc = _compute_block_accuracy(
+                        preds["block_logits"],
+                        labels32,
+                        semantic_class_weights=semantic_class_weights,
+                        priority_threshold=default_block_weight,
+                    )
+                    h_acc_weighted += acc["block_acc"] * acc["n_valid"]
+                    h_acc_n += acc["n_valid"]
+                    h_priority_acc_weighted += acc["priority_acc"] * acc["n_priority"]
+                    h_priority_n += acc["n_priority"]
+
+            row["holdout_loss"] = h_loss / max(h_batches, 1)
+            row["holdout_block_loss"] = h_block_loss / max(h_batches, 1)
+            row["holdout_occ_loss"] = h_occ_loss / max(h_batches, 1)
+            row["holdout_block_acc"] = h_acc_weighted / max(h_acc_n, 1)
+            row["holdout_important_acc"] = h_priority_acc_weighted / max(h_priority_n, 1)
         history.append(row)
         sfrac_str = f" surface={avg_surface:.1%}" if interior_weight < 1.0 else ""
         imp_str = f" important_acc={avg_priority_acc:.3f} important_frac={avg_priority_frac:.1%}"
@@ -698,6 +796,12 @@ def train_voxy_level(
             f"  [L{level}] E{epoch}: loss={avg_loss:.4f} block={avg_block:.4f} "
             f"occ={avg_occ:.4f} acc={avg_acc:.3f}{imp_str}{sfrac_str}"
         )
+        if holdout_loader is not None:
+            print(
+                f"  [L{level}]      holdout_loss={row['holdout_loss']:.4f} "
+                f"holdout_acc={row['holdout_block_acc']:.3f} "
+                f"holdout_important_acc={row['holdout_important_acc']:.3f}"
+            )
 
         if avg_loss < best_loss:
             best_loss = avg_loss
@@ -794,6 +898,12 @@ def main() -> None:
         default=0.35,
         help="Loss weight for stone and ore classes",
     )
+    parser.add_argument(
+        "--holdout-db",
+        type=Path,
+        default=None,
+        help="Optional separate holdout DB path used only for validation metrics",
+    )
     args = parser.parse_args()
 
     out = args.out or Path(f"checkpoints/voxy_L{args.level}.pt")
@@ -819,6 +929,7 @@ def main() -> None:
         air_water_weight=args.air_water_weight,
         surface_veg_weight=args.surface_veg_weight,
         stone_ore_weight=args.stone_ore_weight,
+        holdout_db_path=args.holdout_db,
     )
 
 
