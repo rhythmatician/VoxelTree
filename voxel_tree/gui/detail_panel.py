@@ -416,9 +416,18 @@ class DetailPanel(QDockWidget):
             import re
 
             m = re.search(r"Epoch\s+(\d+)[/\\](\d+)", line)
+            if m is None:
+                # Voxy trainers log compact progress as "E3/40".
+                m = re.search(r"\bE(\d+)[/\\](\d+)\b", line)
             if m:
                 epoch = int(m.group(1))
                 self._registry.set_metadata(step_id, "epochs_completed", epoch)
+                parent = cast(_ParentInterface, self.parent())
+                assert self._profile_name is not None
+                if hasattr(parent, "on_step_progress"):
+                    parent.on_step_progress(self._profile_name, step_id)
+                elif hasattr(parent, "_dashboard"):
+                    parent._dashboard.refresh_profile(self._profile_name)
 
             # Chunky pregeneration progress: "[Chunky] Task running ... (12.34%), ..."
             m_chunky = re.search(r"\[Chunky\].*\((\d+\.?\d*)%\)", line)

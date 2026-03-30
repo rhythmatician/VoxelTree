@@ -104,6 +104,32 @@ def test_detailpanel_on_progress_updates_registry_and_parent(monkeypatch):
     assert parent.calls[-1] == ("p", "foo")
 
 
+def test_detailpanel_parses_voxy_epoch_log_and_refreshes_parent():
+    reg = RunRegistry("p")
+    panel = DetailPanel()
+    panel.load_profile("p", reg)
+
+    from PySide6.QtWidgets import QWidget
+
+    class Parent(QWidget):
+        def __init__(self):
+            super().__init__()
+            self.calls: List[Any] = []
+
+        def on_step_progress(self, profile, step):
+            self.calls.append((profile, step))
+
+    parent = Parent()
+    panel.setParent(parent)
+
+    step_id = "train_voxy_l3"
+    reg.mark_started(step_id)
+    panel._on_log_line(step_id, "  E3/40 [12/100] 12.0%  loss=1.2345  ETA 9m")
+
+    assert reg.get_metadata(step_id, "epochs_completed") == 3
+    assert parent.calls == [("p", step_id)]
+
+
 def test_profilerow_refresh_shows_progress():
     # create a dummy registry with a fake progress value
     reg = RunRegistry("x")
