@@ -149,6 +149,16 @@ def _compute_dag_layout(
         depth[node] = (max(depth[p] for p in preds) + 1) if preds else 0
 
     def _eff_track(s: StepDef) -> str:
+        # Give each Voxy level its own lane: train/export/deploy for L4..L0.
+        # Step ids are generated as "{phase}_voxy_l{N}".
+        if s.track == "voxy":
+            sid = s.id
+            marker = "_voxy_l"
+            ix = sid.find(marker)
+            if ix != -1:
+                level = sid[ix + len(marker) :]
+                if level.isdigit():
+                    return "voxy_l" + level
         if s.track:
             return s.track
         return "loopback" if s.phase == "loopback" else "data_acq"
@@ -443,6 +453,8 @@ class _NodesWidget(QWidget):
         # Swim-lane backgrounds — one tinted strip per model track
         for tid, (start_row, height) in self._band_info.items():
             track = TRACK_BY_ID.get(tid)
+            if track is None and tid.startswith("voxy_l"):
+                track = TRACK_BY_ID.get("voxy")
             if track is None:
                 continue  # data_acq and loopback have no ModelTrack entry
             y = start_row * _ROW_H + _V_PAD - _ROW_GAP // 2

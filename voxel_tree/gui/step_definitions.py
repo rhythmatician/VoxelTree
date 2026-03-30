@@ -1199,16 +1199,12 @@ def _deploy_heightmap_run(p: dict[str, Any]) -> None:
 
 
 # -- Per-level Voxy StepDefs (L4 -> L0) ---------------------------------------
-# L4 is the root level (no parent conditioning) -- always trains first.
-# Each lower level consumes its parent-level checkpoint as a prerequisite,
-# enforcing the correct L4 -> L3 -> L2 -> L1 -> L0 training order.
+# Each level has an independent train/export/deploy chain.
+# All train levels depend only on imported DB artifacts so L4..L0 can run in
+# parallel when desired.
 _VOXY_LEVEL_STEPS: list[StepDef] = []
 for _lv in range(4, -1, -1):
-    _train_consumes: frozenset[str] = (
-        frozenset({"voxy_db_imported"})
-        if _lv == 4
-        else frozenset({"voxy_l" + str(_lv + 1) + "_checkpoint"})
-    )
+    _train_consumes: frozenset[str] = frozenset({"voxy_db_imported"})
     _VOXY_LEVEL_STEPS.extend(
         [
             StepDef(
