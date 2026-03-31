@@ -719,6 +719,7 @@ def _train_voxy_run(p: dict[str, Any]) -> None:
             surface_veg_weight=float(train.get("surface_veg_weight", 3.0)),
             stone_ore_weight=float(train.get("stone_ore_weight", 0.35)),
             holdout_db_path=holdout_db_path,
+            allow_overwrite_without_resume=bool(train.get("force_retrain", False)),
             progress_callback=lambda epoch, total, _m: _report_progress(epoch, total),
         )
         print(f"[STEP_RESULT]{json.dumps(result, sort_keys=True)}")
@@ -807,6 +808,11 @@ def _continue_train_voxy_run(p: dict[str, Any]) -> None:
             _install_legacy_sparse_octree_aliases()
             ckpt = torch.load(str(out_path), map_location="cpu", weights_only=False)
         current_epoch: int = ckpt.get("epoch", 0)
+        if current_epoch <= 0:
+            raise RuntimeError(
+                f"[L{level}] Checkpoint at {out_path} has no valid epoch metadata; "
+                "aborting continue-train to avoid accidental retraining from epoch 1."
+            )
         target_epoch = current_epoch + additional
 
         print(
@@ -829,9 +835,11 @@ def _continue_train_voxy_run(p: dict[str, Any]) -> None:
             surface_veg_weight=float(train.get("surface_veg_weight", 3.0)),
             stone_ore_weight=float(train.get("stone_ore_weight", 0.35)),
             holdout_db_path=holdout_db_path,
+            allow_overwrite_without_resume=bool(train.get("force_retrain", False)),
             progress_callback=lambda epoch, total, _m: _report_progress(epoch, total),
         )
         print(f"[STEP_RESULT]{json.dumps(result, sort_keys=True)}")
+
 
 # ---------------------------------------------------------------------------
 # Step runners - Voxy per-level (one DAG node per octree level)
@@ -883,7 +891,11 @@ def _make_train_voxy_l_run(level: int) -> Callable[[dict[str, Any]], None]:
         ep = int(train.get(("epochs_l" + str(level)), train.get("epochs", 40)))
 
         if out_path.exists() and not train.get("force_retrain", False):
-            print("[L" + str(level) + "] Checkpoint exists — skipping (set force_retrain: true to override)")
+            print(
+                "[L"
+                + str(level)
+                + "] Checkpoint exists — skipping (set force_retrain: true to override)"
+            )
             return
 
         result = train_voxy_level(
@@ -900,9 +912,11 @@ def _make_train_voxy_l_run(level: int) -> Callable[[dict[str, Any]], None]:
             surface_veg_weight=float(train.get("surface_veg_weight", 3.0)),
             stone_ore_weight=float(train.get("stone_ore_weight", 0.35)),
             holdout_db_path=holdout_db_path,
+            allow_overwrite_without_resume=bool(train.get("force_retrain", False)),
             progress_callback=lambda epoch, total, _m: _report_progress(epoch, total),
         )
         import json as _json_  # noqa: PLC0415
+
         print("[STEP_RESULT]" + _json_.dumps(result, sort_keys=True))
 
     return _run
@@ -923,9 +937,7 @@ def _make_deploy_voxy_l_run(level: int) -> Callable[[dict[str, Any]], None]:
     """Return a runner that deploys Voxy L{level} to LODiffusion (not yet implemented)."""
 
     def _run(_p: dict[str, Any]) -> None:
-        raise NotImplementedError(
-            "Voxy L" + str(level) + " deployment is not yet implemented."
-        )
+        raise NotImplementedError("Voxy L" + str(level) + " deployment is not yet implemented.")
 
     return _run
 
@@ -1289,9 +1301,9 @@ MODEL_TRACKS: list[ModelTrack] = [
         label="Voxy",
         swim_lane_color="#2a1500",
         build_pairs_factory=_build_pairs_voxy_run,
-        train_factory=None,    # replaced by per-level steps in extra_steps
-        export_factory=None,   # replaced by per-level steps in extra_steps
-        deploy_factory=None,   # replaced by per-level steps in extra_steps
+        train_factory=None,  # replaced by per-level steps in extra_steps
+        export_factory=None,  # replaced by per-level steps in extra_steps
+        deploy_factory=None,  # replaced by per-level steps in extra_steps
         build_pairs_consumes=frozenset({"voxy_db", "noise_dumps"}),
         checkpoint_filename=_VOXY_CHECKPOINT,
         contract_name="voxy",

@@ -423,6 +423,7 @@ def train_voxy_level(
     surface_veg_weight: float = 3.0,
     stone_ore_weight: float = 0.35,
     holdout_db_path: Optional[Path] = None,
+    allow_overwrite_without_resume: bool = False,
     progress_callback: Optional[Callable[[int, int, Dict[str, float]], None]] = None,
 ) -> Dict[str, Any]:
     """Train a single Voxy-level model.
@@ -456,6 +457,10 @@ def train_voxy_level(
         holdout_db_path: Optional path to a separate validation-world dumps DB.
             When provided, per-epoch holdout loss/accuracy are computed from
             this DB and reported separately from training metrics.
+        allow_overwrite_without_resume: Safety escape hatch. When False
+            (default), if ``out_path`` already exists and ``resume_from`` is
+            not provided, training aborts to prevent accidental overwrite of
+            existing checkpoints from epoch 1.
         progress_callback: Called each epoch with (epoch, total, metrics).
 
     Returns:
@@ -463,6 +468,12 @@ def train_voxy_level(
     """
     db_path = Path(db_path)
     out_path = Path(out_path)
+    if out_path.exists() and resume_from is None and not allow_overwrite_without_resume:
+        raise RuntimeError(
+            f"Refusing to overwrite existing checkpoint without resume: {out_path}. "
+            "Pass resume_from=<checkpoint> to continue training, or set "
+            "allow_overwrite_without_resume=True for intentional retraining."
+        )
     _device = torch.device(device)
 
     # ── Auto-detect vocab size & load remap ───────────────────────

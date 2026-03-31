@@ -10,6 +10,7 @@ from PySide6.QtCore import QEvent
 from voxel_tree.gui import app as gui_app
 from voxel_tree.gui.detail_panel import DetailPanel
 from voxel_tree.gui.run_registry import RunRegistry
+from voxel_tree.gui import step_definitions
 from voxel_tree.gui.step_node_widget import StepNodeWidget
 
 
@@ -179,6 +180,34 @@ def test_detailpanel_continue_training_routes_epochs_to_level_node():
 
     assert reg.get_metadata("train_voxy_l2", "epochs_completed") == 9
     assert parent.calls == [("p", "train_voxy_l2")]
+
+
+def test_continue_train_runner_passes_resume_from(monkeypatch, tmp_path):
+    db_path = tmp_path / "v7_dumps.db"
+    db_path.write_text("x")
+    ckpt_path = tmp_path / "voxy_L2.pt"
+    ckpt_path.write_text("x")
+
+    calls: list[dict[str, Any]] = []
+
+    def fake_train_voxy_level(*_args, **kwargs):
+        calls.append(kwargs)
+        return {"checkpoint": str(ckpt_path), "best_loss": 0.0, "history": []}
+
+    monkeypatch.setattr("voxel_tree.tasks.voxy.voxy_train.train_voxy_level", fake_train_voxy_level)
+    monkeypatch.setattr("torch.load", lambda *_a, **_k: {"epoch": 40})
+
+    profile = {
+        "data": {"v7_dumps_db": str(db_path)},
+        "train": {"output_dir": str(tmp_path)},
+        "_continue_levels": [2],
+        "_continue_epochs": 2,
+    }
+    step_definitions._continue_train_voxy_run(profile)
+
+    assert len(calls) == 1
+    assert calls[0]["resume_from"] == ckpt_path
+    assert calls[0]["epochs"] == 42
 
 
 def test_profilerow_refresh_shows_progress():
