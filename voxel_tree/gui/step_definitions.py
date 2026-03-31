@@ -819,6 +819,7 @@ def _continue_train_voxy_run(p: dict[str, Any]) -> None:
             out_path=out_path,
             level=level,
             epochs=target_epoch,
+            resume_from=out_path,
             batch_size=train.get("batch_size", 16),
             lr=train.get("lr", 1e-3),
             device=_resolve_device(train.get("device", "auto")),
@@ -831,8 +832,6 @@ def _continue_train_voxy_run(p: dict[str, Any]) -> None:
             progress_callback=lambda epoch, total, _m: _report_progress(epoch, total),
         )
         print(f"[STEP_RESULT]{json.dumps(result, sort_keys=True)}")
-
-
 
 # ---------------------------------------------------------------------------
 # Step runners - Voxy per-level (one DAG node per octree level)
