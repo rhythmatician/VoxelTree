@@ -488,8 +488,15 @@ def train_voxy_level(
         stone_ore_weight=stone_ore_weight,
     )
     print(
-        f"[L{level}] Semantic weights: air/water={semantic_summary['air_water']} "
+        f"[L{level}] Semantic class buckets: air/water={semantic_summary['air_water']} "
         f"surface+veg={semantic_summary['surface_veg']} stone/ore={semantic_summary['stone_ore']}"
+    )
+    print(
+        f"[L{level}] Semantic class weights: "
+        f"air/water={air_water_weight:.2f}x "
+        f"surface+veg={surface_veg_weight:.2f}x "
+        f"stone/ore={stone_ore_weight:.2f}x "
+        f"default={default_block_weight:.2f}x"
     )
 
     # ── Dataset ───────────────────────────────────────────────────

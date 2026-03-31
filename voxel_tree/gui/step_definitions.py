@@ -714,6 +714,10 @@ def _train_voxy_run(p: dict[str, Any]) -> None:
             lr=train.get("lr", 1e-3),
             device=_resolve_device(train.get("device", "auto")),
             num_workers=train.get("num_workers", None),
+            default_block_weight=float(train.get("default_block_weight", 1.0)),
+            air_water_weight=float(train.get("air_water_weight", 1.7)),
+            surface_veg_weight=float(train.get("surface_veg_weight", 3.0)),
+            stone_ore_weight=float(train.get("stone_ore_weight", 0.35)),
             holdout_db_path=holdout_db_path,
             progress_callback=lambda epoch, total, _m: _report_progress(epoch, total),
         )
@@ -788,7 +792,6 @@ def _continue_train_voxy_run(p: dict[str, Any]) -> None:
 
     out_dir = Path(train.get("output_dir", "."))
 
-    last_result: dict = {}
     for level in sorted(levels, reverse=True):  # high → low, same convention as main train
         out_path = out_dir / f"voxy_L{level}.pt"
         if not out_path.exists():
@@ -820,10 +823,13 @@ def _continue_train_voxy_run(p: dict[str, Any]) -> None:
             lr=train.get("lr", 1e-3),
             device=_resolve_device(train.get("device", "auto")),
             num_workers=train.get("num_workers", None),
+            default_block_weight=float(train.get("default_block_weight", 1.0)),
+            air_water_weight=float(train.get("air_water_weight", 1.7)),
+            surface_veg_weight=float(train.get("surface_veg_weight", 3.0)),
+            stone_ore_weight=float(train.get("stone_ore_weight", 0.35)),
             holdout_db_path=holdout_db_path,
             progress_callback=lambda epoch, total, _m: _report_progress(epoch, total),
         )
-        last_result = result
         print(f"[STEP_RESULT]{json.dumps(result, sort_keys=True)}")
 
 
@@ -837,7 +843,6 @@ def _make_train_voxy_l_run(level: int) -> Callable[[dict[str, Any]], None]:
     """Return a runner that trains exactly one Voxy level."""
 
     def _run(p: dict[str, Any]) -> None:
-        import json  # noqa: PLC0415
         import sqlite3  # noqa: PLC0415
 
         from voxel_tree.tasks.voxy.voxy_train import train_voxy_level  # noqa: PLC0415
@@ -891,6 +896,10 @@ def _make_train_voxy_l_run(level: int) -> Callable[[dict[str, Any]], None]:
             lr=train.get("lr", 1e-3),
             device=_resolve_device(train.get("device", "auto")),
             num_workers=train.get("num_workers", None),
+            default_block_weight=float(train.get("default_block_weight", 1.0)),
+            air_water_weight=float(train.get("air_water_weight", 1.7)),
+            surface_veg_weight=float(train.get("surface_veg_weight", 3.0)),
+            stone_ore_weight=float(train.get("stone_ore_weight", 0.35)),
             holdout_db_path=holdout_db_path,
             progress_callback=lambda epoch, total, _m: _report_progress(epoch, total),
         )
