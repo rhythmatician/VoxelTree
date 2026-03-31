@@ -500,6 +500,7 @@ def train_voxy_level(
     )
 
     # ── Dataset ───────────────────────────────────────────────────
+    print(f"[L{level}] Loading dataset from {db_path} (this may take a while)...", flush=True)
     if level == 4:
         ds: VoxyLevelDataset | VoxyLevelWithParentDataset = VoxyLevelDataset(
             db_path, level, min_coverage, vocab_remap=_vocab_remap, cache=cache_dataset
@@ -574,13 +575,9 @@ def train_voxy_level(
                 persistent_workers=_nw > 0,
                 prefetch_factor=2 if _nw > 0 else None,
             )
-            print(
-                f"[L{level}] Holdout: {len(holdout_ds)} samples from {holdout_db_path}"
-            )
+            print(f"[L{level}] Holdout: {len(holdout_ds)} samples from {holdout_db_path}")
         else:
-            print(
-                f"[L{level}] Holdout DB has zero samples at this level: {holdout_db_path}"
-            )
+            print(f"[L{level}] Holdout DB has zero samples at this level: {holdout_db_path}")
 
     # ── Resume ────────────────────────────────────────────────────
     start_epoch = 1
@@ -625,6 +622,7 @@ def train_voxy_level(
 
     for epoch in range(start_epoch, epochs + 1):
         model.train()
+        print(f"[L{level}] Starting epoch {epoch}/{epochs} ({n_batches} batches)", flush=True)
         total_loss = 0.0
         total_block_loss = 0.0
         total_occ_loss = 0.0
@@ -696,7 +694,11 @@ def train_voxy_level(
                 total_priority += acc["n_priority"]
 
             # Progress logging
-            if total_batches % _log_interval == 0 or total_batches == n_batches:
+            if (
+                total_batches == 1
+                or total_batches % _log_interval == 0
+                or total_batches == n_batches
+            ):
                 elapsed = time.monotonic() - epoch_t0
                 pct = 100.0 * total_batches / n_batches
                 avg = total_loss / total_batches
