@@ -210,6 +210,21 @@ def test_continue_train_runner_passes_resume_from(monkeypatch, tmp_path):
     assert calls[0]["epochs"] == 42
 
 
+def test_continue_train_runner_fails_if_checkpoint_missing(tmp_path):
+    db_path = tmp_path / "v7_dumps.db"
+    db_path.write_text("x")
+
+    profile = {
+        "data": {"v7_dumps_db": str(db_path)},
+        "train": {"output_dir": str(tmp_path)},
+        "_continue_levels": [2],
+        "_continue_epochs": 2,
+    }
+
+    with pytest.raises(FileNotFoundError, match="cannot continue training"):
+        step_definitions._continue_train_voxy_run(profile)
+
+
 def test_profilerow_refresh_shows_progress():
     # create a dummy registry with a fake progress value
     reg = RunRegistry("x")

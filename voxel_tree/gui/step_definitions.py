@@ -796,8 +796,9 @@ def _continue_train_voxy_run(p: dict[str, Any]) -> None:
     for level in sorted(levels, reverse=True):  # high → low, same convention as main train
         out_path = out_dir / f"voxy_L{level}.pt"
         if not out_path.exists():
-            print(f"[L{level}] No checkpoint at {out_path} — skipping.")
-            continue
+            raise FileNotFoundError(
+                f"[L{level}] No checkpoint at {out_path}; cannot continue training."
+            )
 
         # Determine how many epochs we've already run
         try:

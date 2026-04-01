@@ -468,6 +468,8 @@ def train_voxy_level(
     """
     db_path = Path(db_path)
     out_path = Path(out_path)
+    if resume_from is not None and not Path(resume_from).exists():
+        raise FileNotFoundError(f"Resume checkpoint not found: {resume_from}")
     if out_path.exists() and resume_from is None and not allow_overwrite_without_resume:
         raise RuntimeError(
             f"Refusing to overwrite existing checkpoint without resume: {out_path}. "
@@ -597,6 +599,10 @@ def train_voxy_level(
 
     if resume_from is not None and Path(resume_from).exists():
         ckpt = torch.load(resume_from, map_location=_device, weights_only=False)
+        if not isinstance(ckpt, dict) or "model_state_dict" not in ckpt:
+            raise RuntimeError(
+                f"Invalid resume checkpoint format at {resume_from}: missing model_state_dict."
+            )
         if isinstance(ckpt, dict) and "model_state_dict" in ckpt:
             missing, unexpected = model.load_state_dict(ckpt["model_state_dict"], strict=False)
             if unexpected:
